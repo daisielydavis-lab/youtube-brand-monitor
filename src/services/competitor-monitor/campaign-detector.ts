@@ -1,0 +1,129 @@
+/**
+ * Campaign Detector — groups related placements into campaigns.
+ *
+ * Logic: Same brand + same game + within 7-day window + shared landing or promo pattern
+ */
+
+import { getSupabase } from '../../db/supabase';
+
+export interface Campaign {
+  id: string;
+  brand: string;
+  game: string;
+  videoCount: number;
+  creatorCount: number;
+  primarySellingPoint: string;
+  primaryMarket: string;
+  primaryLanguage: string;
+  landingDomain: string | null;
+  totalEstimatedViews: number;
+  avgPerformanceScore: number;
+  status: 'active' | 'ended';
+  activeFrom: string;
+  activeTo: string;
+}
+
+/** Run after each scan — group newly classified videos into campaigns */
+export async function detectCampaigns(): Promise<number> {
+  const db = getSupabase();
+
+  // Get recent videos not yet assigned to a campaign
+  const { data: videos } = await db
+    .from('youtube_competitor_videos')
+    .select('*')
+    .is('campaign_id', null)
+    .in('placement_type', ['confirmed_paid_placement', 'likely_sponsored'])
+    .gte('first_seen_at', new Date(Date.now() - 14 * 86400000).toISOString())
+    .order('published_at', { ascending: false });
+
+  if (!videos?.length) return 0;
+
+  // Group candidates: same brand + same game + within 7 days
+  const groups = new Map<string, any[]>();
+
+  for (const v of videos as any[]) {
+    const brand = v.classification_raw?.sponsorship?.detectedBrand || 'unknown';
+    const game = v.game_name || 'unknown';
+    const published = new Date(v.published_at).getTime();
+
+    // Find existing group or create new
+    let matched = false;
+    for (const [key, groupVids] of groups) {
+      const firstTime = new Date(groupVids[0].published_at).getTime();
+      const groupBrand = key.split('||')[0];
+      const groupGame = key.split('||')[1];
+
+      if (groupBrand === brand && groupGame === game &&
+        Math.abs(published - firstTime) < 7 * 86400000 &&
+        (v.landing_domain === groupVids[0].landing_domain || !v.landing_domain)) {
+        groupVids.push(v);
+        matched = true;
+        break;
+      }
+    }
+
+    if (!matched) {
+      groups.set(`${brand}||${game}||${v.video_id}`, [v]);
+    }
+  }
+
+  // Create campaigns for groups with ≥2 videos
+  let created = 0;
+  for (const [, groupVids] of groups) {
+    if (groupVids.length < 2) continue;
+
+    const brand = groupVids[0].classification_raw?.sponsorship?.detectedBrand || 'unknown';
+    const game = groupVids[0].game_name || 'unknown';
+    const creators = new Set(groupVids.map((v: any) => v.channel_id));
+    const sellingPoints = groupVids.flatMap((v: any) => v.product_selling_points || []);
+    const topSP = sellingPoints.sort((a: string, b: string) =>
+      sellingPoints.filter((x: string) => x === b).length - sellingPoints.filter((x: string) => x === a).length)[0];
+
+    const markets = groupVids.map((v: any) => v.market).filter(Boolean);
+    const topMarket = markets.sort((a: string, b: string) =>
+      markets.filter((x: string) => x === b).length - markets.filter((x: string) => x === a).length)[0];
+
+    const totalViews = groupVids.reduce((s: number, v: any) => s + (v.view_count || 0), 0);
+    const avgScore = groupVids.reduce((s: number, v: any) => s + (v.public_performance_score || 0), 0) / groupVids.length;
+
+    const timestamps = groupVids.map((v: any) => new Date(v.published_at).getTime());
+    const activeFrom = new Date(Math.min(...timestamps)).toISOString().slice(0, 10);
+    const activeTo = new Date(Math.max(...timestamps)).toISOString().slice(0, 10);
+
+    // Insert campaign
+    const { data: camp } = await db.from('campaigns').insert({
+      brand, game, video_count: groupVids.length, creator_count: creators.size,
+      primary_selling_point: topSP || null, primary_market: topMarket || 'US',
+      primary_language: groupVids[0].language || 'en',
+      landing_domain: groupVids[0].landing_domain || null,
+      total_estimated_views: totalViews, avg_performance_score: Math.round(avgScore),
+      status: 'active', active_from: activeFrom, active_to: activeTo,
+      detected_at: new Date().toISOString(),
+    }).select('id').single();
+
+    if (camp) {
+      // Link videos to campaign
+      await db.from('youtube_competitor_videos').update({ campaign_id: (camp as any).id })
+        .in('video_id', groupVids.map((v: any) => v.video_id));
+      created++;
+      console.log(`[Campaign] Created: ${brand}/${game} — ${groupVids.length} videos, ${creators.size} creators`);
+    }
+  }
+
+  // Auto-end campaigns with no new videos in 14 days
+  const { error } = await db.from('campaigns').update({ status: 'ended', updated_at: new Date().toISOString() })
+    .eq('status', 'active')
+    .lt('active_to', new Date(Date.now() - 14 * 86400000).toISOString().slice(0, 10));
+  if (!error && false) console.log('[Campaign] Ended stale campaigns'); // suppress noisy log
+
+  return created;
+}
+
+/** Get active campaigns */
+export async function getCampaigns(status?: string): Promise<Campaign[]> {
+  const db = getSupabase();
+  let q = db.from('campaigns').select('*').order('detected_at', { ascending: false });
+  if (status) q = q.eq('status', status);
+  const { data } = await q;
+  return (data || []) as Campaign[];
+}

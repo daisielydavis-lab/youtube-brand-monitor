@@ -256,3 +256,97 @@ function mapProfileFromDb(row: any): CreatorProfile {
     collaborationBrands: row.collaboration_brands || [],
   };
 }
+
+// ── v3: Creator Classification ──
+
+export function classifyCreatorSize(subscriberCount: number): string {
+  if (subscriberCount < 1000) return 'nano';
+  if (subscriberCount < 10000) return 'micro';
+  if (subscriberCount < 100000) return 'mid_tier';
+  if (subscriberCount < 1000000) return 'macro';
+  return 'mega';
+}
+
+export async function classifyCreatorContentType(channelId: string): Promise<string> {
+  const db = getSupabase();
+  const { data: videos } = await db.from('youtube_competitor_videos')
+    .select('game_name, content_type, title, tags').eq('channel_id', channelId).limit(30);
+
+  if (!videos?.length) return 'variety_gaming';
+
+  const games = new Set((videos as any[]).map(v => v.game_name).filter(Boolean));
+  const types = (videos as any[]).map(v => v.content_type).filter(Boolean);
+
+  if (games.size <= 2) return 'single_game';
+  if (types.filter((t: string) => t === 'tutorial' || t === 'tutorial').length > types.length * 0.3) return 'guides';
+  if (types.filter((t: string) => t === 'shorts').length > types.length * 0.5) return 'shorts_creator';
+  if (types.filter((t: string) => t === 'dedicated_review' || t === 'comparison').length > types.length * 0.4) return 'tech_hardware';
+
+  return 'variety_gaming';
+}
+
+export function classifyRelationship(
+  pastMentions: Record<string, number>,
+  collabBrands: string[],
+  recentBrand: string,
+): string {
+  const totalMentions = Object.values(pastMentions).reduce((a, b) => a + b, 0);
+  if (totalMentions === 0) return 'first_time';
+  if (collabBrands.length >= 3) return 'multi_brand';
+
+  // Check for brand switch: more mentions of a different brand recently
+  const entries = Object.entries(pastMentions).sort((a, b) => b[1] - a[1]);
+  if (entries.length >= 2 && entries[0][0] !== recentBrand && entries[0][1] > (pastMentions[recentBrand] || 0) * 1.5) {
+    return 'switched_brand';
+  }
+  if ((pastMentions[recentBrand] || 0) >= 3) return 'brand_ambassador';
+  if ((pastMentions[recentBrand] || 0) >= 1) return 'repeat';
+
+  return 'first_time';
+}
+
+/** Calculate Baseline Lift: video 7d views ÷ median of creator's last 10 same-format videos */
+export async function calculateBaselineLift(channelId: string, videoId: string, isShort: boolean): Promise<number | null> {
+  const db = getSupabase();
+
+  // Get creator's recent same-format videos
+  const { data: recentVids } = await db.from('youtube_competitor_videos')
+    .select('video_id, view_count').eq('channel_id', channelId).eq('is_short', isShort)
+    .order('published_at', { ascending: false }).limit(11); // 10 + current
+
+  if (!recentVids || recentVids.length < 2) return null;
+
+  const others = (recentVids as any[]).filter(v => v.video_id !== videoId).slice(0, 10);
+  if (!others.length) return null;
+
+  const views = others.map((v: any) => v.view_count || 0).sort((a: number, b: number) => a - b);
+  const median = views[Math.floor(views.length / 2)];
+
+  // Current video views
+  const { data: current } = await db.from('youtube_competitor_videos')
+    .select('view_count').eq('video_id', videoId).maybeSingle();
+  const currentViews = (current as any)?.view_count || 0;
+
+  if (median === 0) return null;
+  return Math.round((currentViews / median) * 100) / 100;
+}
+
+/** Run full creator classification update */
+export async function updateCreatorClassification(channelId: string, recentBrand?: string): Promise<void> {
+  const db = getSupabase();
+  const { data: profile } = await db.from('youtube_creator_profiles').select('*').eq('channel_id', channelId).maybeSingle();
+  if (!profile) return;
+
+  const p = profile as any;
+  const size = classifyCreatorSize(p.subscriber_count || 0);
+  const contentType = await classifyCreatorContentType(channelId);
+  const rel = classifyRelationship(p.past_brand_mentions || {}, p.collaboration_brands || [], recentBrand || '');
+
+  await db.from('youtube_creator_profiles').update({
+    creator_size: size, content_type: contentType, relationship_status: rel,
+    baseline_views_median: p.avg_views_recent || 0,
+    updated_at: new Date().toISOString(),
+  }).eq('channel_id', channelId);
+
+  console.log(`[CreatorProfile] ${p.channel_name}: ${size} | ${contentType} | ${rel}`);
+}

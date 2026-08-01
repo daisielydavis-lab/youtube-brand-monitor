@@ -1,110 +1,82 @@
 /**
- * Brand configuration for competitor monitoring.
- * Defines brands, their search queries, and detection rules.
+ * Brand configuration v3 — combined OR queries to minimize search.list calls.
+ * Normal mode uses 6 searches/day (down from 15).
  */
 
 export interface BrandConfig {
   brandName: string;
   displayName: string;
   websiteDomain: string;
-  /** Domains that indicate a landing page mention */
   trackedDomains: string[];
-  /** Patterns to detect promo codes in descriptions */
   promoCodePatterns: RegExp[];
-  /** Keywords that signal this brand in video titles/descriptions */
   brandKeywords: string[];
-  /** Common CTA phrases used by this brand's affiliates */
-  commonCTAs: string[];
 }
 
 export interface BrandQuery {
   brandName: string;
   queryText: string;
-  queryType: 'branded' | 'review' | 'promo' | 'sponsored' | 'comparison';
+  queryType: 'branded' | 'sponsored';
   targetLanguage: string;
   targetMarket: string;
 }
 
 export const BRANDS: BrandConfig[] = [
   {
-    brandName: 'GearUP',
-    displayName: 'GearUP Booster',
-    websiteDomain: 'gearupbooster.com',
-    trackedDomains: ['gearupbooster.com', 'gearup.com', 'gearuplink.com'],
-    promoCodePatterns: [/GEARUP\d+/i, /GEARUP[A-Z]+/i, /gearup[-_]?\w+ discount/i],
-    brandKeywords: ['gearup', 'gear up', 'gearup booster', 'gearup game booster'],
-    commonCTAs: ['download gearup', 'try gearup', 'use code', 'gearup free', 'gearup trial'],
+    brandName: 'GearUP', displayName: 'GearUP Booster', websiteDomain: 'gearupbooster.com',
+    trackedDomains: ['gearupbooster.com', 'gearup.com'],
+    promoCodePatterns: [/GEARUP\d+/i, /gearup/i],
+    brandKeywords: ['gearup', 'gear up', 'gearup booster'],
   },
   {
-    brandName: 'ExitLag',
-    displayName: 'ExitLag',
-    websiteDomain: 'exitlag.com',
-    trackedDomains: ['exitlag.com', 'exitlag.app', 'exitlag.net'],
-    promoCodePatterns: [/EXITLAG\d+/i, /EXIT[A-Z]+/i, /exitlag[-_]?\w+ discount/i],
-    brandKeywords: ['exitlag', 'exit lag', 'exitlag.com'],
-    commonCTAs: ['download exitlag', 'try exitlag', 'use code', 'exitlag free', 'exitlag trial'],
+    brandName: 'ExitLag', displayName: 'ExitLag', websiteDomain: 'exitlag.com',
+    trackedDomains: ['exitlag.com', 'exitlag.app'],
+    promoCodePatterns: [/EXITLAG\d+/i, /exitlag/i],
+    brandKeywords: ['exitlag', 'exit lag'],
   },
   {
-    brandName: 'LagZapper',
-    displayName: 'LagZapper',
-    websiteDomain: 'lagzapper.com',
-    trackedDomains: ['lagzapper.com', 'lagzapper.net'],
-    promoCodePatterns: [/LAGZAPPER\d+/i, /LAGZAP[A-Z]+/i, /zapper[-_]?\w+ discount/i],
-    brandKeywords: ['lagzapper', 'lag zapper', 'lagzap'],
-    commonCTAs: ['download lagzapper', 'try lagzapper', 'lagzapper free', 'use code'],
+    brandName: 'LagZapper', displayName: 'LagZapper', websiteDomain: 'lagzapper.com',
+    trackedDomains: ['lagzapper.com'],
+    promoCodePatterns: [/LAGZAPPER\d+/i, /zapper/i],
+    brandKeywords: ['lagzapper', 'lag zapper'],
   },
 ];
 
-/** Search queries per brand for English market (v1 scope) */
-export const BRAND_QUERIES: BrandQuery[] = [
-  // GearUP
-  { brandName: 'GearUP', queryText: 'GearUP Booster', queryType: 'branded', targetLanguage: 'en', targetMarket: 'US' },
-  { brandName: 'GearUP', queryText: 'GearUP game booster', queryType: 'branded', targetLanguage: 'en', targetMarket: 'US' },
-  { brandName: 'GearUP', queryText: 'GearUP lag', queryType: 'branded', targetLanguage: 'en', targetMarket: 'US' },
-  { brandName: 'GearUP', queryText: 'GearUP promo code', queryType: 'promo', targetLanguage: 'en', targetMarket: 'US' },
-  { brandName: 'GearUP', queryText: 'GearUP review', queryType: 'review', targetLanguage: 'en', targetMarket: 'US' },
-  { brandName: 'GearUP', queryText: 'GearUP sponsored', queryType: 'sponsored', targetLanguage: 'en', targetMarket: 'US' },
-
-  // ExitLag
+/** Normal mode queries — 6 combined searches/day using OR operators */
+export const NORMAL_QUERIES: BrandQuery[] = [
+  { brandName: 'GearUP', queryText: 'GearUP | GearUP Booster', queryType: 'branded', targetLanguage: 'en', targetMarket: 'US' },
   { brandName: 'ExitLag', queryText: 'ExitLag', queryType: 'branded', targetLanguage: 'en', targetMarket: 'US' },
-  { brandName: 'ExitLag', queryText: 'ExitLag review', queryType: 'review', targetLanguage: 'en', targetMarket: 'US' },
-  { brandName: 'ExitLag', queryText: 'ExitLag promo code', queryType: 'promo', targetLanguage: 'en', targetMarket: 'US' },
-  { brandName: 'ExitLag', queryText: 'ExitLag sponsored', queryType: 'sponsored', targetLanguage: 'en', targetMarket: 'US' },
-  { brandName: 'ExitLag', queryText: 'ExitLag Valorant', queryType: 'branded', targetLanguage: 'en', targetMarket: 'US' },
-
-  // LagZapper
-  { brandName: 'LagZapper', queryText: 'LagZapper', queryType: 'branded', targetLanguage: 'en', targetMarket: 'US' },
-  { brandName: 'LagZapper', queryText: 'Lag Zapper', queryType: 'branded', targetLanguage: 'en', targetMarket: 'US' },
-  { brandName: 'LagZapper', queryText: 'LagZapper free', queryType: 'promo', targetLanguage: 'en', targetMarket: 'US' },
-  { brandName: 'LagZapper', queryText: 'LagZapper review', queryType: 'review', targetLanguage: 'en', targetMarket: 'US' },
+  { brandName: 'LagZapper', queryText: 'LagZapper | Lag Zapper', queryType: 'branded', targetLanguage: 'en', targetMarket: 'US' },
+  { brandName: 'GearUP', queryText: 'GearUP sponsored | GearUP review | GearUP promo code', queryType: 'sponsored', targetLanguage: 'en', targetMarket: 'US' },
+  { brandName: 'ExitLag', queryText: 'ExitLag sponsored | ExitLag review | ExitLag promo code', queryType: 'sponsored', targetLanguage: 'en', targetMarket: 'US' },
+  { brandName: 'LagZapper', queryText: 'LagZapper review | LagZapper free | LagZapper promo code', queryType: 'sponsored', targetLanguage: 'en', targetMarket: 'US' },
 ];
 
-/** Russian market queries for phase 2 expansion */
-export const RU_QUERIES: BrandQuery[] = [
-  { brandName: 'ExitLag', queryText: 'ExitLag обзор', queryType: 'review', targetLanguage: 'ru', targetMarket: 'RU' },
-  { brandName: 'ExitLag', queryText: 'ExitLag промокод', queryType: 'promo', targetLanguage: 'ru', targetMarket: 'RU' },
-  { brandName: 'GearUP', queryText: 'GearUP бустер', queryType: 'branded', targetLanguage: 'ru', targetMarket: 'RU' },
-  { brandName: 'GearUP', queryText: 'GearUP обзор', queryType: 'review', targetLanguage: 'ru', targetMarket: 'RU' },
-];
+/** Build hotspot queries for a specific game */
+export function buildHotspotQueries(
+  game: string,
+  brands?: string[],
+  markets?: string[],
+): BrandQuery[] {
+  const targetBrands = brands || ['GearUP', 'ExitLag', 'LagZapper'];
+  const targetMarkets = markets || ['US'];
+  const queries: BrandQuery[] = [];
 
-/** Brazilian Portuguese market queries for phase 2 expansion */
-export const PT_QUERIES: BrandQuery[] = [
-  { brandName: 'ExitLag', queryText: 'ExitLag review', queryType: 'review', targetLanguage: 'pt', targetMarket: 'BR' },
-  { brandName: 'ExitLag', queryText: 'ExitLag funciona', queryType: 'review', targetLanguage: 'pt', targetMarket: 'BR' },
-  { brandName: 'ExitLag', queryText: 'ExitLag cupom', queryType: 'promo', targetLanguage: 'pt', targetMarket: 'BR' },
-];
+  for (const market of targetMarkets) {
+    for (const brand of targetBrands) {
+      queries.push({
+        brandName: brand,
+        queryText: `${brand} ${game}`,
+        queryType: 'sponsored',
+        targetLanguage: market === 'RU' ? 'ru' : market === 'BR' ? 'pt' : 'en',
+        targetMarket: market,
+      });
+    }
+  }
 
-/** All active queries for v1 */
-export function getActiveQueries(): BrandQuery[] {
-  return BRAND_QUERIES;
+  return queries;
 }
 
-/** Get brand config by name */
+export function getActiveQueries(): BrandQuery[] { return NORMAL_QUERIES; }
 export function getBrandConfig(brandName: string): BrandConfig | undefined {
   return BRANDS.find(b => b.brandName.toLowerCase() === brandName.toLowerCase());
-}
-
-/** Get all active brand names */
-export function getActiveBrandNames(): string[] {
-  return BRANDS.filter(b => true).map(b => b.brandName);
 }
