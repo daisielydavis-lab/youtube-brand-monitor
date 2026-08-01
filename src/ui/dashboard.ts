@@ -277,21 +277,24 @@ function pollProgress() {
     if(s.running){
       var parts = [];
       parts.push('Brand queries: <b>'+(s.searchQuotaUsed||0)+' / 6</b>');
-      parts.push('Videos discovered: <b>'+(s.discovered||0)+'</b>');
-      if(s.selectedForAI>0) parts.push('Selected for AI review: <b>'+s.selectedForAI+'</b>');
+      parts.push('Videos discovered: <b>'+(s.discoveredCount||s.discovered||0)+'</b>');
+      if(s.persistedCount>0||s.discoveredCount>0) parts.push('Videos saved: <b>'+(s.persistedCount||s.discoveredCount||0)+'</b>');
+      if(s.selectedForAI>0) parts.push('Selected for AI: <b>'+s.selectedForAI+'</b>');
       if(s.classified>0) parts.push('AI classified: <b>'+s.classified+' / '+(s.selectedForAI||50)+'</b>');
       if(s.likelyPlacements>0) parts.push('Likely placements: <b>'+s.likelyPlacements+'</b>');
-      if(s.queued>0) parts.push('Queued for later: <b>'+s.queued+'</b>');
+      if(s.queued>0) parts.push('Queued: <b>'+s.queued+'</b>');
       document.getElementById('sp-status').innerHTML = parts.length?parts.join('<br>'):'Starting…';
       document.getElementById('sp-stats').innerHTML = s.errors&&s.errors.length?'<span class="sp-err">⚠️ '+s.errors.join(', ')+'</span>':'';
     }
     if(s.done){
       document.getElementById('sp-bar').style.width='100%';
       document.getElementById('sp-status').innerHTML='';
-      if(s.discovered>0){
+      var dCount = s.discoveredCount||s.discovered||0;
+      if(dCount>0){
         var msg = s.classified+' classified, '+(s.likelyPlacements||0)+' likely placements';
         if(s.queued>0) msg += ', '+s.queued+' queued for later';
-        document.getElementById('sp-result').innerHTML='<div class="scan-done"><h3 class="scan-done-title">✅ First scan complete</h3><p class="scan-done-desc">'+s.discovered+' videos discovered · '+msg+'</p><a href="/" class="btn-primary" style="display:inline-block;width:auto;padding:12px 32px">View Results</a></div>';
+        if(s.persistedCount>0) msg = (s.persistedCount||0)+' videos saved · '+msg;
+        document.getElementById('sp-result').innerHTML='<div class="scan-done"><h3 class="scan-done-title">✅ First scan complete</h3><p class="scan-done-desc">'+dCount+' videos discovered · '+msg+'</p><a href="/" class="btn-primary" style="display:inline-block;width:auto;padding:12px 32px">View Results</a></div>';
       } else {
         document.getElementById('sp-result').innerHTML='<div class="scan-done"><h3 class="scan-done-title">⚠️ Scan finished</h3><p class="scan-done-desc">No new videos found. Try a wider date range or check quota.</p><a href="/" class="btn-primary" style="display:inline-block;width:auto;padding:12px 32px">Return to Dashboard</a></div>';
       }

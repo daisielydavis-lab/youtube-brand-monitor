@@ -16,7 +16,8 @@ export interface ScanState {
   running: boolean; mode: string; phase: string; status: string;
   searchQueriesTotal: number; searchQueriesSucceeded: number; searchQueriesFailed: number;
   creatorChannelsChecked: number;
-  discoveredFromSearch: number; discoveredFromCreators: number; uniqueVideos: number;
+  discoveredFromSearch: number; discoveredFromCreators: number; discoveredCount: number;
+  persistedCount: number;
   selectedForAI: number; classified: number; likelyPlacements: number; queued: number; failed: number;
   searchQuotaUsed: number; generalQuotaUsed: number;
   errorCode: string; errors: string[]; startedAt: string; done: boolean;
@@ -25,8 +26,8 @@ export interface ScanState {
 export let scanState: ScanState = {
   running: false, mode: '', phase: 'idle', status: 'idle',
   searchQueriesTotal: 0, searchQueriesSucceeded: 0, searchQueriesFailed: 0,
-  creatorChannelsChecked: 0, discoveredFromSearch: 0, discoveredFromCreators: 0, uniqueVideos: 0,
-  selectedForAI: 0, classified: 0, likelyPlacements: 0, queued: 0, failed: 0,
+  creatorChannelsChecked: 0, discoveredFromSearch: 0, discoveredFromCreators: 0, discoveredCount: 0,
+  persistedCount: 0, selectedForAI: 0, classified: 0, likelyPlacements: 0, queued: 0, failed: 0,
   searchQuotaUsed: 0, generalQuotaUsed: 0, errorCode: '', errors: [], startedAt: '', done: false,
 };
 
@@ -38,7 +39,7 @@ function trackGeneral(n: number) { dailyGeneralUsed += n; scanState.generalQuota
 
 function resetState(mode: string) {
   searchCircuitOpen = false;
-  scanState = { running: true, mode, phase: 'discovery', status: 'running', searchQueriesTotal: 0, searchQueriesSucceeded: 0, searchQueriesFailed: 0, creatorChannelsChecked: 0, discoveredFromSearch: 0, discoveredFromCreators: 0, uniqueVideos: 0, selectedForAI: 0, classified: 0, likelyPlacements: 0, queued: 0, failed: 0, searchQuotaUsed: dailySearchUsed, generalQuotaUsed: dailyGeneralUsed, errorCode: '', errors: [], startedAt: new Date().toISOString(), done: false };
+  scanState = { running: true, mode, phase: 'discovery', status: 'running', searchQueriesTotal: 0, searchQueriesSucceeded: 0, searchQueriesFailed: 0, creatorChannelsChecked: 0, discoveredFromSearch: 0, discoveredFromCreators: 0, discoveredCount: 0, persistedCount: 0, selectedForAI: 0, classified: 0, likelyPlacements: 0, queued: 0, failed: 0, searchQuotaUsed: dailySearchUsed, generalQuotaUsed: dailyGeneralUsed, errorCode: '', errors: [], startedAt: new Date().toISOString(), done: false };
 }
 
 // ── Priority scoring (rule-based, no LLM) ──
@@ -178,31 +179,86 @@ export async function runDiscoveryPipeline(options?: {
     for (const v of chVids) { if (!seen.has(v.videoId)) { seen.add(v.videoId); (v as any).discoveryMethod = 'channel_scan'; allVids.push(v); creatorFrom++; } }
   }
   scanState.discoveredFromCreators = creatorFrom;
-  scanState.uniqueVideos = allVids.length;
+  scanState.discoveredCount = allVids.length;
+
+  // Log Supabase target
+  console.log(`[Monitor] Supabase host: ${new URL(config.supabase.url).hostname} | serviceRole: ${!!config.supabase.serviceRoleKey}`);
+
   if (!allVids.length) { scanState.done = true; scanState.running = false; return { videosDiscovered: 0, videosClassified: 0 }; }
 
-  // Phase 3: Save + score
+  // Phase 3: Save + score with PROPER error handling
+  scanState.phase = 'saving';
   const knownIds = new Set((creators || []).map((c: any) => c.channel_id));
   const { data: cfg } = await db.from('monitor_config').select('hotspot_games').eq('id', 1).maybeSingle();
   const scored = allVids.map(v => ({ video: v, priority: scorePriority(v, knownIds, (cfg as any)?.hotspot_games || []) })).sort((a, b) => b.priority - a.priority);
-  scanState.selectedForAI = Math.min(MAX_AI_PER_SCAN, scored.length);
-  scanState.queued = Math.max(0, scored.length - MAX_AI_PER_SCAN);
-  console.log(`[Monitor] Saving ${allVids.length} vids (search=${searchFrom} creator=${creatorFrom} AI=${scanState.selectedForAI} queued=${scanState.queued})`);
+
+  console.log(`[Monitor] Attempting to persist ${scored.length} videos...`);
+
+  let persistedCount = 0;
+  const persistedIds: string[] = [];
+  const saveErrors: Array<{ videoId: string; error: string }> = [];
 
   for (const { video: v } of scored) {
-    if (!knownIds.has(v.channelId)) { const ch = await getChannelsByIds([v.channelId]); if (ch[0]) await getOrCreateCreatorProfile(ch[0].channelId, ch[0].channelName); }
-    await db.from('youtube_competitor_videos').upsert({
-      video_id: v.videoId, channel_id: v.channelId, channel_name: v.channelTitle,
-      title: v.title, description: v.description, published_at: v.publishedAt,
-      duration: v.duration, is_short: v.isShort, thumbnail_url: v.thumbnailUrl,
-      tags: v.tags, category_id: v.categoryId,
-      discovery_method: (v as any).discoveryMethod || 'keyword_search',
-      has_paid_placement_tag: v.hasPaidPlacementTag,
-      view_count: v.viewCount, like_count: v.likeCount, comment_count: v.commentCount,
-      workflow_status: 'discovered',
-      first_seen_at: new Date().toISOString(), last_updated_at: new Date().toISOString(),
-    }, { onConflict: 'video_id' });
+    try {
+      if (!knownIds.has(v.channelId)) {
+        const ch = await getChannelsByIds([v.channelId]);
+        if (ch[0]) await getOrCreateCreatorProfile(ch[0].channelId, ch[0].channelName);
+      }
+
+      const { error } = await db.from('youtube_competitor_videos').upsert({
+        video_id: v.videoId, channel_id: v.channelId, channel_name: v.channelTitle,
+        title: v.title, description: v.description || '', published_at: v.publishedAt,
+        duration: v.duration, is_short: v.isShort, thumbnail_url: v.thumbnailUrl || null,
+        tags: v.tags, category_id: v.categoryId,
+        discovery_method: (v as any).discoveryMethod || 'keyword_search',
+        has_paid_placement_tag: v.hasPaidPlacementTag,
+        view_count: v.viewCount, like_count: v.likeCount, comment_count: v.commentCount,
+        workflow_status: 'discovered',
+        brand_id: null,
+        first_seen_at: new Date().toISOString(), last_updated_at: new Date().toISOString(),
+      }, { onConflict: 'video_id' });
+
+      if (error) {
+        saveErrors.push({ videoId: v.videoId, error: `${error.code}: ${error.message}` });
+        if (saveErrors.length <= 3) {
+          console.error(`[Monitor] Save FAILED for ${v.videoId}: code=${error.code} msg=${error.message} details=${error.details} hint=${error.hint}`);
+        }
+      } else {
+        persistedCount++;
+        persistedIds.push(v.videoId);
+      }
+    } catch (err) {
+      saveErrors.push({ videoId: v.videoId, error: (err as Error).message });
+    }
   }
+
+  // ── VERIFY: query DB for actual count ──
+  const { count: dbCount, error: countErr } = await db
+    .from('youtube_competitor_videos')
+    .select('video_id', { count: 'exact', head: true })
+    .in('video_id', allVids.map(v => v.videoId));
+
+  scanState.persistedCount = dbCount ?? 0;
+
+  console.log(`[Monitor] Persist result: attempted=${scored.length} persisted=${persistedCount} dbConfirmed=${dbCount} saveErrors=${saveErrors.length}`);
+
+  if (saveErrors.length > 0) {
+    console.error(`[Monitor] Save errors (first 5): ${JSON.stringify(saveErrors.slice(0, 5))}`);
+    scanState.errors.push(`Save errors: ${saveErrors.length}/${scored.length} failed`);
+  }
+
+  if (!dbCount || dbCount === 0) {
+    scanState.errorCode = 'VIDEO_PERSISTENCE_FAILED';
+    scanState.status = 'failed';
+    scanState.errors.push(`0 videos persisted out of ${scored.length} attempted — check brand_id constraint and Supabase connection`);
+    console.error(`[Monitor] FATAL: 0 videos persisted. Supabase: ${config.supabase.url}`);
+    scanState.done = true; scanState.running = false; scanState.phase = 'failed';
+    return { videosDiscovered: 0, videosClassified: 0 };
+  }
+
+  const actualCount = dbCount ?? 0;
+  scanState.selectedForAI = Math.min(MAX_AI_PER_SCAN, actualCount);
+  scanState.queued = Math.max(0, actualCount - MAX_AI_PER_SCAN);
 
   // Phase 4: AI
   if (!options?.skipAI && scanState.selectedForAI > 0) {
@@ -234,8 +290,8 @@ export async function runDiscoveryPipeline(options?: {
 
   scanState.phase = 'completed'; scanState.status = scanState.errorCode ? 'partial_completed' : 'completed';
   scanState.done = true; scanState.running = false;
-  console.log(`[Monitor] Done: ${scanState.uniqueVideos} vids AI=${scanState.classified} likely=${scanState.likelyPlacements}`);
-  return { videosDiscovered: scanState.uniqueVideos, videosClassified: scanState.classified };
+  console.log(`[Monitor] Done: ${scanState.discoveredCount} vids AI=${scanState.classified} likely=${scanState.likelyPlacements}`);
+  return { videosDiscovered: scanState.discoveredCount, videosClassified: scanState.classified };
 }
 
 // ── Retry classification (AI only) ──
@@ -245,7 +301,7 @@ export async function retryClassification(limit: number = MAX_AI_PER_SCAN): Prom
   if (!pending?.length) return { classified: 0 };
   resetState('retry');
   scanState.selectedForAI = pending.length;
-  scanState.uniqueVideos = pending.length;
+  scanState.discoveredCount = pending.length;
   const result = await batchClassifyVideos((pending as any[]).map(v => ({
     videoId: v.video_id, title: v.title, description: v.description || '', channelName: v.channel_name || '', publishedAt: v.published_at || '', tags: v.tags || [], hasPaidPlacementTag: v.has_paid_placement_tag || false,
   })));
