@@ -23,7 +23,17 @@ async function loadDashboard() {
   el.textContent = 'Loading dashboard data…';
   retry.style.display = 'none';
   try {
-    var resp = await fetch('/api/dashboard');
+    var controller = new AbortController();
+    var timeout = setTimeout(function(){controller.abort()}, 10000);
+    var resp;
+    try { resp = await fetch('/api/dashboard', {signal: controller.signal}); }
+    catch(e) { resp = null; }
+    clearTimeout(timeout);
+    if (!resp) {
+      el.innerHTML = 'Dashboard data could not be loaded.<br><small>Request timed out. The monitor data is safely stored.</small>';
+      retry.style.display = 'inline-block';
+      return;
+    }
     if (!resp.ok) {
       el.innerHTML = 'Dashboard data could not be loaded.<br><small>The monitor data is safely stored, but the dashboard service did not respond.</small>';
       retry.style.display = 'inline-block';

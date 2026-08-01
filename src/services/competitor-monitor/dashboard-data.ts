@@ -3,7 +3,7 @@
  * Queries Supabase once and returns a unified structure for the dashboard UI.
  */
 
-import { getSupabase } from '../../db/supabase';
+import { getFreshSupabase } from '../../db/supabase';
 
 export interface DashboardData {
   hasData: boolean;
@@ -93,7 +93,7 @@ export async function getDashboardData(filter?: {
   videoType?: 'all' | 'long' | 'short';
   placementType?: string;
 }): Promise<DashboardData> {
-  const db = getSupabase();
+  const db = getFreshSupabase();
   const dateRangeDays = filter?.range === '90d' ? 90 : filter?.range === '7d' ? 7 : 30;
   const since = daysAgoISO(dateRangeDays);
 
