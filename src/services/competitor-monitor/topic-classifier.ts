@@ -183,6 +183,7 @@ ${input.description.slice(0, 1000)}`;
       );
       rawText = response.data?.choices?.[0]?.message?.content?.trim() || '';
     }
+    console.log(`[TopicClassifier] Raw response (first 300): ${rawText.slice(0, 300)}`);
 
     const result = parseAIJson(rawText);
     if (result) {

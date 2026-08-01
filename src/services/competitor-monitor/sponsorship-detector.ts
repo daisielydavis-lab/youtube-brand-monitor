@@ -225,14 +225,20 @@ Output JSON:
         },
       );
       const text = response.data?.choices?.[0]?.message?.content?.trim() || '';
+      console.log(`[SponsorshipDetector] DeepSeek raw (first 300): ${text.slice(0, 300)}`);
       const result = parseAIJson(text);
       if (result) return formatResult(result, preFilter);
+      console.error(`[SponsorshipDetector] JSON parse failed. Raw length: ${text.length}. Full raw: ${text.slice(0, 500)}`);
     }
 
     console.error('[SponsorshipDetector] AI returned no valid result');
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+    const axiosErr = err as { response?: { data?: unknown; status?: number } };
     console.error(`[SponsorshipDetector] AI call failed: ${msg}`);
+    if (axiosErr.response) {
+      console.error(`[SponsorshipDetector] HTTP ${axiosErr.response.status}: ${JSON.stringify(axiosErr.response.data).slice(0, 500)}`);
+    }
   }
 
   // Fallback: use regex pre-filter results
