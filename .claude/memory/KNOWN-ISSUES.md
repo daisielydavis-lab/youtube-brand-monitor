@@ -2,50 +2,45 @@
 name: youtube-monitor-issues
 description: Known issues, debugging status, pending fixes
 type: project
+modified: 2026-08-01T14:15:00Z
 ---
 
 # 已知问题与待修复
 
-## 🔴 当前阻塞：视频未持久化
+## ✅ 已修复
 
-**状态**: 已定位，等 SQL 修复 + 部署
+### 视频不持久化（brand_id NOT NULL）
+- 修复：Supabase SQL `alter column brand_id drop not null`
+- 验证：persisted=342 dbConfirmed=342
 
-**根因**:
-1. `youtube_competitor_videos.brand_id` 有 NOT NULL 约束，保存时 brand_id=null 导致插入失败
-2. 代码未检查 Supabase upsert 返回的 error
-3. 内存计数 ≠ 数据库实际数量，UI 误导
+### AI 分类全部失败
+- 根因：deepseek-v4-flash 未显式关闭 thinking + JSON mode 偶发空 content
+- 修复：统一客户端 `thinking: { type: "disabled" }` + JSON mode 空内容降级重试
+- 验证：5 批全成功，reasoning=0r，已分类 50 条
 
-**修复**（已推送 bb6901c）:
-1. ~~每条 upsert 加 try/catch + error logging~~
-2. ~~保存后从 DB count 验证实际数量~~
-3. ~~persistedCount=0 → scan FAILED，停止 AI~~
-4. ~~添加 persistedCount 到 scanState~~
+### Dashboard 接口超时
+- 根因：getDashboardData() 重型函数卡住
+- 修复：改为内联 handler，单次 Supabase 查询 + Node.js 内存聚合
+- 状态：已推送，待 Railway 部署后验证
 
-**待用户操作**:
-在 Supabase SQL Editor 执行:
-```sql
-alter table public.youtube_competitor_videos alter column brand_id drop not null;
-```
+## 🔴 待处理
 
-## 🟡 AI 分类无结果（已修复，待验证）
+### Dashboard 页面验证
+- Railway 部署 8b8b06f 后刷新首页，验证数据展示
+- 如仍空白，查 Railway Logs 中 `[Dashboard:xxxxx]` 行
 
-**历史**: 早期扫描中 AI 全部返回 no valid result
-**原因**: deepseek-v4-flash 未显式关闭 thinking + JSON mode 偶发空 content
-**修复**: 
-- 统一客户端 thinking.type=disabled
-- JSON mode 空 content 自动降级重试
-- 模型名统一为 deepseek-v4-flash（不再混用 deepseek-chat）
+### 前端 shell 状态
+- 加了 AbortController 10s 超时 + Retry 按钮
+- 需验证：超时后是否正确显示 Retry
 
-## 🟡 YouTube 搜索 429（配额限制）
+## 🟡 低优先级
 
-**现象**: 6 个搜索全部 429
-**原因**: 100 次/天配额用完（早期测试消耗）
-**修复**: 第一个 429 后电路熔断，后续搜索跳过
-**恢复**: 每天太平洋时间午夜重置
+### 搜索配额
+- 今天已用完，明天 15:00 北京时间重置
+- 不影响频道直监
 
-## 下一步
+### 292 条视频待分类
+- `POST /api/monitor/retry-classification?limit=50` 可继续处理
 
-1. 用户在 Supabase 修 brand_id 约束
-2. Railway 部署 bb6901c
-3. 重新 Run First Scan — 验证视频持久化 + AI 分类
-4. 第一次成功后建立基础数据
+### DB 索引
+- `supabase-migration-indexes.sql` 待执行
