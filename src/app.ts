@@ -8,7 +8,7 @@
 import express from 'express';
 import cron from 'node-cron';
 import { config, validateConfig } from './config';
-import { runDiscoveryPipeline, getMonitorStatus, scanState } from './services/competitor-monitor';
+import { runDiscoveryPipeline, getMonitorStatus, scanState, retryClassification } from './services/competitor-monitor';
 import { detectCampaigns, getCampaigns } from './services/competitor-monitor/campaign-detector';
 import { generateDailyReport, generateWeeklyReport } from './services/competitor-monitor/competitor-report';
 import { getDashboardData } from './services/competitor-monitor/dashboard-data';
@@ -104,6 +104,13 @@ app.post('/api/hotspot/start', async (req, res) => {
     hotspot_active_until: until, hotspot_started_at: new Date().toISOString(), updated_at: new Date().toISOString(),
   }).eq('id', 1);
   res.json({ success: true, activeUntil: until });
+});
+
+// ── Retry AI Classification (no search, no channel scan) ──
+app.post('/api/monitor/retry-classification', async (_req, res) => {
+  if (scanState.running) return res.json({ success: false, error: 'Scan already running' });
+  res.json({ success: true, message: 'Retry classification started' });
+  try { await retryClassification(); } catch (err) { console.error('[Retry] Failed:', (err as Error).message); }
 });
 
 app.post('/api/hotspot/stop', async (_req, res) => {

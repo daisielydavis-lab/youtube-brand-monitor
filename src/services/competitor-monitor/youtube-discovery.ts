@@ -109,8 +109,15 @@ export async function searchVideos(
       discoveryMethod: 'keyword_search' as const,
     }));
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[YouTube] search failed for "${query.queryText}": ${msg}`);
+    const ae = err as { response?: { status?: number; data?: any; headers?: any } };
+    const status = ae.response?.status;
+    const data = ae.response?.data;
+    const reason = data?.error?.errors?.[0]?.reason || data?.error?.message || 'unknown';
+    const retryAfter = ae.response?.headers?.['retry-after'];
+    console.error(`[YouTube] search ${status||'ERR'} for "${query.queryText}": reason=${reason} retryAfter=${retryAfter||'none'} body=${JSON.stringify(data).slice(0,400)}`);
+    if (status === 429 || status === 403 || reason === 'quotaExceeded' || reason === 'rateLimitExceeded') {
+      throw new Error(`YT_QUOTA_EXHAUSTED:${reason}`);
+    }
     return [];
   }
 }
