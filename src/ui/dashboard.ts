@@ -167,23 +167,27 @@ function emptyState(sys: any): string {
   const sqPct = Math.round((sys.searchQuotaUsed||0)/100*100);
   const gqPct = Math.round((sys.generalQuotaUsed||0)/10000*100);
   const quotaColor = (pct: number) => pct>=95?'#ef4444':pct>=85?'#f59e0b':pct>=70?'#f97316':'#22c55e';
-  // Quota reset: midnight Pacific = 07:00 UTC = 15:00 Beijing
+  // Quota reset: midnight Pacific = 07:00 UTC
   const nextReset = new Date(); nextReset.setUTCHours(7,0,0,0);
   if (nextReset <= new Date()) nextReset.setDate(nextReset.getDate()+1);
-  const resetStr = nextReset.toLocaleString('en-US', {hour:'numeric',minute:'2-digit',timeZoneName:'short'});
+  const resetLocal = nextReset.toLocaleString('en-US', {hour:'numeric',minute:'2-digit',timeZoneName:'short'});
+  const resetBeijing = new Date(nextReset.getTime() + 8*3600000).toLocaleString('en-US', {hour:'numeric',minute:'2-digit'});
+  const creatorCount = sys.totalCreators||0;
+  const estChGeneral = Math.ceil(creatorCount/50) + creatorCount; // channels.list batch + playlistItems per channel
 
   return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Competitor Monitor</title><style>${CSS}</style></head><body>
 <div class="container">
 <header><div><h1>📊 YouTube Competitor Monitor</h1><p class="sub">GearUP · ExitLag · LagZapper</p></div>
-<div class="sys"><span class="dot ${(sys.searchQuotaUsed||0)>70?'warn':'ok'}">Search: ${sys.searchQuotaUsed||0}/100</span><span>General: ${sys.generalQuotaUsed||0}/10K</span></div></header>
+<div class="sys"><span class="dot ${sqPct>70?'warn':'ok'}" title="App-tracked usage">Search: ${sys.searchQuotaUsed||0}/100</span><span>General: ${sys.generalQuotaUsed||0}/10K</span></div></header>
 
 <div class="onboard">
-<h2>No monitoring data yet</h2>
-<p>Your monitor is configured and ready to run.</p>
+<h2>No scan results yet</h2>
+<p>Your monitor is configured and ready for its first discovery scan.</p>
+
 <div class="config-summary">
   <div class="cs-row"><span>Brands</span><span>3</span></div>
   <div class="cs-row"><span>Discovery queries</span><span>6</span></div>
-  <div class="cs-row"><span>Creator watchlist</span><span>${sys.totalCreators||0}</span></div>
+  <div class="cs-row"><span>Creator watchlist</span><span>${creatorCount} channels</span></div>
   <div class="cs-row"><span>Markets</span><span>Global</span></div>
   <div class="cs-row"><span>Languages</span><span>All</span></div>
   <div class="cs-row"><span>Scan mode</span><span>Normal</span></div>
@@ -191,9 +195,8 @@ function emptyState(sys: any): string {
 
 <div class="checklist">
   <div class="cl-item done">YouTube API connected</div>
-  <div class="cl-item done">3 competitor brands configured</div>
-  <div class="cl-item done">6 discovery queries configured</div>
-  <div class="cl-item pending">First scan pending</div>
+  <div class="cl-item done">Creator monitoring enabled</div>
+  <div class="cl-item pending">First discovery scan pending</div>
 </div>
 
 <div class="scan-config" id="scan-config">
@@ -207,22 +210,24 @@ function emptyState(sys: any): string {
   </div>
   <div class="sc-estimate">
     <span>Estimated usage</span>
-    <span><strong id="est-calls">6</strong> search calls · Up to <strong id="est-videos">300</strong> candidate videos</span>
+    <div>
+      <div><strong id="est-search">6</strong> Search calls</div>
+      <div><strong id="est-general">~${estChGeneral}</strong> General API reads</div>
+      <div>Up to <strong id="est-videos">300</strong> raw results</div>
+    </div>
   </div>
+  <div class="sc-note">Latest 50 results per query · Deduplicated after discovery${creatorCount>0?'<br>Creator uploads checked without using Search quota':''}</div>
   <button onclick="startFirstScan()" class="btn-p" id="scan-btn">🔍 Run First Scan</button>
+  <div class="sc-note" style="margin-top:6px;font-size:11px;color:#475569">ⓘ Quota values are app-tracked. Google Cloud Console may have slight delay.</div>
 </div>
 
 <div id="scan-progress" class="scan-progress" style="display:none">
-  <h3>Running initial scan</h3>
-  <div class="sp-steps">
-    <div class="sp-step active" id="sp-discovery">Discovering videos...</div>
-    <div class="sp-step" id="sp-enrich">Enriching data...</div>
-    <div class="sp-step" id="sp-classify">AI classification...</div>
-    <div class="sp-step" id="sp-save">Saving results...</div>
-  </div>
-  <div class="sp-bar"><div class="sp-bar-fill" id="sp-bar" style="width:0%"></div></div>
+  <h3>Running first scan…</h3>
+  <div class="sp-status" id="sp-status"></div>
+  <div class="sp-bar"><div class="sp-bar-fill" id="sp-bar" style="width:5%"></div></div>
   <div class="sp-stats" id="sp-stats"></div>
   <div id="sp-result"></div>
+  <button id="sp-abort" onclick="location.reload()" style="display:none;margin-top:12px;background:transparent;color:#64748b;border:1px solid #334155;padding:6px 12px;border-radius:4px;cursor:pointer;font-size:12px">Abort</button>
 </div>
 
 <div class="quota-section">
@@ -236,46 +241,56 @@ function emptyState(sys: any): string {
     <span class="q-num">${sys.generalQuotaUsed||0} / 10,000</span>
     <div class="q-bar"><div class="q-fill" style="width:${gqPct}%;background:${quotaColor(gqPct)}"></div></div>
   </div>
-  <div class="q-reset">Next quota reset: ${resetStr}</div>
+  <div class="q-reset">Next reset: Today, ${resetBeijing} Beijing Time <span title="7:00 AM UTC · Google quota resets at midnight Pacific">ⓘ</span></div>
 </div>
 </div>
 
 <script>
+const CREATOR_COUNT = ${creatorCount};
 async function startFirstScan() {
   const days = document.getElementById('scan-days').value;
-  document.getElementById('scan-config').style.display='none';
-  document.getElementById('scan-progress').style.display='block';
-  document.getElementById('scan-btn').style.display='none';
+  const btn = document.getElementById('scan-btn');
+  btn.textContent = 'Scanning…'; btn.disabled = true; btn.style.opacity = '0.6';
+  document.getElementById('scan-config').style.display = 'none';
+  document.getElementById('scan-progress').style.display = 'block';
 
   fetch('/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:'manual',backfillDays:parseInt(days)})})
     .then(r=>r.json()).then(d=>{ if(!d.success) document.getElementById('sp-result').innerHTML='<p style="color:#ef4444">❌ '+d.error+'</p>'; });
-
   pollProgress();
 }
 function pollProgress() {
   fetch('/api/scan-status').then(r=>r.json()).then(s=>{
-    const pct = s.done ? 100 : s.videosNew>0 && s.errors.length===0 ? 60 : s.videosNew>0 ? 30 : 10;
+    var pct = s.done?100:s.videosNew>0?50:15;
     document.getElementById('sp-bar').style.width = pct+'%';
-    if (s.videosFound>0) document.getElementById('sp-discovery').className='sp-step done';
-    if (s.videosNew>0) {
-      document.getElementById('sp-discovery').textContent = 'Found '+s.videosFound+' videos';
-      document.getElementById('sp-stats').innerHTML = '<span>Videos discovered: <b>'+s.videosFound+'</b></span> <span>New: <b>'+s.videosNew+'</b></span> <span>Search quota: <b>'+s.searchQuotaUsed+'/100</b></span>';
+    if (s.running) {
+      var parts = [];
+      if (s.searchQuotaUsed>0) parts.push('Brand queries: <b>'+s.searchQuotaUsed+' / 6</b>');
+      if (CREATOR_COUNT>0) parts.push('Creator channels: scanning ' + CREATOR_COUNT);
+      if (s.videosFound>0) parts.push('Videos discovered: <b>'+s.videosFound+'</b>');
+      if (s.videosNew>0) parts.push('Unique: <b>'+s.videosNew+'</b>');
+      document.getElementById('sp-status').innerHTML = parts.length ? parts.join('<br>') : 'Starting…';
+      document.getElementById('sp-stats').innerHTML = s.errors.length ? '<span style="color:#f59e0b">⚠️ '+s.errors.join(', ')+'</span>' : '';
     }
     if (s.done) {
-      document.querySelectorAll('.sp-step').forEach(e=>{e.className='sp-step done'});
-      document.getElementById('sp-stats').innerHTML='';
-      document.getElementById('sp-result').innerHTML = '<div class="scan-done"><h3>✅ Scan complete</h3><p>'+s.videosNew+' new videos discovered</p><a href="/" class="btn-p">View Results</a></div>';
+      document.getElementById('sp-bar').style.width='100%';
+      document.getElementById('sp-status').innerHTML = '';
+      document.getElementById('sp-abort').style.display='none';
+      if (s.videosNew>0) {
+        document.getElementById('sp-result').innerHTML = '<div class="scan-done"><h3>✅ First scan complete</h3><p>'+s.videosNew+' videos discovered</p><a href="/" class="btn-p">View Results</a></div>';
+      } else {
+        document.getElementById('sp-result').innerHTML = '<div class="scan-done"><h3>⚠️ Scan finished</h3><p>No new videos found in selected window. Try a wider date range or check quota.</p><a href="/" class="btn-p">Return to Dashboard</a></div>';
+      }
       return;
     }
-    if (s.errors.length) document.getElementById('sp-stats').innerHTML += '<br><span style="color:#f59e0b">⚠️ '+s.errors.join(', ')+'</span>';
     setTimeout(pollProgress, 2000);
   }).catch(()=>setTimeout(pollProgress, 3000));
 }
-// Live quota update for estimate
 document.getElementById('scan-days').addEventListener('change', function(){
   var d = parseInt(this.value);
-  document.getElementById('est-calls').textContent = d <= 7 ? '6' : d <= 30 ? '12' : '24';
-  document.getElementById('est-videos').textContent = d <= 7 ? '300' : d <= 30 ? '600' : '1200';
+  var searches = d<=7?6:d<=30?12:24;
+  document.getElementById('est-search').textContent = searches;
+  document.getElementById('est-videos').textContent = d<=7?300:d<=30?600:1200;
+  document.getElementById('est-general').textContent = '~'+CREATOR_COUNT+'–'+(Math.ceil(CREATOR_COUNT/50)+CREATOR_COUNT);
 });
 </script>
 </div></body></html>`;
