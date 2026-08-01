@@ -107,10 +107,12 @@ app.post('/api/hotspot/start', async (req, res) => {
 });
 
 // ── Retry AI Classification (no search, no channel scan) ──
-app.post('/api/monitor/retry-classification', async (_req, res) => {
+// GET: browser-friendly. POST: JSON. Query param: ?limit=N (default 50)
+app.all('/api/monitor/retry-classification', async (req, res) => {
   if (scanState.running) return res.json({ success: false, error: 'Scan already running' });
-  res.json({ success: true, message: 'Retry classification started' });
-  try { await retryClassification(); } catch (err) { console.error('[Retry] Failed:', (err as Error).message); }
+  const limit = parseInt((req.query?.limit as string) || (req.body?.limit) || '50', 10);
+  res.json({ success: true, message: `Retry classification started (limit=${limit})` });
+  try { await retryClassification(limit); } catch (err) { console.error('[Retry] Failed:', (err as Error).message); }
 });
 
 app.post('/api/hotspot/stop', async (_req, res) => {

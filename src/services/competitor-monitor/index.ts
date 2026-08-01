@@ -239,9 +239,9 @@ export async function runDiscoveryPipeline(options?: {
 }
 
 // ── Retry classification (AI only) ──
-export async function retryClassification(): Promise<{ classified: number }> {
+export async function retryClassification(limit: number = MAX_AI_PER_SCAN): Promise<{ classified: number }> {
   const db = getSupabase();
-  const { data: pending } = await db.from('youtube_competitor_videos').select('*').eq('workflow_status', 'discovered').is('placement_type', null).order('first_seen_at', { ascending: false }).limit(MAX_AI_PER_SCAN);
+  const { data: pending } = await db.from('youtube_competitor_videos').select('*').eq('workflow_status', 'discovered').is('placement_type', null).order('first_seen_at', { ascending: false }).limit(limit);
   if (!pending?.length) return { classified: 0 };
   resetState('retry');
   scanState.selectedForAI = pending.length;
