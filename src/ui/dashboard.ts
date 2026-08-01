@@ -190,7 +190,7 @@ function emptyState(sys: any): string {
 
     <div class="metrics-row">
       <div class="metric-block"><div class="metric-val">3</div><div class="metric-lbl">Brands</div></div>
-      <div class="metric-block"><div class="metric-val">${creatorCount}</div><div class="metric-lbl">Creators</div></div>
+      <div class="metric-block"><div class="metric-val">${creatorCount}</div><div class="metric-lbl">Tracked Creators</div></div>
       <div class="metric-block"><div class="metric-val">6</div><div class="metric-lbl">Queries</div></div>
     </div>
 
@@ -216,6 +216,7 @@ function emptyState(sys: any): string {
         </select>
       </div>
 
+      <div class="scan-usage-title">Estimated API Usage</div>
       <div class="usage-row">
         <div class="usage-block"><div class="usage-val" id="est-search">6</div><div class="usage-lbl">Search Calls</div></div>
         <div class="usage-block"><div class="usage-val" id="est-general">~${estGeneral}</div><div class="usage-lbl">General Reads</div></div>
@@ -441,7 +442,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .logo-icon{font-size:16px;color:#3568E8}.logo-text{font-size:13px;font-weight:700;color:#6F7D96;text-transform:uppercase;letter-spacing:0.5px}
 .page-title{font-size:30px;line-height:38px;font-weight:750;color:#14213D;margin-bottom:4px}
 .page-subtitle{font-size:15px;color:#5F6F89}
-.settings-link{font-size:14px;color:#6F7D96;text-decoration:none;padding:8px 16px;border:1px solid #D9E2F0;border-radius:8px;background:#fff}
+.settings-link{font-size:14px;color:#6F7D96;text-decoration:none;padding:8px 16px;border:1px solid #D9E2F0;border-radius:8px;background:#fff;flex-shrink:0;margin-right:0}
 .settings-link:hover{color:#3568E8;border-color:#C9D9FF}
 /* Card */
 .card{max-width:860px;margin:0 auto;background:#FFFFFF;border:1px solid #D9E2F0;border-radius:20px;padding:44px 48px;box-shadow:0 18px 50px rgba(28,48,82,0.08),0 2px 8px rgba(28,48,82,0.04)}
@@ -469,6 +470,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .usage-block{flex:1;background:#FFFFFF;border:1px solid #D6E1F7;border-radius:10px;padding:14px 16px;text-align:center}
 .usage-val{font-size:20px;font-weight:750;color:#1F478F;line-height:26px}
 .usage-lbl{font-size:13px;color:#687790;margin-top:2px}
+.scan-usage-title{font-size:14px;font-weight:600;color:#46546C;margin-bottom:10px}
 .scan-info{font-size:14px;line-height:21px;color:#6F7D96;margin-bottom:20px;padding:10px 14px;background:#FFFFFF;border:1px solid #D6E1F7;border-radius:8px}
 .btn-primary{display:block;width:100%;height:54px;background:#3568E8;color:#FFFFFF;border:none;border-radius:10px;font-size:17px;font-weight:700;cursor:pointer;box-shadow:0 8px 18px rgba(53,104,232,0.22);transition:background 0.15s;margin-top:4px}
 .btn-primary:hover{background:#2857CF}.btn-primary:active{background:#214BB7}
@@ -478,7 +480,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .scan-progress-title{font-size:17px;font-weight:700;color:#14213D;margin-bottom:14px}
 .sp-status{font-size:15px;line-height:24px;color:#46546C;margin-bottom:12px}
 .sp-status b{color:#14213D}
-.sp-bar{height:8px;background:#E6EBF3;border-radius:999px;overflow:hidden;margin-bottom:12px}
+.sp-bar{height:8px;background:#DDE5F0;border-radius:999px;overflow:hidden;margin-bottom:12px}
 .sp-bar-fill{height:100%;background:#4777EC;border-radius:999px;transition:width 0.5s}
 .sp-stats{font-size:14px;color:#6F7D96;margin-bottom:12px}
 .sp-err{color:#E89417}
@@ -490,7 +492,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .quota-title{font-size:17px;font-weight:700;color:#263652;margin-bottom:16px}
 .q-row{display:flex;align-items:center;gap:12px;margin-bottom:12px;font-size:14px}
 .q-label{color:#46546C;width:150px;flex-shrink:0}.q-num{color:#6F7D96;width:100px;flex-shrink:0}.q-pct{color:#6F7D96;width:36px;flex-shrink:0;font-size:13px}
-.q-bar{flex:1;height:8px;background:#E6EBF3;border-radius:999px;overflow:hidden}
+.q-bar{flex:1;height:8px;background:#DDE5F0;border-radius:999px;overflow:hidden}
 .q-fill{height:100%;border-radius:999px;transition:width 0.5s}
 .q-reset{font-size:14px;color:#66758D;margin-top:10px}
 `;
