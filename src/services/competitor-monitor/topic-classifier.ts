@@ -142,7 +142,7 @@ TAGS: ${input.tags.join(', ')}
 DESCRIPTION (first 1000 chars):
 ${input.description.slice(0, 1000)}`;
 
-  const model = config.gemini.apiKey ? 'gemini-2.0-flash' : 'deepseek-v4-flash';
+  const model = config.gemini.apiKey ? 'gemini-2.0-flash' : 'deepseek-chat';
   const isGemini = model.startsWith('gemini');
 
   try {
@@ -245,7 +245,7 @@ Output JSON array — one object per comment, in order.`;
 
   const userPrompt = `Classify these comments for brand "${brandName}":\n\n${commentsList}\n\nOutput: [{"commentId":"...", "hasPurchaseIntent": true/false, "isBrandRelated": true/false, "sentiment": "positive|neutral|negative", "commentCategory": "question|feedback|complaint|praise|spam"}, ...]`;
 
-  const model = config.gemini.apiKey ? 'gemini-2.0-flash' : 'deepseek-v4-flash';
+  const model = config.gemini.apiKey ? 'gemini-2.0-flash' : 'deepseek-chat';
   const isGemini = model.startsWith('gemini');
 
   try {
