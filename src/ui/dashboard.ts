@@ -166,134 +166,144 @@ switchTab(savedTab);
 function emptyState(sys: any): string {
   const sqPct = Math.round((sys.searchQuotaUsed||0)/100*100);
   const gqPct = Math.round((sys.generalQuotaUsed||0)/10000*100);
-  const quotaColor = (pct: number) => pct>=90?'#EF5B5B':pct>=70?'#F59E0B':'#4B7BF5';
-  // Quota reset: midnight Pacific = 07:00 UTC
+  const quotaColor = (pct: number) => pct>=95?'#DC4C4C':pct>=85?'#E89417':pct>=70?'#E89417':'#4777EC';
   const nextReset = new Date(); nextReset.setUTCHours(7,0,0,0);
   if (nextReset <= new Date()) nextReset.setDate(nextReset.getDate()+1);
-  const resetLocal = nextReset.toLocaleString('en-US', {hour:'numeric',minute:'2-digit',timeZoneName:'short'});
   const resetBeijing = new Date(nextReset.getTime() + 8*3600000).toLocaleString('en-US', {hour:'numeric',minute:'2-digit'});
   const creatorCount = sys.totalCreators||0;
-  const estChGeneral = Math.ceil(creatorCount/50) + creatorCount; // channels.list batch + playlistItems per channel
+  const estGeneral = Math.ceil(creatorCount/50) + creatorCount;
 
-  return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Competitor Monitor</title><style>${CSS}</style></head><body>
-<div class="container">
-<header><div><h1>📊 YouTube Competitor Monitor</h1><p class="sub">GearUP · ExitLag · LagZapper</p></div>
-<div class="sys"><span class="dot ${sqPct>70?'warn':'ok'}" title="App-tracked usage">Search: ${sys.searchQuotaUsed||0}/100</span><span>General: ${sys.generalQuotaUsed||0}/10K</span></div></header>
-
-<div class="onboard">
-<h2>No scan results yet</h2>
-<p>Your monitor is configured and ready for its first discovery scan.</p>
-
-<div class="config-summary">
-  <div class="cs-row"><span>Brands</span><span>3</span></div>
-  <div class="cs-row"><span>Discovery queries</span><span>6</span></div>
-  <div class="cs-row"><span>Creator watchlist</span><span>${creatorCount} channels</span></div>
-  <div class="cs-row"><span>Markets</span><span>Global</span></div>
-  <div class="cs-row"><span>Languages</span><span>All</span></div>
-  <div class="cs-row"><span>Scan mode</span><span>Normal</span></div>
-</div>
-
-<div class="checklist">
-  <div class="cl-item done">YouTube API connected</div>
-  <div class="cl-item done">Creator monitoring enabled</div>
-  <div class="cl-item pending">First discovery scan pending</div>
-</div>
-
-<div class="scan-config" id="scan-config">
-  <div class="sc-row">
-    <span class="sc-label">Scan window</span>
-    <select id="scan-days" class="sc-select">
-      <option value="7">Past 7 days</option>
-      <option value="30" selected>Past 30 days</option>
-      <option value="60">Past 60 days</option>
-    </select>
-  </div>
-  <div class="sc-estimate">
-    <span>Estimated usage</span>
+  return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Competitor Monitor</title><style>${EMPTY_CSS}</style></head><body>
+<div class="page">
+  <header class="topbar">
     <div>
-      <div><strong id="est-search">6</strong> Search calls</div>
-      <div><strong id="est-general">~${estChGeneral}</strong> General API reads</div>
-      <div>Up to <strong id="est-videos">300</strong> raw results</div>
+      <div class="logo-row"><span class="logo-icon">◈</span><span class="logo-text">Monitor</span></div>
+      <h1 class="page-title">YouTube Competitor Monitor</h1>
+      <p class="page-subtitle">GearUP · ExitLag · LagZapper</p>
     </div>
-  </div>
-  <div class="sc-note">Latest 50 results per query · Deduplicated after discovery${creatorCount>0?'<br>Creator uploads checked without using Search quota':''}</div>
-  <button onclick="startFirstScan()" class="btn-p" id="scan-btn">🔍 Run First Scan</button>
-  <div class="sc-note" style="margin-top:6px;font-size:11px;color:#475569">ⓘ Quota values are app-tracked. Google Cloud Console may have slight delay.</div>
-</div>
+    <a class="settings-link" href="/system">Settings</a>
+  </header>
 
-<div id="scan-progress" class="scan-progress" style="display:none">
-  <h3>Running first scan…</h3>
-  <div class="sp-status" id="sp-status"></div>
-  <div class="sp-bar"><div class="sp-bar-fill" id="sp-bar" style="width:5%"></div></div>
-  <div class="sp-stats" id="sp-stats"></div>
-  <div id="sp-result"></div>
-  <button id="sp-abort" onclick="location.reload()" style="display:none;margin-top:12px;background:transparent;color:#64748b;border:1px solid #334155;padding:6px 12px;border-radius:4px;cursor:pointer;font-size:12px">Abort</button>
-</div>
+  <main class="card" id="main-card">
+    <h2 class="card-title">No scan results yet</h2>
+    <p class="card-desc">Your monitor is ready for its first discovery scan.</p>
 
-<div class="quota-section">
-  <div class="q-row">
-    <span class="q-label">Search discovery</span>
-    <span class="q-num">${sys.searchQuotaUsed||0} / 100</span>
-    <div class="q-bar"><div class="q-fill" style="width:${sqPct}%;background:${quotaColor(sqPct)}"></div></div>
-  </div>
-  <div class="q-row">
-    <span class="q-label">General data reads</span>
-    <span class="q-num">${sys.generalQuotaUsed||0} / 10,000</span>
-    <div class="q-bar"><div class="q-fill" style="width:${gqPct}%;background:${quotaColor(gqPct)}"></div></div>
-  </div>
-  <div class="q-reset">Next reset: Today, ${resetBeijing} Beijing Time <span title="7:00 AM UTC · Google quota resets at midnight Pacific">ⓘ</span></div>
-</div>
+    <div class="metrics-row">
+      <div class="metric-block"><div class="metric-val">3</div><div class="metric-lbl">Brands</div></div>
+      <div class="metric-block"><div class="metric-val">${creatorCount}</div><div class="metric-lbl">Creators</div></div>
+      <div class="metric-block"><div class="metric-val">6</div><div class="metric-lbl">Queries</div></div>
+    </div>
+
+    <div class="meta-row">
+      <span class="chip">Global</span>
+      <span class="chip">All Languages</span>
+      <span class="chip">Normal Mode</span>
+    </div>
+
+    <div class="status-row">
+      <span class="status-item done">API Connected</span>
+      <span class="status-item done">Creator Monitoring</span>
+      <span class="status-item pending">First Scan Pending</span>
+    </div>
+
+    <div class="scan-panel" id="scan-config">
+      <div class="scan-header">
+        <span class="scan-title">Initial Discovery Scan</span>
+        <select id="scan-days" class="scan-select">
+          <option value="7">Past 7 days</option>
+          <option value="30" selected>Past 30 days</option>
+          <option value="60">Past 60 days</option>
+        </select>
+      </div>
+
+      <div class="usage-row">
+        <div class="usage-block"><div class="usage-val" id="est-search">6</div><div class="usage-lbl">Search Calls</div></div>
+        <div class="usage-block"><div class="usage-val" id="est-general">~${estGeneral}</div><div class="usage-lbl">General Reads</div></div>
+        <div class="usage-block"><div class="usage-val" id="est-videos">300</div><div class="usage-lbl">Max Results</div></div>
+      </div>
+
+      <div class="scan-info">
+        ⓘ Latest 50 results per query. Results are deduplicated by video ID.${creatorCount>0?'<br>Creator uploads use General quota instead of Search quota.':''}
+      </div>
+
+      <button onclick="startFirstScan()" class="btn-primary" id="scan-btn">Run First Scan</button>
+    </div>
+
+    <div id="scan-progress" class="scan-progress" style="display:none">
+      <h3 class="scan-progress-title">Running first scan…</h3>
+      <div class="sp-status" id="sp-status"></div>
+      <div class="sp-bar"><div class="sp-bar-fill" id="sp-bar" style="width:5%"></div></div>
+      <div class="sp-stats" id="sp-stats"></div>
+      <div id="sp-result"></div>
+    </div>
+
+    <div class="quota-section">
+      <h3 class="quota-title">Today's API Usage</h3>
+      <div class="q-row">
+        <span class="q-label">Search discovery</span>
+        <span class="q-num">${sys.searchQuotaUsed||0} / 100</span>
+        <span class="q-pct">${sqPct}%</span>
+        <div class="q-bar"><div class="q-fill" style="width:${sqPct}%;background:${quotaColor(sqPct)}"></div></div>
+      </div>
+      <div class="q-row">
+        <span class="q-label">General data reads</span>
+        <span class="q-num">${sys.generalQuotaUsed||0} / 10,000</span>
+        <span class="q-pct">${gqPct}%</span>
+        <div class="q-bar"><div class="q-fill" style="width:${gqPct}%;background:${quotaColor(gqPct)}"></div></div>
+      </div>
+      <div class="q-reset">Next reset: Today at ${resetBeijing} Beijing Time <span title="7:00 AM UTC" style="cursor:help">ⓘ</span></div>
+    </div>
+  </main>
 </div>
 
 <script>
 const CREATOR_COUNT = ${creatorCount};
+const EST_GENERAL = ${estGeneral};
 async function startFirstScan() {
-  const days = document.getElementById('scan-days').value;
-  const btn = document.getElementById('scan-btn');
-  btn.textContent = 'Scanning…'; btn.disabled = true; btn.style.opacity = '0.6';
+  var days = document.getElementById('scan-days').value;
+  var btn = document.getElementById('scan-btn');
+  btn.textContent = 'Scanning…'; btn.disabled = true; btn.style.opacity = '0.6'; btn.style.cursor = 'default';
   document.getElementById('scan-config').style.display = 'none';
   document.getElementById('scan-progress').style.display = 'block';
-
   fetch('/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:'manual',backfillDays:parseInt(days)})})
-    .then(r=>r.json()).then(d=>{ if(!d.success) document.getElementById('sp-result').innerHTML='<p style="color:#ef4444">❌ '+d.error+'</p>'; });
+    .then(function(r){return r.json()}).then(function(d){if(!d.success)document.getElementById('sp-result').innerHTML='<p style="color:#DC4C4C">❌ '+d.error+'</p>'});
   pollProgress();
 }
 function pollProgress() {
-  fetch('/api/scan-status').then(r=>r.json()).then(s=>{
+  fetch('/api/scan-status').then(function(r){return r.json()}).then(function(s){
     var pct = s.done?100:s.videosNew>0?50:15;
     document.getElementById('sp-bar').style.width = pct+'%';
-    if (s.running) {
+    if(s.running){
       var parts = [];
-      if (s.searchQuotaUsed>0) parts.push('Brand queries: <b>'+s.searchQuotaUsed+' / 6</b>');
-      if (CREATOR_COUNT>0) parts.push('Creator channels: scanning ' + CREATOR_COUNT);
-      if (s.videosFound>0) parts.push('Videos discovered: <b>'+s.videosFound+'</b>');
-      if (s.videosNew>0) parts.push('Unique: <b>'+s.videosNew+'</b>');
-      document.getElementById('sp-status').innerHTML = parts.length ? parts.join('<br>') : 'Starting…';
-      document.getElementById('sp-stats').innerHTML = s.errors.length ? '<span style="color:#f59e0b">⚠️ '+s.errors.join(', ')+'</span>' : '';
+      if(s.searchQuotaUsed>0) parts.push('Brand queries: <b>'+s.searchQuotaUsed+' / 6</b>');
+      if(CREATOR_COUNT>0) parts.push('Creator channels: '+CREATOR_COUNT);
+      if(s.videosFound>0) parts.push('Videos discovered: <b>'+s.videosFound+'</b>');
+      if(s.videosNew>0) parts.push('New: <b>'+s.videosNew+'</b>');
+      document.getElementById('sp-status').innerHTML = parts.length?parts.join('<br>'):'Starting…';
+      document.getElementById('sp-stats').innerHTML = s.errors.length?'<span class="sp-err">⚠️ '+s.errors.join(', ')+'</span>':'';
     }
-    if (s.done) {
+    if(s.done){
       document.getElementById('sp-bar').style.width='100%';
-      document.getElementById('sp-status').innerHTML = '';
-      document.getElementById('sp-abort').style.display='none';
-      if (s.videosNew>0) {
-        document.getElementById('sp-result').innerHTML = '<div class="scan-done"><h3>✅ First scan complete</h3><p>'+s.videosNew+' videos discovered</p><a href="/" class="btn-p">View Results</a></div>';
+      document.getElementById('sp-status').innerHTML='';
+      if(s.videosNew>0){
+        document.getElementById('sp-result').innerHTML='<div class="scan-done"><h3 class="scan-done-title">✅ First scan complete</h3><p class="scan-done-desc">'+s.videosNew+' videos discovered</p><a href="/" class="btn-primary" style="display:inline-block;width:auto;padding:12px 32px">View Results</a></div>';
       } else {
-        document.getElementById('sp-result').innerHTML = '<div class="scan-done"><h3>⚠️ Scan finished</h3><p>No new videos found in selected window. Try a wider date range or check quota.</p><a href="/" class="btn-p">Return to Dashboard</a></div>';
+        document.getElementById('sp-result').innerHTML='<div class="scan-done"><h3 class="scan-done-title">⚠️ Scan finished</h3><p class="scan-done-desc">No new videos found. Try a wider date range or check quota.</p><a href="/" class="btn-primary" style="display:inline-block;width:auto;padding:12px 32px">Return to Dashboard</a></div>';
       }
       return;
     }
-    setTimeout(pollProgress, 2000);
-  }).catch(()=>setTimeout(pollProgress, 3000));
+    setTimeout(pollProgress,2000);
+  }).catch(function(){setTimeout(pollProgress,3000)});
 }
-document.getElementById('scan-days').addEventListener('change', function(){
+document.getElementById('scan-days').addEventListener('change',function(){
   var d = parseInt(this.value);
   var searches = d<=7?6:d<=30?12:24;
   document.getElementById('est-search').textContent = searches;
   document.getElementById('est-videos').textContent = d<=7?300:d<=30?600:1200;
-  document.getElementById('est-general').textContent = '~'+CREATOR_COUNT+'–'+(Math.ceil(CREATOR_COUNT/50)+CREATOR_COUNT);
+  document.getElementById('est-general').textContent = '~'+EST_GENERAL;
 });
 </script>
-</div></body></html>`;
+</body></html>`;
 }
 
 function fmtTopic(t: string): string {
@@ -420,4 +430,67 @@ h1{font-size:22px;color:#172033}h2{font-size:15px;color:#4B5870;margin:20px 0 10
 .btn-p:hover{background:#2F5DDB}
 .disc{font-size:10px;color:#8490A6;text-align:center;margin-top:24px;padding-top:10px;border-top:1px solid #E3E8F1}
 .toast{position:fixed;bottom:20px;right:20px;background:#FFFFFF;color:#172033;padding:10px 18px;border-radius:8px;border:1px solid #E3E8F1;z-index:100;box-shadow:0 4px 12px rgba(35,50,80,0.1)}
+`;
+
+const EMPTY_CSS = `
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#F3F6FB;color:#46546C;font-size:15px;line-height:1.5}
+.page{max-width:1200px;margin:0 auto;padding:40px 24px 60px}
+.topbar{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:32px}
+.logo-row{display:flex;align-items:center;gap:8px;margin-bottom:4px}
+.logo-icon{font-size:16px;color:#3568E8}.logo-text{font-size:13px;font-weight:700;color:#6F7D96;text-transform:uppercase;letter-spacing:0.5px}
+.page-title{font-size:30px;line-height:38px;font-weight:750;color:#14213D;margin-bottom:4px}
+.page-subtitle{font-size:15px;color:#5F6F89}
+.settings-link{font-size:14px;color:#6F7D96;text-decoration:none;padding:8px 16px;border:1px solid #D9E2F0;border-radius:8px;background:#fff}
+.settings-link:hover{color:#3568E8;border-color:#C9D9FF}
+/* Card */
+.card{max-width:860px;margin:0 auto;background:#FFFFFF;border:1px solid #D9E2F0;border-radius:20px;padding:44px 48px;box-shadow:0 18px 50px rgba(28,48,82,0.08),0 2px 8px rgba(28,48,82,0.04)}
+.card-title{font-size:26px;line-height:34px;font-weight:720;color:#14213D;margin-bottom:6px}
+.card-desc{font-size:16px;line-height:25px;color:#46546C;margin-bottom:28px}
+/* Metrics */
+.metrics-row{display:flex;gap:20px;margin-bottom:20px}
+.metric-block{flex:1;text-align:center;padding:16px 12px;background:#F7F9FC;border:1px solid #E7ECF4;border-radius:12px}
+.metric-val{font-size:24px;font-weight:750;color:#1E3A6D;line-height:30px}
+.metric-lbl{font-size:14px;color:#687790;margin-top:2px}
+/* Chips */
+.meta-row{display:flex;gap:8px;margin-bottom:24px;flex-wrap:wrap}
+.chip{font-size:14px;color:#42516A;background:#FFFFFF;border:1px solid #DEE5F0;border-radius:8px;padding:8px 14px}
+/* Status */
+.status-row{display:flex;gap:28px;flex-wrap:wrap;margin-bottom:28px}
+.status-item{font-size:15px;color:#46546C;display:flex;align-items:center;gap:8px}
+.status-item::before{content:'';width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.status-item.done::before{background:#16A66A}.status-item.pending{color:#74829A}.status-item.pending::before{background:#9AA6B8}
+/* Scan */
+.scan-panel{background:#EEF4FF;border:1px solid #C9D9FF;border-radius:14px;padding:24px;margin-bottom:28px}
+.scan-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px}
+.scan-title{font-size:17px;font-weight:700;color:#14213D}
+.scan-select{background:#FFFFFF;color:#14213D;border:1px solid #C9D9FF;padding:8px 14px;border-radius:8px;font-size:15px;cursor:pointer;font-weight:500}
+.usage-row{display:flex;gap:12px;margin-bottom:14px}
+.usage-block{flex:1;background:#FFFFFF;border:1px solid #D6E1F7;border-radius:10px;padding:14px 16px;text-align:center}
+.usage-val{font-size:20px;font-weight:750;color:#1F478F;line-height:26px}
+.usage-lbl{font-size:13px;color:#687790;margin-top:2px}
+.scan-info{font-size:14px;line-height:21px;color:#6F7D96;margin-bottom:20px;padding:10px 14px;background:#FFFFFF;border:1px solid #D6E1F7;border-radius:8px}
+.btn-primary{display:block;width:100%;height:54px;background:#3568E8;color:#FFFFFF;border:none;border-radius:10px;font-size:17px;font-weight:700;cursor:pointer;box-shadow:0 8px 18px rgba(53,104,232,0.22);transition:background 0.15s;margin-top:4px}
+.btn-primary:hover{background:#2857CF}.btn-primary:active{background:#214BB7}
+.btn-primary:disabled{opacity:0.6;cursor:default}
+/* Progress */
+.scan-progress{margin-bottom:28px}
+.scan-progress-title{font-size:17px;font-weight:700;color:#14213D;margin-bottom:14px}
+.sp-status{font-size:15px;line-height:24px;color:#46546C;margin-bottom:12px}
+.sp-status b{color:#14213D}
+.sp-bar{height:8px;background:#E6EBF3;border-radius:999px;overflow:hidden;margin-bottom:12px}
+.sp-bar-fill{height:100%;background:#4777EC;border-radius:999px;transition:width 0.5s}
+.sp-stats{font-size:14px;color:#6F7D96;margin-bottom:12px}
+.sp-err{color:#E89417}
+.scan-done{text-align:center;padding:20px 0}
+.scan-done-title{font-size:22px;font-weight:720;color:#16A66A;margin-bottom:6px}
+.scan-done-desc{font-size:16px;color:#46546C;margin-bottom:16px}
+/* Quota */
+.quota-section{margin-top:32px;padding-top:24px;border-top:1px solid #E7ECF4}
+.quota-title{font-size:17px;font-weight:700;color:#263652;margin-bottom:16px}
+.q-row{display:flex;align-items:center;gap:12px;margin-bottom:12px;font-size:14px}
+.q-label{color:#46546C;width:150px;flex-shrink:0}.q-num{color:#6F7D96;width:100px;flex-shrink:0}.q-pct{color:#6F7D96;width:36px;flex-shrink:0;font-size:13px}
+.q-bar{flex:1;height:8px;background:#E6EBF3;border-radius:999px;overflow:hidden}
+.q-fill{height:100%;border-radius:999px;transition:width 0.5s}
+.q-reset{font-size:14px;color:#66758D;margin-top:10px}
 `;
