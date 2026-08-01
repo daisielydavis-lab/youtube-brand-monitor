@@ -4,6 +4,54 @@
  */
 import type { DashboardData } from '../services/competitor-monitor/dashboard-data';
 
+/** Shell: renders instantly, no DB access. JS fetches /api/dashboard. */
+export function renderDashboardShell(): string {
+  return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Competitor Monitor</title>
+<style>${SHELL_CSS}</style></head><body>
+<div class="shell">
+  <div class="shell-header"><h1>📊 YouTube Competitor Monitor</h1><p>GearUP · ExitLag · LagZapper</p></div>
+  <div class="shell-card" id="shell-content">
+    <div class="spinner"></div>
+    <p id="shell-status">Loading dashboard data…</p>
+    <button id="shell-retry" onclick="loadDashboard()" style="display:none">Retry</button>
+  </div>
+</div>
+<script>
+async function loadDashboard() {
+  var el = document.getElementById('shell-status');
+  var retry = document.getElementById('shell-retry');
+  el.textContent = 'Loading dashboard data…';
+  retry.style.display = 'none';
+  try {
+    var resp = await fetch('/api/dashboard');
+    if (!resp.ok) {
+      el.innerHTML = 'Dashboard data could not be loaded.<br><small>The monitor data is safely stored, but the dashboard service did not respond.</small>';
+      retry.style.display = 'inline-block';
+      return;
+    }
+    var json = await resp.json();
+    if (json.error) {
+      el.innerHTML = '⚠️ ' + json.error + '<br><small>Your data is safe. Please retry.</small>';
+      retry.style.display = 'inline-block';
+      return;
+    }
+    // Reload with data in URL hash to avoid re-fetch
+    window.jsonData = json;
+    location.reload();
+  } catch(e) {
+    el.textContent = 'Connection failed. Please check your network.';
+    retry.style.display = 'inline-block';
+  }
+}
+// Check if data already loaded
+if (window.jsonData) {
+  document.getElementById('shell-content').innerHTML = '<p>✅ Data loaded — redirecting…</p>';
+  // Will be replaced by full render
+}
+loadDashboard();
+</script></body></html>`;
+}
+
 export function renderDashboard(
   data: DashboardData,
   filter: Record<string, string>,
@@ -502,4 +550,18 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .q-bar{flex:1;height:8px;background:#DDE5F0;border-radius:999px;overflow:hidden}
 .q-fill{height:100%;border-radius:999px;transition:width 0.5s}
 .q-reset{font-size:14px;color:#66758D;margin-top:10px}
+`;
+
+const SHELL_CSS = `
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#F3F6FB;color:#46546C;font-size:15px;line-height:1.5}
+.shell{max-width:860px;margin:60px auto;padding:0 24px}
+.shell-header h1{font-size:28px;color:#14213D}.shell-header p{color:#5F6F89;font-size:14px;margin-top:4px}
+.shell-card{background:#FFFFFF;border:1px solid #D9E2F0;border-radius:20px;padding:60px 48px;text-align:center;margin-top:32px;box-shadow:0 8px 28px rgba(28,48,82,0.06)}
+.spinner{width:40px;height:40px;border:3px solid #E6EBF3;border-top-color:#3568E8;border-radius:50%;animation:spin 0.8s linear infinite;margin:0 auto 16px}
+@keyframes spin{to{transform:rotate(360deg)}}
+#shell-status{font-size:16px;color:#46546C}
+#shell-status small{font-size:13px;color:#8490A6;display:block;margin-top:6px}
+#shell-retry{margin-top:16px;padding:10px 24px;background:#3568E8;color:#fff;border:none;border-radius:8px;font-size:15px;cursor:pointer}
+#shell-retry:hover{background:#2857CF}
 `;

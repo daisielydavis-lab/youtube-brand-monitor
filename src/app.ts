@@ -14,12 +14,17 @@ import { generateDailyReport, generateWeeklyReport } from './services/competitor
 import { getDashboardData } from './services/competitor-monitor/dashboard-data';
 import { getAllCreators } from './services/competitor-monitor/creator-profiler';
 import { getSupabase } from './db/supabase';
-import { renderDashboard } from './ui/dashboard';
+import { renderDashboard, renderDashboardShell } from './ui/dashboard';
 
 const app = express();
 app.use(express.json());
 
-// ── Health ──
+// ── Health (no DB, instant response) ──
+app.get('/healthz', (_req, res) => {
+  res.json({ ok: true, uptime: process.uptime(), timestamp: new Date().toISOString() });
+});
+
+// ── Health (with config check) ──
 app.get('/health', (_req, res) => {
   res.json({ status: validateConfig().length ? 'degraded' : 'healthy', uptime: process.uptime(), scanRunning: scanState.running });
 });
@@ -135,20 +140,34 @@ app.post('/api/videos/:id/action', async (req, res) => {
   res.json({ success: true });
 });
 
-// ── Dashboard ──
-app.get('/', async (req, res) => {
+// ── Dashboard (shell renders immediately, data loaded client-side) ──
+app.get('/', (_req, res) => {
+  res.type('html').send(renderDashboardShell());
+});
+
+// ── API: Dashboard data (pure DB query, no external APIs) ──
+app.get('/api/dashboard', async (req, res) => {
   try {
     const filter = {
       brand: req.query.brand as string, market: req.query.market as string,
       language: req.query.lang as string, range: (req.query.range as string) || '30d',
       videoType: (req.query.type as any) || 'all', placementType: req.query.placement as string,
     };
-    const data = await getDashboardData(filter);
+    const data = await Promise.race([
+      getDashboardData(filter),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('DASHBOARD_TIMEOUT')), 8000)),
+    ]);
     const campaigns = await getCampaigns('active');
     const sysStatus = await getMonitorStatus();
-    const html = renderDashboard(data, filter, campaigns, sysStatus);
-    res.type('html').send(html);
-  } catch (err) { res.status(500).send(`<h1>Error</h1><p>${(err as Error).message}</p>`); }
+    res.json({ data, campaigns, sysStatus });
+  } catch (err) {
+    const msg = (err as Error).message;
+    if (msg === 'DASHBOARD_TIMEOUT') {
+      res.status(503).json({ error: 'Dashboard query timed out. Data is safe — please retry.' });
+    } else {
+      res.status(500).json({ error: msg });
+    }
+  }
 });
 
 // ── Reports ──
@@ -164,8 +183,9 @@ app.get('/report/weekly', async (_req, res) => {
 });
 
 // ── Start ──
-app.listen(config.port, () => {
-  console.log(`[Server] v3 running on port ${config.port}`);
+const PORT = Number(process.env.PORT || config.port || 3001);
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`[Server] Listening on 0.0.0.0:${PORT}`);
   console.log(`[Server] ${validateConfig().length ? '⚠️ Missing config' : '✅ All config present'}`);
 });
 
