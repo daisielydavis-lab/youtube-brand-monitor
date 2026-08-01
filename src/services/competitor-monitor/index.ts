@@ -1,16 +1,15 @@
 /**
- * Competitor Monitor — Two-Phase Pipeline with circuit breaker + true batch AI
+ * Competitor Monitor — Two-Phase Pipeline
+ * Uses unified DeepSeek client (src/services/ai/deepseek-client.ts)
  */
 import { config, validateConfig } from '../../config';
 import { getSupabase } from '../../db/supabase';
 import { getActiveQueries, buildHotspotQueries, BRANDS } from './brand-config';
-import {
-  searchVideos, getChannelsRecentVideos, getChannelsByIds, type YouTubeVideoResult,
-} from './youtube-discovery';
+import { searchVideos, getChannelsRecentVideos, getChannelsByIds, type YouTubeVideoResult } from './youtube-discovery';
 import { fetchVideoComments, hasExistingComments, saveComments } from './video-enrichment';
 import { getOrCreateCreatorProfile } from './creator-profiler';
 import { saveSnapshot } from './performance-snapshot';
-import axios from 'axios';
+import { chatJSON } from '../ai/deepseek-client';
 
 // ── Types ──
 export interface ScanState {
@@ -31,279 +30,104 @@ export let scanState: ScanState = {
   searchQuotaUsed: 0, generalQuotaUsed: 0, errorCode: '', errors: [], startedAt: '', done: false,
 };
 
-let dailySearchUsed = 0; let dailyGeneralUsed = 0;
-let searchCircuitOpen = false;
-
-const AI_BATCH_SIZE = 10;
-const MAX_AI_PER_SCAN = 50;
-const SCAN_TIMEOUT_MS = 10 * 60_000;
-const AI_TIMEOUT_MS = 60_000;
+let dailySearchUsed = 0, dailyGeneralUsed = 0, searchCircuitOpen = false;
+const AI_BATCH_SIZE = 10, MAX_AI_PER_SCAN = 50, SCAN_TIMEOUT_MS = 10 * 60_000;
 
 function trackSearch() { dailySearchUsed++; scanState.searchQuotaUsed = dailySearchUsed; }
 function trackGeneral(n: number) { dailyGeneralUsed += n; scanState.generalQuotaUsed = dailyGeneralUsed; }
 
 function resetState(mode: string) {
   searchCircuitOpen = false;
-  scanState = {
-    running: true, mode, phase: 'discovery', status: 'running',
-    searchQueriesTotal: 0, searchQueriesSucceeded: 0, searchQueriesFailed: 0,
-    creatorChannelsChecked: 0, discoveredFromSearch: 0, discoveredFromCreators: 0, uniqueVideos: 0,
-    selectedForAI: 0, classified: 0, likelyPlacements: 0, queued: 0, failed: 0,
-    searchQuotaUsed: dailySearchUsed, generalQuotaUsed: dailyGeneralUsed,
-    errorCode: '', errors: [], startedAt: new Date().toISOString(), done: false,
-  };
+  scanState = { running: true, mode, phase: 'discovery', status: 'running', searchQueriesTotal: 0, searchQueriesSucceeded: 0, searchQueriesFailed: 0, creatorChannelsChecked: 0, discoveredFromSearch: 0, discoveredFromCreators: 0, uniqueVideos: 0, selectedForAI: 0, classified: 0, likelyPlacements: 0, queued: 0, failed: 0, searchQuotaUsed: dailySearchUsed, generalQuotaUsed: dailyGeneralUsed, errorCode: '', errors: [], startedAt: new Date().toISOString(), done: false };
 }
 
-// ── Rule-based priority scoring (no LLM) ──
+// ── Priority scoring (rule-based, no LLM) ──
 function scorePriority(v: YouTubeVideoResult, knownIds: Set<string>, hotspotGames: string[]): number {
-  let s = 0;
-  const t = v.title.toLowerCase(), d = v.description.toLowerCase();
+  let s = 0; const t = v.title.toLowerCase(), d = v.description.toLowerCase();
   for (const b of BRANDS) { for (const kw of b.brandKeywords) { if (t.includes(kw)) { s += 30; break; } } }
   if (/exitlag\.com|gearupbooster\.com|lagzapper\.com/i.test(d)) s += 25;
   if (/(?:code|promo|coupon)[:\s]*[A-Za-z0-9_-]{3,20}/i.test(d)) s += 25;
-  if (/sponsored|paid.?promotion|#ad|partner|affiliate/i.test(t+' '+d)) s += 20;
+  if (/sponsored|paid.?promotion|#ad|partner|affiliate/i.test(t + ' ' + d)) s += 20;
   if (v.hasPaidPlacementTag) s += 20;
   for (const g of hotspotGames) { if (t.includes(g.toLowerCase())) { s += 15; break; } }
   if (knownIds.has(v.channelId)) s += 10;
-  if (Date.now() - new Date(v.publishedAt).getTime() < 72*3600000) s += 10;
-  if (v.viewCount > 10000 && (Date.now()-new Date(v.publishedAt).getTime())/3600000 < 24) s += 5;
-  let hasBrand = false; for (const b of BRANDS) { for (const kw of b.brandKeywords) { if ((t+d).includes(kw)) { hasBrand=true; break; } } }
+  if (Date.now() - new Date(v.publishedAt).getTime() < 72 * 3600000) s += 10;
+  if (v.viewCount > 10000 && (Date.now() - new Date(v.publishedAt).getTime()) / 3600000 < 24) s += 5;
+  let hasBrand = false; for (const b of BRANDS) { for (const kw of b.brandKeywords) { if ((t + d).includes(kw)) { hasBrand = true; break; } } }
   if (!hasBrand) s -= 15;
   return s;
 }
 
-// ── TRUE batch AI: one API call per batch of 10-12 videos ──
+// ── True batch AI via unified client ──
 async function batchClassifyVideos(
   videos: Array<{ videoId: string; title: string; description: string; channelName: string; publishedAt: string; tags: string[]; hasPaidPlacementTag: boolean }>,
 ): Promise<{ classified: number; likely: number; errors: string[] }> {
-  const model = 'deepseek-v4-flash';
-  const deepseekKey = config.deepseek.apiKey;
   let classified = 0, likely = 0;
   const errors: string[] = [];
 
   for (let i = 0; i < videos.length; i += AI_BATCH_SIZE) {
     const batch = videos.slice(i, i + AI_BATCH_SIZE);
     const batchNum = Math.floor(i / AI_BATCH_SIZE) + 1;
-    const totalBatches = Math.ceil(videos.length / AI_BATCH_SIZE);
 
-    // Build true batch prompt
     const items = batch.map(v => ({
-      videoId: v.videoId,
-      title: v.title,
-      descSnippet: v.description.slice(0, 300),
-      channelName: v.channelName,
-      publishedAt: v.publishedAt,
-      hasPaidTag: v.hasPaidPlacementTag,
+      videoId: v.videoId, title: v.title, descSnippet: v.description.slice(0, 300),
+      channelName: v.channelName, publishedAt: v.publishedAt, hasPaidTag: v.hasPaidPlacementTag,
       matchedBrand: BRANDS.find(b => b.brandKeywords.some(kw => v.title.toLowerCase().includes(kw) || v.description.toLowerCase().includes(kw)))?.brandName || null,
     }));
 
     const prompt = `Classify these ${items.length} YouTube videos for game booster brand sponsorships (GearUP, ExitLag, LagZapper).
 
-For each video, determine:
-- placementType: "confirmed" | "likely" | "organic" | "official" | "irrelevant"
-- confidence: 0-100
-- brand: "GearUP" | "ExitLag" | "LagZapper" | null
-- game: the specific game name or null
-- theme: "reduce_ping" | "promo_code" | "game_review" | "tutorial" | "comparison" | "new_launch" | "cross_region" | "other"
-- format: "dedicated" | "integrated" | "shorts" | "live"
-- reasonCodes: ["brand_in_title","brand_link","promo_code","sponsored_tag","paid_tag","casual_mention","no_signal"]
+Return a JSON object: {"videos": [...]}
 
-Rules:
-- confirmed: explicit "#ad", "sponsored by", "paid partnership", or YouTube paid tag
-- likely: promo code + brand link + strong product focus
-- organic: casual brand mention, no commercial signals
-- irrelevant: no brand signal, unrelated to game boosters
+Each video object:
+- videoId, placementType ("confirmed"|"likely"|"organic"|"official"|"irrelevant"), confidence (0-100)
+- brand ("GearUP"|"ExitLag"|"LagZapper"|null), game (string|null)
+- theme ("reduce_ping"|"promo_code"|"game_review"|"tutorial"|"comparison"|"new_launch"|"cross_region"|"other")
+- format ("dedicated"|"integrated"|"shorts"|"live")
+- reasonCodes (array of "brand_in_title"|"brand_link"|"promo_code"|"sponsored_tag"|"paid_tag"|"casual_mention"|"no_signal")
 
-Videos:
-${JSON.stringify(items, null, 2)}
+Rules: confirmed=explicit #ad/sponsored/paid tag. likely=promo code+brand link+product focus. organic=casual mention. irrelevant=no brand signal.
 
-Output ONLY a JSON array — no markdown, no preamble, no explanation:
-[
-  {"videoId":"...","placementType":"likely","confidence":85,"brand":"ExitLag","game":"Valorant","theme":"reduce_ping","format":"integrated","reasonCodes":["brand_link","promo_code"]},
-  ...
-]`;
+Videos: ${JSON.stringify(items)}`;
 
-    // Try batch (2 attempts max)
-    let batchSuccess = false;
-    for (let attempt = 0; attempt < 2 && !batchSuccess; attempt++) {
-      const startMs = Date.now();
-      try {
-        const reqBody = {
-          model, temperature: 0, max_tokens: 4096,
-          messages: [{ role: 'user', content: prompt }],
-          response_format: { type: 'json_object' as const },
-          thinking: { type: 'disabled' as const },
-        };
+    const result = await chatJSON<{ videos: any[] }>(
+      [{ role: 'user', content: prompt }],
+      { mode: 'fast', maxTokens: 4096 },
+    );
 
-        const resp = await Promise.race([
-          axios.post(`${config.deepseek.baseUrl}/chat/completions`, reqBody, {
-            headers: { Authorization: `Bearer ${deepseekKey}`, 'Content-Type': 'application/json' },
-            timeout: AI_TIMEOUT_MS,
-          }),
-          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('AI_TIMEOUT')), AI_TIMEOUT_MS)),
-        ]);
+    if (result.success && result.data?.videos?.length) {
+      for (const item of result.data.videos) {
+        const vid = batch.find(v => v.videoId === item.videoId);
+        if (!vid) continue;
+        const m: Record<string, string> = { confirmed: 'confirmed_paid_placement', likely: 'likely_sponsored', organic: 'organic_mention', official: 'official_brand_video', irrelevant: 'unknown' };
+        const pt = m[item.placementType] || 'unknown';
+        if (pt === 'confirmed_paid_placement' || pt === 'likely_sponsored') likely++;
 
-        const choice = resp.data?.choices?.[0];
-        const returnedModel = resp.data?.model || '?';
-        const content = choice?.message?.content?.trim() || '';
-        const finishReason = choice?.finish_reason || '';
-        const reasoningContent = choice?.message?.reasoning_content || choice?.message?.reasoning || '';
-        const usage = resp.data?.usage || {};
-        const latencyMs = Date.now() - startMs;
-
-        // Full diagnostic log
-        console.log(`[AI] Batch ${batchNum}/${totalBatches}: requested=${model} returned=${returnedModel} finish=${finishReason} contentLen=${content.length} reasoningLen=${reasoningContent.length} promptTk=${usage.prompt_tokens||0} compTk=${usage.completion_tokens||0} reasoningTk=${usage.completion_tokens_details?.reasoning_tokens||0} latency=${latencyMs}ms`);
-        if (!content) {
-          console.error(`[AI] Batch ${batchNum} EMPTY content. reasoning=${reasoningContent.slice(0,200)} usage=${JSON.stringify(usage)} rawFull=${JSON.stringify(resp.data).slice(0,500)}`);
-        }
-        if (content) {
-          console.log(`[AI] Batch ${batchNum} content preview: ${content.slice(0, 200)}`);
-        }
-
-        // 3-layer JSON parsing
-        let parsed: any[] | null = null;
-        try { parsed = JSON.parse(content); } catch {}
-
-        // If response_format=json_object wraps array in object, extract
-        if (parsed && !Array.isArray(parsed) && typeof parsed === 'object') {
-          const vals = Object.values(parsed);
-          if (vals.length === 1 && Array.isArray(vals[0])) parsed = vals[0] as any[];
-        }
-
-        if (!parsed || !Array.isArray(parsed)) {
-          const m = content.match(/```(?:json)?\s*([\s\S]*?)```/);
-          if (m) try { const p = JSON.parse(m[1]); parsed = Array.isArray(p) ? p : (p.videos || p.results || Object.values(p)[0]); } catch {}
-        }
-        if (!parsed || !Array.isArray(parsed)) {
-          const start = content.indexOf('['), end = content.lastIndexOf(']');
-          if (start >= 0 && end > start) try { parsed = JSON.parse(content.slice(start, end + 1)); } catch {}
-        }
-
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          // Save results per video
-          for (const item of parsed) {
-            const vid = batch.find(v => v.videoId === item.videoId);
-            if (!vid) continue;
-            const placementMap: Record<string, string> = { confirmed: 'confirmed_paid_placement', likely: 'likely_sponsored', organic: 'organic_mention', official: 'official_brand_video', irrelevant: 'unknown' };
-            const placementType = placementMap[item.placementType] || 'unknown';
-            if (placementType === 'confirmed_paid_placement' || placementType === 'likely_sponsored') likely++;
-
-            // Save to DB immediately
-            await getSupabase().from('youtube_competitor_videos').update({
-              placement_type: placementType,
-              sponsor_confidence: (item.confidence || 50) / 100,
-              game_name: item.game || null,
-              topic_category: item.theme || 'game_integration',
-              content_type: item.format || 'integrated_placement',
-              brand_mention_position: (item.reasonCodes || []).filter((c: string) => ['brand_in_title', 'brand_link'].includes(c)).map((c: string) => c === 'brand_in_title' ? 'title' : 'description'),
-              promo_code: item.reasonCodes?.includes('promo_code') ? 'yes' : null,
-              workflow_status: 'classified',
-              classification_raw: { ai: item, classifiedAt: new Date().toISOString(), batchNum },
-              last_updated_at: new Date().toISOString(),
-            }).eq('video_id', item.videoId);
-
-            classified++;
-          }
-          batchSuccess = true;
-          scanState.classified = classified;
-          scanState.likelyPlacements = likely;
-        } else {
-          const isJsonModeEmpty = !content && finishReason === 'stop' && !reasoningContent;
-          const diagnosis = isJsonModeEmpty ? 'JSON_MODE_EMPTY_RESPONSE' : `parse_failed(contentLen=${content.length},finish=${finishReason})`;
-          console.error(`[AI] Batch ${batchNum} ${diagnosis}. Raw: ${content.slice(0, 300)} reasoning: ${reasoningContent.slice(0, 100)}`);
-
-          if (attempt === 0) {
-            if (isJsonModeEmpty) {
-              // Retry without json_object format (JSON mode sometimes returns empty)
-              console.log(`[AI] Batch ${batchNum} retrying without response_format (JSON_MODE workaround)`);
-              try {
-                const retryResp = await axios.post(`${config.deepseek.baseUrl}/chat/completions`, {
-                  model, temperature: 0, max_tokens: 4096,
-                  messages: [{ role: 'user', content: prompt + '\n\nOUTPUT ONLY the JSON array. NO markdown, NO code fences.' }],
-                  thinking: { type: 'disabled' as const },
-                }, {
-                  headers: { Authorization: `Bearer ${deepseekKey}`, 'Content-Type': 'application/json' },
-                  timeout: AI_TIMEOUT_MS,
-                });
-                const retryContent = retryResp.data?.choices?.[0]?.message?.content?.trim() || '';
-                let retryParsed: any[] | null = null;
-                try { retryParsed = JSON.parse(retryContent); } catch {}
-                if (!retryParsed) { const m = retryContent.match(/```(?:json)?\s*([\s\S]*?)```/); if (m) try { retryParsed = JSON.parse(m[1]); } catch {} }
-                if (!retryParsed) { const s = retryContent.indexOf('['), e = retryContent.lastIndexOf(']'); if (s>=0&&e>s) try { retryParsed = JSON.parse(retryContent.slice(s,e+1)); } catch {} }
-                if (Array.isArray(retryParsed) && retryParsed.length > 0) {
-                  parsed = retryParsed;
-                  console.log(`[AI] Batch ${batchNum} JSON_MODE retry OK: ${retryParsed.length} items`);
-                  // Fall through to save logic below
-                } else {
-                  console.error(`[AI] Batch ${batchNum} JSON_MODE retry also failed. contentLen=${retryContent.length}`);
-                  await new Promise(r => setTimeout(r, 500)); continue;
-                }
-              } catch { await new Promise(r => setTimeout(r, 500)); continue; }
-            } else {
-              await new Promise(r => setTimeout(r, 1000)); continue;
-            }
-          }
-
-          // If we got here with parsed data from retry, save it
-          if (!(Array.isArray(parsed) && parsed.length > 0)) {
-            errors.push(`Batch ${batchNum}: ${diagnosis}`);
-            // Mark batch videos as failed
-            for (const v of batch) {
-              await getSupabase().from('youtube_competitor_videos').update({
-                workflow_status: 'discovered',
-                classification_raw: { error: diagnosis, queuedAt: new Date().toISOString() },
-              }).eq('video_id', v.videoId);
-              scanState.failed++;
-            }
-            if (attempt === 0) await new Promise(r => setTimeout(r, 500));
-            continue;
-          }
-        }
-
-        // Save parsed results (reachable from both normal path and JSON_MODE retry)
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          for (const item of parsed) {
-            const vid = batch.find(v => v.videoId === item.videoId);
-            if (!vid) continue;
-            const placementMap: Record<string, string> = { confirmed: 'confirmed_paid_placement', likely: 'likely_sponsored', organic: 'organic_mention', official: 'official_brand_video', irrelevant: 'unknown' };
-            const placementType = placementMap[item.placementType] || 'unknown';
-            if (placementType === 'confirmed_paid_placement' || placementType === 'likely_sponsored') likely++;
-
-            await getSupabase().from('youtube_competitor_videos').update({
-              placement_type: placementType, sponsor_confidence: (item.confidence || 50) / 100,
-              game_name: item.game || null, topic_category: item.theme || 'game_integration',
-              content_type: item.format || 'integrated_placement',
-              brand_mention_position: (item.reasonCodes || []).filter((c: string) => ['brand_in_title', 'brand_link'].includes(c)).map((c: string) => c === 'brand_in_title' ? 'title' : 'description'),
-              promo_code: item.reasonCodes?.includes('promo_code') ? 'yes' : null,
-              workflow_status: 'classified',
-              classification_raw: { ai: item, classifiedAt: new Date().toISOString(), batchNum },
-              last_updated_at: new Date().toISOString(),
-            }).eq('video_id', item.videoId);
-            classified++;
-          }
-          batchSuccess = true;
-          scanState.classified = classified;
-          scanState.likelyPlacements = likely;
-        }
-      } catch (err) {
-        const msg = (err as Error).message;
-        console.error(`[AI] Batch ${batchNum} attempt ${attempt+1} failed: ${msg}`);
-        if (attempt === 0) { await new Promise(r => setTimeout(r, 1000)); continue; }
-        errors.push(`Batch ${batchNum}: ${msg}`);
-        // Mark batch videos as failed
-        for (const v of batch) {
-          await getSupabase().from('youtube_competitor_videos').update({
-            workflow_status: 'discovered',
-            classification_raw: { error: msg, queuedAt: new Date().toISOString() },
-          }).eq('video_id', v.videoId);
-          scanState.failed++;
-        }
+        await getSupabase().from('youtube_competitor_videos').update({
+          placement_type: pt, sponsor_confidence: (item.confidence || 50) / 100,
+          game_name: item.game || null, topic_category: item.theme || 'game_integration',
+          content_type: item.format || 'integrated_placement',
+          workflow_status: 'classified',
+          classification_raw: { ai: item, batchNum, classifiedAt: new Date().toISOString() },
+          last_updated_at: new Date().toISOString(),
+        }).eq('video_id', item.videoId);
+        classified++;
+      }
+      scanState.classified = classified;
+      scanState.likelyPlacements = likely;
+    } else {
+      const err = `Batch ${batchNum}: ${result.error}`;
+      errors.push(err);
+      console.error(`[AI] ${err}`, result.diagnostic.contentPreview?.slice(0, 200));
+      for (const v of batch) {
+        await getSupabase().from('youtube_competitor_videos').update({
+          workflow_status: 'discovered', classification_raw: { error: result.error, queuedAt: new Date().toISOString() },
+        }).eq('video_id', v.videoId);
+        scanState.failed++;
       }
     }
-
     await new Promise(r => setTimeout(r, 300));
   }
-
   return { classified, likely, errors };
 }
 
@@ -315,98 +139,59 @@ export async function runDiscoveryPipeline(options?: {
   const mode = options?.mode || 'normal';
   const backfillDays = mode === 'manual' ? (options?.backfillDays || 7) : 1;
   const publishedAfter = new Date(Date.now() - backfillDays * 86400000).toISOString();
-
   resetState(mode);
-  console.log(`[Monitor] ${mode} scan — since ${publishedAfter} | search: ${dailySearchUsed}/100 | circuit: ${searchCircuitOpen}`);
+  console.log(`[Monitor] ${mode} scan — since ${publishedAfter}`);
 
   const db = getSupabase();
   const allVids: YouTubeVideoResult[] = [];
   const seen = new Set<string>();
-
-  const { data: existing } = await db.from('youtube_competitor_videos').select('video_id')
-    .gte('first_seen_at', new Date(Date.now() - 60 * 86400000).toISOString());
+  const { data: existing } = await db.from('youtube_competitor_videos').select('video_id').gte('first_seen_at', new Date(Date.now() - 60 * 86400000).toISOString());
   (existing || []).forEach((v: any) => seen.add(v.video_id));
 
-  // ═══ Phase 1: Search Discovery (with circuit breaker) ═══
-  scanState.phase = 'discovery';
-  let searchFromCount = 0;
-  const queries = mode === 'hotspot' && options?.hotspotGame
-    ? buildHotspotQueries(options.hotspotGame)
-    : getActiveQueries();
-
+  // Phase 1: Search (with circuit breaker)
+  let searchFrom = 0;
+  const queries = mode === 'hotspot' && options?.hotspotGame ? buildHotspotQueries(options.hotspotGame) : getActiveQueries();
   scanState.searchQueriesTotal = queries.length;
-
   for (const q of queries) {
-    if (searchCircuitOpen) {
-      scanState.searchQueriesFailed++;
-      console.log(`[Monitor] Circuit OPEN — skipping "${q.queryText}"`);
-      continue;
-    }
+    if (searchCircuitOpen) { scanState.searchQueriesFailed++; continue; }
     try {
       trackSearch();
       const results = await searchVideos(q, publishedAfter, 50);
       scanState.searchQueriesSucceeded++;
-      for (const r of results) { if (!seen.has(r.videoId)) { seen.add(r.videoId); allVids.push(r); searchFromCount++; } }
-      // Mark query run
+      for (const r of results) { if (!seen.has(r.videoId)) { seen.add(r.videoId); allVids.push(r); searchFrom++; } }
       await db.from('competitor_queries').upsert({ query_text: q.queryText, last_run_at: new Date().toISOString() }, { onConflict: 'query_text' });
     } catch (err) {
-      const msg = (err as Error).message;
       scanState.searchQueriesFailed++;
-      if (msg.startsWith('YT_QUOTA_EXHAUSTED')) {
-        searchCircuitOpen = true;
-        scanState.errorCode = 'SEARCH_QUOTA_EXHAUSTED';
-        scanState.errors.push(`Search quota exhausted: ${msg}`);
-        console.error(`[Monitor] Circuit BREAKER opened: ${msg}`);
-      }
+      if ((err as Error).message.startsWith('YT_QUOTA_EXHAUSTED')) { searchCircuitOpen = true; scanState.errorCode = 'SEARCH_QUOTA_EXHAUSTED'; }
     }
   }
+  scanState.discoveredFromSearch = searchFrom;
 
-  scanState.discoveredFromSearch = searchFromCount;
-
-  // ═══ Phase 2: Creator Channel Monitoring ═══
-  scanState.phase = 'channel_scan';
-  const { data: knownCreators } = await db.from('youtube_creator_profiles').select('channel_id').limit(200);
-  let creatorFromCount = 0;
-
-  if (knownCreators?.length) {
-    scanState.creatorChannelsChecked = knownCreators.length;
-    const chIds = knownCreators.map((c: any) => c.channel_id);
-    trackGeneral(Math.ceil(chIds.length / 50) + chIds.length);
-    const chVids = await getChannelsRecentVideos(chIds, publishedAfter, 5);
-    for (const v of chVids) {
-      if (!seen.has(v.videoId)) { seen.add(v.videoId); (v as any).discoveryMethod = 'channel_scan'; allVids.push(v); creatorFromCount++; }
-    }
+  // Phase 2: Channel monitoring
+  const { data: creators } = await db.from('youtube_creator_profiles').select('channel_id').limit(200);
+  let creatorFrom = 0;
+  if (creators?.length) {
+    scanState.creatorChannelsChecked = creators.length;
+    const ids = creators.map((c: any) => c.channel_id);
+    trackGeneral(Math.ceil(ids.length / 50) + ids.length);
+    const chVids = await getChannelsRecentVideos(ids, publishedAfter, 5);
+    for (const v of chVids) { if (!seen.has(v.videoId)) { seen.add(v.videoId); (v as any).discoveryMethod = 'channel_scan'; allVids.push(v); creatorFrom++; } }
   }
-
-  scanState.discoveredFromCreators = creatorFromCount;
+  scanState.discoveredFromCreators = creatorFrom;
   scanState.uniqueVideos = allVids.length;
+  if (!allVids.length) { scanState.done = true; scanState.running = false; return { videosDiscovered: 0, videosClassified: 0 }; }
 
-  if (!allVids.length) {
-    scanState.status = 'completed'; scanState.phase = 'completed'; scanState.done = true; scanState.running = false;
-    return { videosDiscovered: 0, videosClassified: 0 };
-  }
-
-  // ═══ Phase 3: Save all as DISCOVERED ═══
-  scanState.phase = 'saving';
-  const knownIds = new Set((knownCreators || []).map((c: any) => c.channel_id));
+  // Phase 3: Save + score
+  const knownIds = new Set((creators || []).map((c: any) => c.channel_id));
   const { data: cfg } = await db.from('monitor_config').select('hotspot_games').eq('id', 1).maybeSingle();
-  const hotspotGames = (cfg as any)?.hotspot_games || [];
-
-  const scored = allVids.map(v => ({ video: v, priority: scorePriority(v, knownIds, hotspotGames) }))
-    .sort((a, b) => b.priority - a.priority);
-
+  const scored = allVids.map(v => ({ video: v, priority: scorePriority(v, knownIds, (cfg as any)?.hotspot_games || []) })).sort((a, b) => b.priority - a.priority);
   scanState.selectedForAI = Math.min(MAX_AI_PER_SCAN, scored.length);
   scanState.queued = Math.max(0, scored.length - MAX_AI_PER_SCAN);
+  console.log(`[Monitor] Saving ${allVids.length} vids (search=${searchFrom} creator=${creatorFrom} AI=${scanState.selectedForAI} queued=${scanState.queued})`);
 
-  console.log(`[Monitor] Saving ${allVids.length} videos (src: ${searchFromCount} search + ${creatorFromCount} creator, AI: ${scanState.selectedForAI}, queued: ${scanState.queued})`);
-
-  // Save all
   for (const { video: v } of scored) {
-    if (!knownIds.has(v.channelId)) {
-      const ch = await getChannelsByIds([v.channelId]);
-      if (ch[0]) await getOrCreateCreatorProfile(ch[0].channelId, ch[0].channelName);
-    }
-    const row = {
+    if (!knownIds.has(v.channelId)) { const ch = await getChannelsByIds([v.channelId]); if (ch[0]) await getOrCreateCreatorProfile(ch[0].channelId, ch[0].channelName); }
+    await db.from('youtube_competitor_videos').upsert({
       video_id: v.videoId, channel_id: v.channelId, channel_name: v.channelTitle,
       title: v.title, description: v.description, published_at: v.publishedAt,
       duration: v.duration, is_short: v.isShort, thumbnail_url: v.thumbnailUrl,
@@ -416,95 +201,54 @@ export async function runDiscoveryPipeline(options?: {
       view_count: v.viewCount, like_count: v.likeCount, comment_count: v.commentCount,
       workflow_status: 'discovered',
       first_seen_at: new Date().toISOString(), last_updated_at: new Date().toISOString(),
-    };
-    await db.from('youtube_competitor_videos').upsert(row, { onConflict: 'video_id' });
+    }, { onConflict: 'video_id' });
   }
 
-  // ═══ Phase 4: True Batch AI (top N only) ═══
-  if (!options?.skipAI && scanState.selectedForAI > 0 && scanState.errorCode !== 'SEARCH_QUOTA_EXHAUSTED') {
-    // Note: AI runs regardless of search failure, since we have creator data
-  }
+  // Phase 4: AI
   if (!options?.skipAI && scanState.selectedForAI > 0) {
     scanState.phase = 'classifying';
     const aiCandidates = scored.slice(0, MAX_AI_PER_SCAN);
-    const result = await batchClassifyVideos(
-      aiCandidates.map(c => ({
-        videoId: c.video.videoId, title: c.video.title, description: c.video.description,
-        channelName: c.video.channelTitle, publishedAt: c.video.publishedAt, tags: c.video.tags, hasPaidPlacementTag: c.video.hasPaidPlacementTag,
-      })),
-    );
+    const result = await batchClassifyVideos(aiCandidates.map(c => ({
+      videoId: c.video.videoId, title: c.video.title, description: c.video.description,
+      channelName: c.video.channelTitle, publishedAt: c.video.publishedAt, tags: c.video.tags, hasPaidPlacementTag: c.video.hasPaidPlacementTag,
+    })));
     scanState.errors.push(...result.errors);
-    if (result.errors.length > 0 && result.classified === 0) {
-      scanState.errorCode = scanState.errorCode || 'AI_CLASSIFICATION_FAILED';
-      scanState.status = 'partial_completed';
-    }
-
-    // Mark queued videos
     for (const qv of scored.slice(MAX_AI_PER_SCAN)) {
-      await db.from('youtube_competitor_videos').update({
-        classification_raw: { priorityScore: qv.priority, queuedAt: new Date().toISOString() },
-      }).eq('video_id', qv.video.videoId);
+      await db.from('youtube_competitor_videos').update({ classification_raw: { priorityScore: qv.priority, queuedAt: new Date().toISOString() } }).eq('video_id', qv.video.videoId);
     }
-
-    // Snapshots for classified
     for (const c of aiCandidates) {
-      await saveSnapshot(c.video.videoId, 'discovery',
-        Math.round((Date.now() - new Date(c.video.publishedAt).getTime()) / 3600000),
-        c.video.viewCount, c.video.likeCount, c.video.commentCount, 0, 0.5, c.video.isShort);
+      await saveSnapshot(c.video.videoId, 'discovery', Math.round((Date.now() - new Date(c.video.publishedAt).getTime()) / 3600000), c.video.viewCount, c.video.likeCount, c.video.commentCount, 0, 0.5, c.video.isShort);
     }
   }
 
-  // ═══ Phase 5: Comments (high-confidence only) ═══
+  // Phase 5: Comments (high-conf only)
   if (!options?.skipComments && scanState.classified > 0) {
-    scanState.phase = 'deep_analysis';
-    // Fetch high-conf from DB
-    const { data: highConf } = await db.from('youtube_competitor_videos')
-      .select('video_id, comment_count, classification_raw')
-      .in('placement_type', ['confirmed_paid_placement', 'likely_sponsored'])
-      .gte('comment_count', 10)
-      .order('first_seen_at', { ascending: false })
-      .limit(10);
-
-    for (const v of (highConf || [])) {
+    const { data: hc } = await db.from('youtube_competitor_videos').select('video_id, comment_count').in('placement_type', ['confirmed_paid_placement', 'likely_sponsored']).gte('comment_count', 10).order('first_seen_at', { ascending: false }).limit(10);
+    for (const v of (hc || [])) {
       if (await hasExistingComments(v.video_id)) continue;
       trackGeneral(1);
       const comments = await fetchVideoComments(v.video_id, 30, 'relevance');
-      if (comments.length > 0) {
-        await saveComments(v.video_id, comments);
-      }
+      if (comments.length > 0) await saveComments(v.video_id, comments);
     }
   }
 
-  const timedOut = Date.now() - new Date(scanState.startedAt).getTime() > SCAN_TIMEOUT_MS;
-  scanState.phase = timedOut ? 'partial_completed' : 'completed';
-  scanState.status = scanState.errorCode ? 'partial_completed' : 'completed';
+  scanState.phase = 'completed'; scanState.status = scanState.errorCode ? 'partial_completed' : 'completed';
   scanState.done = true; scanState.running = false;
-
-  console.log(`[Monitor] Done: ${scanState.uniqueVideos} vids (search=${scanState.discoveredFromSearch} creator=${scanState.discoveredFromCreators}), AI=${scanState.classified}, likely=${scanState.likelyPlacements}, queued=${scanState.queued}, errors=${scanState.errors.length}`);
+  console.log(`[Monitor] Done: ${scanState.uniqueVideos} vids AI=${scanState.classified} likely=${scanState.likelyPlacements}`);
   return { videosDiscovered: scanState.uniqueVideos, videosClassified: scanState.classified };
 }
 
-// ── Retry AI classification only (no search, no channel scan) ──
+// ── Retry classification (AI only) ──
 export async function retryClassification(): Promise<{ classified: number }> {
   const db = getSupabase();
-  const { data: pending } = await db.from('youtube_competitor_videos')
-    .select('*').eq('workflow_status', 'discovered')
-    .is('placement_type', null)
-    .order('first_seen_at', { ascending: false }).limit(MAX_AI_PER_SCAN);
-
+  const { data: pending } = await db.from('youtube_competitor_videos').select('*').eq('workflow_status', 'discovered').is('placement_type', null).order('first_seen_at', { ascending: false }).limit(MAX_AI_PER_SCAN);
   if (!pending?.length) return { classified: 0 };
-
   resetState('retry');
   scanState.selectedForAI = pending.length;
   scanState.uniqueVideos = pending.length;
-
-  const result = await batchClassifyVideos(
-    (pending as any[]).map(v => ({
-      videoId: v.video_id, title: v.title, description: v.description || '',
-      channelName: v.channel_name || '', publishedAt: v.published_at || '', tags: v.tags || [], hasPaidPlacementTag: v.has_paid_placement_tag || false,
-    })),
-  );
-
+  const result = await batchClassifyVideos((pending as any[]).map(v => ({
+    videoId: v.video_id, title: v.title, description: v.description || '', channelName: v.channel_name || '', publishedAt: v.published_at || '', tags: v.tags || [], hasPaidPlacementTag: v.has_paid_placement_tag || false,
+  })));
   scanState.classified = result.classified;
   scanState.likelyPlacements = result.likely;
   scanState.done = true; scanState.running = false; scanState.phase = 'completed';
@@ -517,11 +261,5 @@ export async function getMonitorStatus() {
   const { data: cr } = await db.from('youtube_creator_profiles').select('channel_id');
   const { data: lv } = await db.from('youtube_competitor_videos').select('created_at').order('created_at', { ascending: false }).limit(1).maybeSingle();
   const { data: cfg } = await db.from('monitor_config').select('*').eq('id', 1).maybeSingle();
-  return {
-    totalVideos: tv || 0, totalCreators: (cr || []).length,
-    lastRun: (lv as any)?.created_at || null,
-    searchQuotaUsed: dailySearchUsed, searchQuotaLimit: 100,
-    generalQuotaUsed: dailyGeneralUsed, generalQuotaLimit: 10000,
-    hotspotActive: (cfg as any)?.hotspot_active || false, scanRunning: scanState.running,
-  };
+  return { totalVideos: tv || 0, totalCreators: (cr || []).length, lastRun: (lv as any)?.created_at || null, searchQuotaUsed: dailySearchUsed, searchQuotaLimit: 100, generalQuotaUsed: dailyGeneralUsed, generalQuotaLimit: 10000, hotspotActive: (cfg as any)?.hotspot_active || false, scanRunning: scanState.running };
 }

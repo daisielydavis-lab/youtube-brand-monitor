@@ -11,7 +11,8 @@
     "build": "tsc",
     "start": "node dist/app.js",
     "discover": "ts-node src/cli-discover.ts",
-    "report": "ts-node src/cli-report.ts"
+    "report": "ts-node src/cli-report.ts",
+    "test:ai": "ts-node src/services/ai/deepseek-test.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.110.7",
