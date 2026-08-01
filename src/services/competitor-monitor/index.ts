@@ -24,8 +24,8 @@ import {
   hasExistingComments,
   saveComments,
 } from './video-enrichment';
-import { detectSponsorshipBatch } from './sponsorship-detector';
-import { classifyTopicsBatch, classifyAndUpdateComments } from './topic-classifier';
+import { detectSponsorshipBatch, type SponsorshipResult } from './sponsorship-detector';
+import { classifyTopicsBatch, classifyAndUpdateComments, type TopicResult } from './topic-classifier';
 import { getOrCreateCreatorProfile, updateCreatorFromVideo } from './creator-profiler';
 import { saveSnapshot } from './performance-snapshot';
 
@@ -243,24 +243,51 @@ export async function runDiscoveryPipeline(options?: {
   }
 
   // ═══════════════════════════════════════
-  // Phase 4: AI Classification
+  // Phase 4: AI Classification (limit to top 50 per scan)
   // ═══════════════════════════════════════
-  let sponsorshipResults: Awaited<ReturnType<typeof detectSponsorshipBatch>>;
-  let topicResults: Awaited<ReturnType<typeof classifyTopicsBatch>>;
+  const AI_BATCH_LIMIT = 50;
+  const emptySponsorship: SponsorshipResult = { placementType: 'unknown', sponsorConfidence: 0.1, detectedBrand: null, brandMentionPositions: [], promoCode: null, landingDomain: null, ctaType: null, sellingPoints: [], reasoning: 'Deferred for batch classification' };
+  const emptyTopic: TopicResult = { gameName: null, gameConfidence: 0, contentCategory: 'integrated_placement', topicCategory: 'game_integration', language: 'en', market: 'US' };
 
-  if (!options?.skipAI) {
-    console.log(`[Monitor] AI classifying ${allDiscovered.length} videos`);
-    sponsorshipResults = await detectSponsorshipBatch(allDiscovered.map(v => ({
+  // Sort: paid placement tagged first, then newest
+  const sortedForAI = [...allDiscovered].sort((a, b) => {
+    if (a.hasPaidPlacementTag && !b.hasPaidPlacementTag) return -1;
+    if (!a.hasPaidPlacementTag && b.hasPaidPlacementTag) return 1;
+    return new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime();
+  });
+  const priorityVideos = sortedForAI.slice(0, AI_BATCH_LIMIT);
+  const bulkVideos = sortedForAI.slice(AI_BATCH_LIMIT);
+
+  let sponsorshipResults: Array<typeof emptySponsorship>;
+  let topicResults: Array<typeof emptyTopic>;
+
+  if (!options?.skipAI && priorityVideos.length > 0) {
+    console.log(`[Monitor] AI classifying ${priorityVideos.length} priority videos (${bulkVideos.length} deferred)`);
+    sponsorshipResults = await detectSponsorshipBatch(priorityVideos.map(v => ({
       title: v.title, description: v.description, channelName: v.channelTitle, tags: v.tags, hasPaidPlacementTag: v.hasPaidPlacementTag,
     })));
-    topicResults = await classifyTopicsBatch(allDiscovered.map(v => ({
+    topicResults = await classifyTopicsBatch(priorityVideos.map(v => ({
       title: v.title, description: v.description, tags: v.tags, channelName: v.channelTitle,
     })));
+    // Pad with empty results for bulk videos
+    sponsorshipResults.push(...bulkVideos.map(() => ({ ...emptySponsorship })));
+    topicResults.push(...bulkVideos.map(() => ({ ...emptyTopic })));
   } else {
-    const empty = { placementType: 'unknown' as const, sponsorConfidence: 0.1, detectedBrand: null, brandMentionPositions: [] as string[], promoCode: null, landingDomain: null, ctaType: null, sellingPoints: [] as string[], reasoning: 'AI skipped' };
-    sponsorshipResults = allDiscovered.map(() => empty);
-    topicResults = allDiscovered.map(() => ({ gameName: null, gameConfidence: 0, contentCategory: 'integrated_placement', topicCategory: 'game_integration', language: 'en', market: 'US' }));
+    sponsorshipResults = allDiscovered.map(() => ({ ...emptySponsorship }));
+    topicResults = allDiscovered.map(() => ({ ...emptyTopic }));
   }
+
+  // Restore original order for saving
+  const videoIndex = new Map(allDiscovered.map((v, i) => [v.videoId, i]));
+  const orderedSponsorship = new Array(allDiscovered.length);
+  const orderedTopic = new Array(allDiscovered.length);
+  for (let i = 0; i < allDiscovered.length; i++) {
+    const origIdx = videoIndex.get(sortedForAI[i].videoId)!;
+    orderedSponsorship[origIdx] = sponsorshipResults[i];
+    orderedTopic[origIdx] = topicResults[i];
+  }
+  sponsorshipResults = orderedSponsorship;
+  topicResults = orderedTopic;
 
   // ═══════════════════════════════════════
   // Phase 5: Save
@@ -290,7 +317,7 @@ export async function runDiscoveryPipeline(options?: {
       promo_code: sp.promoCode, landing_domain: sp.landingDomain, cta_type: sp.ctaType,
       product_selling_points: sp.sellingPoints,
       view_count: video.viewCount, like_count: video.likeCount, comment_count: video.commentCount,
-      workflow_status: 'classified',
+      workflow_status: sp.reasoning.includes('Deferred') ? 'discovered' : 'classified',
       classification_raw: { sponsorship: sp, topic: tp, classifiedAt: new Date().toISOString() },
       first_seen_at: new Date().toISOString(), last_updated_at: new Date().toISOString(),
     };
