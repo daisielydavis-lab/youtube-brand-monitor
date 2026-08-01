@@ -97,10 +97,10 @@ export async function getDashboardData(filter?: {
   const dateRangeDays = filter?.range === '90d' ? 90 : filter?.range === '7d' ? 7 : 30;
   const since = daysAgoISO(dateRangeDays);
 
-  // Build base query
+  // Build base query — minimal columns for dashboard
   let query = db
     .from('youtube_competitor_videos')
-    .select('video_id,title,description,channel_id,channel_name,published_at,duration,is_short,thumbnail_url,tags,language,market,game_name,content_type,placement_type,sponsor_confidence,topic_category,promo_code,landing_domain,product_selling_points,view_count,like_count,comment_count,discovery_method,has_paid_placement_tag,brand_mention_position,classification_raw,workflow_status,public_performance_score,baseline_lift,first_seen_at,last_updated_at')
+    .select('video_id,title,channel_id,channel_name,published_at,is_short,thumbnail_url,game_name,content_type,placement_type,sponsor_confidence,topic_category,promo_code,landing_domain,view_count,like_count,comment_count,classification_raw,workflow_status,first_seen_at')
     .gte('published_at', since)
     .order('published_at', { ascending: false })
     .limit(500);
