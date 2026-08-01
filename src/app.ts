@@ -140,7 +140,7 @@ app.get('/', async (req, res) => {
   try {
     const filter = {
       brand: req.query.brand as string, market: req.query.market as string,
-      language: req.query.lang as string, dateRange: (req.query.range as any) || '30d',
+      language: req.query.lang as string, range: (req.query.range as string) || '30d',
       videoType: (req.query.type as any) || 'all', placementType: req.query.placement as string,
     };
     const data = await getDashboardData(filter);

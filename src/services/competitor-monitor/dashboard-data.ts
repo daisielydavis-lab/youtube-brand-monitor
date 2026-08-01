@@ -89,12 +89,12 @@ export async function getDashboardData(filter?: {
   brand?: string;
   market?: string;
   language?: string;
-  dateRange?: '7d' | '30d' | '90d';
+  range?: string;
   videoType?: 'all' | 'long' | 'short';
   placementType?: string;
 }): Promise<DashboardData> {
   const db = getSupabase();
-  const dateRangeDays = filter?.dateRange === '90d' ? 90 : filter?.dateRange === '7d' ? 7 : 30;
+  const dateRangeDays = filter?.range === '90d' ? 90 : filter?.range === '7d' ? 7 : 30;
   const since = daysAgoISO(dateRangeDays);
 
   // Build base query
