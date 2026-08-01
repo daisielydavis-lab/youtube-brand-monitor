@@ -76,7 +76,7 @@ function scorePriority(v: YouTubeVideoResult, knownIds: Set<string>, hotspotGame
 async function batchClassifyVideos(
   videos: Array<{ videoId: string; title: string; description: string; channelName: string; publishedAt: string; tags: string[]; hasPaidPlacementTag: boolean }>,
 ): Promise<{ classified: number; likely: number; errors: string[] }> {
-  const model = 'deepseek-chat'; // non-reasoning model for classification
+  const model = 'deepseek-v4-flash';
   const deepseekKey = config.deepseek.apiKey;
   let classified = 0, likely = 0;
   const errors: string[] = [];
@@ -128,11 +128,15 @@ Output ONLY a JSON array — no markdown, no preamble, no explanation:
     for (let attempt = 0; attempt < 2 && !batchSuccess; attempt++) {
       const startMs = Date.now();
       try {
+        const reqBody = {
+          model, temperature: 0, max_tokens: 4096,
+          messages: [{ role: 'user', content: prompt }],
+          response_format: { type: 'json_object' as const },
+          thinking: { type: 'disabled' as const },
+        };
+
         const resp = await Promise.race([
-          axios.post(`${config.deepseek.baseUrl}/chat/completions`, {
-            model, temperature: 0, max_tokens: 4096,
-            messages: [{ role: 'user', content: prompt }],
-          }, {
+          axios.post(`${config.deepseek.baseUrl}/chat/completions`, reqBody, {
             headers: { Authorization: `Bearer ${deepseekKey}`, 'Content-Type': 'application/json' },
             timeout: AI_TIMEOUT_MS,
           }),
@@ -140,21 +144,37 @@ Output ONLY a JSON array — no markdown, no preamble, no explanation:
         ]);
 
         const choice = resp.data?.choices?.[0];
+        const returnedModel = resp.data?.model || '?';
         const content = choice?.message?.content?.trim() || '';
         const finishReason = choice?.finish_reason || '';
+        const reasoningContent = choice?.message?.reasoning_content || choice?.message?.reasoning || '';
         const usage = resp.data?.usage || {};
         const latencyMs = Date.now() - startMs;
 
-        console.log(`[AI] Batch ${batchNum}/${totalBatches}: model=${model} finish=${finishReason} contentLen=${content.length} promptTk=${usage.prompt_tokens||0} compTk=${usage.completion_tokens||0} latency=${latencyMs}ms`);
+        // Full diagnostic log
+        console.log(`[AI] Batch ${batchNum}/${totalBatches}: requested=${model} returned=${returnedModel} finish=${finishReason} contentLen=${content.length} reasoningLen=${reasoningContent.length} promptTk=${usage.prompt_tokens||0} compTk=${usage.completion_tokens||0} reasoningTk=${usage.completion_tokens_details?.reasoning_tokens||0} latency=${latencyMs}ms`);
+        if (!content) {
+          console.error(`[AI] Batch ${batchNum} EMPTY content. reasoning=${reasoningContent.slice(0,200)} usage=${JSON.stringify(usage)} rawFull=${JSON.stringify(resp.data).slice(0,500)}`);
+        }
+        if (content) {
+          console.log(`[AI] Batch ${batchNum} content preview: ${content.slice(0, 200)}`);
+        }
 
         // 3-layer JSON parsing
         let parsed: any[] | null = null;
         try { parsed = JSON.parse(content); } catch {}
-        if (!parsed) {
-          const m = content.match(/```(?:json)?\s*([\s\S]*?)```/);
-          if (m) try { parsed = JSON.parse(m[1]); } catch {}
+
+        // If response_format=json_object wraps array in object, extract
+        if (parsed && !Array.isArray(parsed) && typeof parsed === 'object') {
+          const vals = Object.values(parsed);
+          if (vals.length === 1 && Array.isArray(vals[0])) parsed = vals[0] as any[];
         }
-        if (!parsed) {
+
+        if (!parsed || !Array.isArray(parsed)) {
+          const m = content.match(/```(?:json)?\s*([\s\S]*?)```/);
+          if (m) try { const p = JSON.parse(m[1]); parsed = Array.isArray(p) ? p : (p.videos || p.results || Object.values(p)[0]); } catch {}
+        }
+        if (!parsed || !Array.isArray(parsed)) {
           const start = content.indexOf('['), end = content.lastIndexOf(']');
           if (start >= 0 && end > start) try { parsed = JSON.parse(content.slice(start, end + 1)); } catch {}
         }
@@ -188,9 +208,82 @@ Output ONLY a JSON array — no markdown, no preamble, no explanation:
           scanState.classified = classified;
           scanState.likelyPlacements = likely;
         } else {
-          console.error(`[AI] Batch ${batchNum} parse failed: not an array. Raw: ${content.slice(0, 300)}`);
-          if (attempt === 0) { await new Promise(r => setTimeout(r, 1000)); continue; }
-          errors.push(`Batch ${batchNum}: parse failed (contentLen=${content.length}, finish=${finishReason})`);
+          const isJsonModeEmpty = !content && finishReason === 'stop' && !reasoningContent;
+          const diagnosis = isJsonModeEmpty ? 'JSON_MODE_EMPTY_RESPONSE' : `parse_failed(contentLen=${content.length},finish=${finishReason})`;
+          console.error(`[AI] Batch ${batchNum} ${diagnosis}. Raw: ${content.slice(0, 300)} reasoning: ${reasoningContent.slice(0, 100)}`);
+
+          if (attempt === 0) {
+            if (isJsonModeEmpty) {
+              // Retry without json_object format (JSON mode sometimes returns empty)
+              console.log(`[AI] Batch ${batchNum} retrying without response_format (JSON_MODE workaround)`);
+              try {
+                const retryResp = await axios.post(`${config.deepseek.baseUrl}/chat/completions`, {
+                  model, temperature: 0, max_tokens: 4096,
+                  messages: [{ role: 'user', content: prompt + '\n\nOUTPUT ONLY the JSON array. NO markdown, NO code fences.' }],
+                  thinking: { type: 'disabled' as const },
+                }, {
+                  headers: { Authorization: `Bearer ${deepseekKey}`, 'Content-Type': 'application/json' },
+                  timeout: AI_TIMEOUT_MS,
+                });
+                const retryContent = retryResp.data?.choices?.[0]?.message?.content?.trim() || '';
+                let retryParsed: any[] | null = null;
+                try { retryParsed = JSON.parse(retryContent); } catch {}
+                if (!retryParsed) { const m = retryContent.match(/```(?:json)?\s*([\s\S]*?)```/); if (m) try { retryParsed = JSON.parse(m[1]); } catch {} }
+                if (!retryParsed) { const s = retryContent.indexOf('['), e = retryContent.lastIndexOf(']'); if (s>=0&&e>s) try { retryParsed = JSON.parse(retryContent.slice(s,e+1)); } catch {} }
+                if (Array.isArray(retryParsed) && retryParsed.length > 0) {
+                  parsed = retryParsed;
+                  console.log(`[AI] Batch ${batchNum} JSON_MODE retry OK: ${retryParsed.length} items`);
+                  // Fall through to save logic below
+                } else {
+                  console.error(`[AI] Batch ${batchNum} JSON_MODE retry also failed. contentLen=${retryContent.length}`);
+                  await new Promise(r => setTimeout(r, 500)); continue;
+                }
+              } catch { await new Promise(r => setTimeout(r, 500)); continue; }
+            } else {
+              await new Promise(r => setTimeout(r, 1000)); continue;
+            }
+          }
+
+          // If we got here with parsed data from retry, save it
+          if (!(Array.isArray(parsed) && parsed.length > 0)) {
+            errors.push(`Batch ${batchNum}: ${diagnosis}`);
+            // Mark batch videos as failed
+            for (const v of batch) {
+              await getSupabase().from('youtube_competitor_videos').update({
+                workflow_status: 'discovered',
+                classification_raw: { error: diagnosis, queuedAt: new Date().toISOString() },
+              }).eq('video_id', v.videoId);
+              scanState.failed++;
+            }
+            if (attempt === 0) await new Promise(r => setTimeout(r, 500));
+            continue;
+          }
+        }
+
+        // Save parsed results (reachable from both normal path and JSON_MODE retry)
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          for (const item of parsed) {
+            const vid = batch.find(v => v.videoId === item.videoId);
+            if (!vid) continue;
+            const placementMap: Record<string, string> = { confirmed: 'confirmed_paid_placement', likely: 'likely_sponsored', organic: 'organic_mention', official: 'official_brand_video', irrelevant: 'unknown' };
+            const placementType = placementMap[item.placementType] || 'unknown';
+            if (placementType === 'confirmed_paid_placement' || placementType === 'likely_sponsored') likely++;
+
+            await getSupabase().from('youtube_competitor_videos').update({
+              placement_type: placementType, sponsor_confidence: (item.confidence || 50) / 100,
+              game_name: item.game || null, topic_category: item.theme || 'game_integration',
+              content_type: item.format || 'integrated_placement',
+              brand_mention_position: (item.reasonCodes || []).filter((c: string) => ['brand_in_title', 'brand_link'].includes(c)).map((c: string) => c === 'brand_in_title' ? 'title' : 'description'),
+              promo_code: item.reasonCodes?.includes('promo_code') ? 'yes' : null,
+              workflow_status: 'classified',
+              classification_raw: { ai: item, classifiedAt: new Date().toISOString(), batchNum },
+              last_updated_at: new Date().toISOString(),
+            }).eq('video_id', item.videoId);
+            classified++;
+          }
+          batchSuccess = true;
+          scanState.classified = classified;
+          scanState.likelyPlacements = likely;
         }
       } catch (err) {
         const msg = (err as Error).message;

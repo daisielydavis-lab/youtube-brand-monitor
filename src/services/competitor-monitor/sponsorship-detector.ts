@@ -184,7 +184,7 @@ Output JSON:
   "reasoning": "Brief explanation of why this classification was chosen (1-2 sentences)"
 }`;
 
-  const model = config.gemini.apiKey ? 'gemini-2.0-flash' : 'deepseek-chat';
+  const model = config.gemini.apiKey ? 'gemini-2.0-flash' : 'deepseek-v4-flash';
   const isGemini = model.startsWith('gemini');
 
   try {
@@ -215,6 +215,7 @@ Output JSON:
           temperature: 0.2,
           max_tokens: 1024,
           response_format: { type: 'json_object' },
+          thinking: { type: 'disabled' as const },
         },
         {
           headers: {
