@@ -100,9 +100,10 @@ export async function getDashboardData(filter?: {
   // Build base query
   let query = db
     .from('youtube_competitor_videos')
-    .select('*')
+    .select('video_id,title,description,channel_id,channel_name,published_at,duration,is_short,thumbnail_url,tags,language,market,game_name,content_type,placement_type,sponsor_confidence,topic_category,promo_code,landing_domain,product_selling_points,view_count,like_count,comment_count,discovery_method,has_paid_placement_tag,brand_mention_position,classification_raw,workflow_status,public_performance_score,baseline_lift,first_seen_at,last_updated_at')
     .gte('published_at', since)
-    .order('published_at', { ascending: false });
+    .order('published_at', { ascending: false })
+    .limit(500);
 
   if (filter?.videoType === 'long') query = query.eq('is_short', false);
   else if (filter?.videoType === 'short') query = query.eq('is_short', true);
@@ -110,7 +111,8 @@ export async function getDashboardData(filter?: {
   if (filter?.language) query = query.eq('language', filter.language);
   if (filter?.market) query = query.eq('market', filter.market);
 
-  const { data: videos } = await query;
+  const { data: videos, error: queryErr } = await query;
+  console.log(`[Dashboard] Query returned: ${videos?.length || 0} videos, error: ${queryErr?.message || 'none'}, since: ${since}`);
   if (!videos || !videos.length) {
     // Empty state
     const { count: totalVideos } = await db.from('youtube_competitor_videos').select('id', { count: 'exact', head: true });
