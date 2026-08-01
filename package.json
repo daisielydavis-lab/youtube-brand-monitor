@@ -1,0 +1,33 @@
+{
+  "name": "youtube-competitor-monitor",
+  "version": "1.0.0",
+  "description": "YouTube Competitor Placement Monitor — track GearUP/ExitLag/LagZapper KOL placements, estimate public performance",
+  "main": "dist/app.js",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "dev": "ts-node src/app.ts",
+    "build": "tsc",
+    "start": "node dist/app.js",
+    "discover": "ts-node src/cli-discover.ts",
+    "report": "ts-node src/cli-report.ts"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.110.7",
+    "axios": "^1.7.0",
+    "dotenv": "^16.4.0",
+    "express": "^4.21.0",
+    "node-cron": "^3.0.3",
+    "uuid": "^11.0.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.0.0",
+    "@types/node-cron": "^3.0.11",
+    "@types/uuid": "^10.0.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.5.0"
+  }
+}
