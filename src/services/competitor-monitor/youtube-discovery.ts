@@ -334,3 +334,53 @@ export function estimateQuota(
     total: searchCost + videoCost + channelCost + commentCost,
   };
 }
+
+/** Get recent videos from a channel's uploads playlist (uses NO search quota!) */
+export async function getChannelRecentVideos(
+  channelId: string,
+  maxResults = 10,
+): Promise<YouTubeVideoResult[]> {
+  if (!API_KEY) return [];
+
+  try {
+    // Step 1: Get the uploads playlist ID
+    const { data: chData } = await axios.get(`${YT_BASE}/channels`, {
+      params: { part: 'contentDetails', id: channelId, key: API_KEY },
+      timeout: 10000,
+    });
+
+    const uploadsPlaylistId = chData?.items?.[0]?.contentDetails?.relatedPlaylists?.uploads;
+    if (!uploadsPlaylistId) return [];
+
+    // Step 2: Get recent videos from playlist
+    const { data: plData } = await axios.get(`${YT_BASE}/playlistItems`, {
+      params: { part: 'snippet', playlistId: uploadsPlaylistId, maxResults, key: API_KEY },
+      timeout: 10000,
+    });
+
+    const items = plData?.items || [];
+    const videoIds: string[] = items.map((i: any) => i.snippet?.resourceId?.videoId).filter(Boolean);
+    if (!videoIds.length) return [];
+
+    return getVideosByIds(videoIds);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[YouTube] Channel videos failed for ${channelId}: ${msg}`);
+    return [];
+  }
+}
+
+/** Batch get recent videos from known channels (no search quota — uses playlistItems.list) */
+export async function getChannelsRecentVideos(
+  channelIds: string[],
+  publishedAfter: string,
+  maxPerChannel = 5,
+): Promise<YouTubeVideoResult[]> {
+  const results: YouTubeVideoResult[] = [];
+  for (const id of channelIds) {
+    const videos = await getChannelRecentVideos(id, maxPerChannel);
+    // Filter by publish date
+    results.push(...videos.filter(v => v.publishedAt >= publishedAfter));
+  }
+  return results;
+}
