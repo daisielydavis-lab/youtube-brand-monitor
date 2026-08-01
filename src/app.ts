@@ -51,6 +51,13 @@ app.get('/status', async (_req, res) => {
 });
 
 // ── Trigger discovery ──
+// GET: simple trigger for 7-day backfill (just visit in browser!)
+app.get('/run', async (_req, res) => {
+  res.type('html').send(`<html><body><h2>Discovery started!</h2><p>Scanning past 7 days...</p>
+    <script>fetch('/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({backfillDays:7})}).then(r=>r.json()).then(d=>document.body.innerHTML+='<pre>'+JSON.stringify(d,null,2)+'</pre><br><a href="/">View Dashboard</a>')</script>
+    </body></html>`);
+});
+
 app.post('/run', async (req, res) => {
   try {
     const { backfillDays, skipAI, skipComments } = req.body || {};
