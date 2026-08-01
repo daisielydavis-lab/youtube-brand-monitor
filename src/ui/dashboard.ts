@@ -164,16 +164,121 @@ switchTab(savedTab);
 }
 
 function emptyState(sys: any): string {
+  const sqPct = Math.round((sys.searchQuotaUsed||0)/100*100);
+  const gqPct = Math.round((sys.generalQuotaUsed||0)/10000*100);
+  const quotaColor = (pct: number) => pct>=95?'#ef4444':pct>=85?'#f59e0b':pct>=70?'#f97316':'#22c55e';
+  // Quota reset: midnight Pacific = 07:00 UTC = 15:00 Beijing
+  const nextReset = new Date(); nextReset.setUTCHours(7,0,0,0);
+  if (nextReset <= new Date()) nextReset.setDate(nextReset.getDate()+1);
+  const resetStr = nextReset.toLocaleString('en-US', {hour:'numeric',minute:'2-digit',timeZoneName:'short'});
+
   return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Competitor Monitor</title><style>${CSS}</style></head><body>
-<div class="container"><header><div><h1>📊 YouTube Competitor Monitor</h1><p class="sub">GearUP · ExitLag · LagZapper</p></div></header>
-<div class="onboard"><h2>No monitoring data yet</h2><p>3 brands · 6 search queries · Channel monitoring active</p>
-<div class="oc"><span class="oc-i ok">✓</span> YouTube API: ${(sys.searchQuotaUsed||0)>90?'⚠️ Quota exhausted':'Connected'}</div>
-<div class="oc"><span class="oc-i ok">✓</span> 3 Brands Configured</div>
-<div class="oc"><span class="oc-i ok">✓</span> 6 Combined Search Queries</div>
-<div class="oc"><span class="oc-i ${sys.lastRun?'ok':'wait'}">${sys.lastRun?'✓ Last scan: '+new Date(sys.lastRun).toLocaleString():'○ No scan yet'}</span></div>
-<div style="margin-top:24px"><a href="/run" class="btn-p">🔍 Run First Scan</a> <span style="color:#64748b;font-size:13px;margin-left:12px">Scans past 7 days</span></div>
-<div style="margin-top:12px;font-size:12px;color:#64748b">Search quota: ${sys.searchQuotaUsed||0}/100 · General: ${sys.generalQuotaUsed||0}/10K ${(sys.searchQuotaUsed||0)>70?'· ⚠️ Search quota low — scan will use channel monitoring only':''}</div>
-</div></div></body></html>`;
+<div class="container">
+<header><div><h1>📊 YouTube Competitor Monitor</h1><p class="sub">GearUP · ExitLag · LagZapper</p></div>
+<div class="sys"><span class="dot ${(sys.searchQuotaUsed||0)>70?'warn':'ok'}">Search: ${sys.searchQuotaUsed||0}/100</span><span>General: ${sys.generalQuotaUsed||0}/10K</span></div></header>
+
+<div class="onboard">
+<h2>No monitoring data yet</h2>
+<p>Your monitor is configured and ready to run.</p>
+<div class="config-summary">
+  <div class="cs-row"><span>Brands</span><span>3</span></div>
+  <div class="cs-row"><span>Discovery queries</span><span>6</span></div>
+  <div class="cs-row"><span>Creator watchlist</span><span>${sys.totalCreators||0}</span></div>
+  <div class="cs-row"><span>Markets</span><span>Global</span></div>
+  <div class="cs-row"><span>Languages</span><span>All</span></div>
+  <div class="cs-row"><span>Scan mode</span><span>Normal</span></div>
+</div>
+
+<div class="checklist">
+  <div class="cl-item done">YouTube API connected</div>
+  <div class="cl-item done">3 competitor brands configured</div>
+  <div class="cl-item done">6 discovery queries configured</div>
+  <div class="cl-item pending">First scan pending</div>
+</div>
+
+<div class="scan-config" id="scan-config">
+  <div class="sc-row">
+    <span class="sc-label">Scan window</span>
+    <select id="scan-days" class="sc-select">
+      <option value="7">Past 7 days</option>
+      <option value="30" selected>Past 30 days</option>
+      <option value="60">Past 60 days</option>
+    </select>
+  </div>
+  <div class="sc-estimate">
+    <span>Estimated usage</span>
+    <span><strong id="est-calls">6</strong> search calls · Up to <strong id="est-videos">300</strong> candidate videos</span>
+  </div>
+  <button onclick="startFirstScan()" class="btn-p" id="scan-btn">🔍 Run First Scan</button>
+</div>
+
+<div id="scan-progress" class="scan-progress" style="display:none">
+  <h3>Running initial scan</h3>
+  <div class="sp-steps">
+    <div class="sp-step active" id="sp-discovery">Discovering videos...</div>
+    <div class="sp-step" id="sp-enrich">Enriching data...</div>
+    <div class="sp-step" id="sp-classify">AI classification...</div>
+    <div class="sp-step" id="sp-save">Saving results...</div>
+  </div>
+  <div class="sp-bar"><div class="sp-bar-fill" id="sp-bar" style="width:0%"></div></div>
+  <div class="sp-stats" id="sp-stats"></div>
+  <div id="sp-result"></div>
+</div>
+
+<div class="quota-section">
+  <div class="q-row">
+    <span class="q-label">Search discovery</span>
+    <span class="q-num">${sys.searchQuotaUsed||0} / 100</span>
+    <div class="q-bar"><div class="q-fill" style="width:${sqPct}%;background:${quotaColor(sqPct)}"></div></div>
+  </div>
+  <div class="q-row">
+    <span class="q-label">General data reads</span>
+    <span class="q-num">${sys.generalQuotaUsed||0} / 10,000</span>
+    <div class="q-bar"><div class="q-fill" style="width:${gqPct}%;background:${quotaColor(gqPct)}"></div></div>
+  </div>
+  <div class="q-reset">Next quota reset: ${resetStr}</div>
+</div>
+</div>
+
+<script>
+async function startFirstScan() {
+  const days = document.getElementById('scan-days').value;
+  document.getElementById('scan-config').style.display='none';
+  document.getElementById('scan-progress').style.display='block';
+  document.getElementById('scan-btn').style.display='none';
+
+  fetch('/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:'manual',backfillDays:parseInt(days)})})
+    .then(r=>r.json()).then(d=>{ if(!d.success) document.getElementById('sp-result').innerHTML='<p style="color:#ef4444">❌ '+d.error+'</p>'; });
+
+  pollProgress();
+}
+function pollProgress() {
+  fetch('/api/scan-status').then(r=>r.json()).then(s=>{
+    const pct = s.done ? 100 : s.videosNew>0 && s.errors.length===0 ? 60 : s.videosNew>0 ? 30 : 10;
+    document.getElementById('sp-bar').style.width = pct+'%';
+    if (s.videosFound>0) document.getElementById('sp-discovery').className='sp-step done';
+    if (s.videosNew>0) {
+      document.getElementById('sp-discovery').textContent = 'Found '+s.videosFound+' videos';
+      document.getElementById('sp-stats').innerHTML = '<span>Videos discovered: <b>'+s.videosFound+'</b></span> <span>New: <b>'+s.videosNew+'</b></span> <span>Search quota: <b>'+s.searchQuotaUsed+'/100</b></span>';
+    }
+    if (s.done) {
+      document.querySelectorAll('.sp-step').forEach(e=>{e.className='sp-step done'});
+      document.getElementById('sp-stats').innerHTML='';
+      document.getElementById('sp-result').innerHTML = '<div class="scan-done"><h3>✅ Scan complete</h3><p>'+s.videosNew+' new videos discovered</p><a href="/" class="btn-p">View Results</a></div>';
+      return;
+    }
+    if (s.errors.length) document.getElementById('sp-stats').innerHTML += '<br><span style="color:#f59e0b">⚠️ '+s.errors.join(', ')+'</span>';
+    setTimeout(pollProgress, 2000);
+  }).catch(()=>setTimeout(pollProgress, 3000));
+}
+// Live quota update for estimate
+document.getElementById('scan-days').addEventListener('change', function(){
+  var d = parseInt(this.value);
+  document.getElementById('est-calls').textContent = d <= 7 ? '6' : d <= 30 ? '12' : '24';
+  document.getElementById('est-videos').textContent = d <= 7 ? '300' : d <= 30 ? '600' : '1200';
+});
+</script>
+</div></body></html>`;
 }
 
 function fmtTopic(t: string): string {
@@ -251,11 +356,48 @@ h1{font-size:22px}h2{font-size:15px;color:#94a3b8;margin:20px 0 10px;padding-bot
 
 /* Empty / Onboard */
 .mt{color:#64748b;font-style:italic;padding:16px;text-align:center}
-.onboard{max-width:500px;margin:60px auto;background:#111827;border:1px solid #1e293b;border-radius:12px;padding:40px;text-align:center}
-.onboard h2{font-size:20px;color:#f1f5f9;border:none;margin-bottom:8px}
+.onboard{max-width:560px;margin:40px auto;background:#111827;border:1px solid #1e293b;border-radius:12px;padding:32px 36px}
+.onboard h2{font-size:20px;color:#f1f5f9;border:none;margin-bottom:4px}
+.onboard>p{color:#94a3b8;margin-bottom:20px;font-size:13px}
+/* Config summary */
+.config-summary{display:grid;grid-template-columns:1fr 1fr;gap:6px 20px;margin-bottom:20px;padding:12px;background:#0b1120;border-radius:8px}
+.cs-row{display:flex;justify-content:space-between;font-size:12px;padding:2px 0;color:#94a3b8}
+.cs-row span:last-child{color:#e2e8f0;font-weight:500}
+/* Checklist */
+.checklist{text-align:left;margin-bottom:20px}
+.cl-item{font-size:13px;padding:6px 0;display:flex;align-items:center;gap:8px;color:#64748b}
+.cl-item::before{content:'';width:6px;height:6px;border-radius:50%;flex-shrink:0}
+.cl-item.done{color:#94a3b8}.cl-item.done::before{background:#22c55e}
+.cl-item.pending{color:#64748b}.cl-item.pending::before{background:#64748b}
+/* Scan config */
+.scan-config{background:#0b1120;border-radius:8px;padding:16px;margin-bottom:16px}
+.sc-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+.sc-label{font-size:13px;color:#94a3b8}
+.sc-select{background:#1e293b;color:#e2e8f0;border:1px solid #334155;padding:6px 10px;border-radius:6px;font-size:13px;cursor:pointer}
+.sc-estimate{display:flex;justify-content:space-between;font-size:12px;color:#64748b;margin-bottom:14px}
+.sc-estimate strong{color:#e2e8f0}
+/* Scan progress */
+.scan-progress{margin-bottom:16px;text-align:left}
+.scan-progress h3{font-size:15px;color:#38bdf8;margin-bottom:12px}
+.sp-steps{display:flex;flex-direction:column;gap:4px;margin-bottom:10px}
+.sp-step{font-size:13px;color:#64748b;padding:3px 0}
+.sp-step.active{color:#38bdf8}.sp-step.done{color:#22c55e}
+.sp-bar{height:4px;background:#1e293b;border-radius:2px;overflow:hidden;margin-bottom:10px}
+.sp-bar-fill{height:100%;background:#38bdf8;transition:width 0.5s}
+.sp-stats{font-size:12px;color:#94a3b8;display:flex;flex-wrap:wrap;gap:12px}
+.sp-stats b{color:#e2e8f0}
+.scan-done{text-align:center;padding:16px 0}
+.scan-done h3{color:#22c55e}.scan-done p{color:#94a3b8;margin:4px 0 12px}
+/* Quota */
+.quota-section{margin-top:20px;border-top:1px solid #1e293b;padding-top:16px}
+.q-row{display:flex;align-items:center;gap:10px;margin-bottom:8px;font-size:12px}
+.q-label{color:#94a3b8;width:130px;flex-shrink:0}.q-num{color:#64748b;width:80px;flex-shrink:0;text-align:right}
+.q-bar{flex:1;height:4px;background:#1e293b;border-radius:2px;overflow:hidden}
+.q-fill{height:100%;border-radius:2px;transition:width 0.5s}
+.q-reset{font-size:11px;color:#475569;margin-top:6px;text-align:right}
 .oc{font-size:14px;padding:8px 0;color:#e2e8f0;display:flex;align-items:center;gap:8px;text-align:left}
-.oc-i{font-size:16px;width:20px;text-align:center}.oc-i.ok{color:#22c55e}.oc-i.wait{color:#64748b}
-.btn-p{display:inline-block;padding:12px 24px;background:#1d4ed8;color:white;border-radius:8px;text-decoration:none;font-size:14px;font-weight:600}
+.oc-i{font-size:16px;width:20px;text-align:center;flex-shrink:0}.oc-i.ok{color:#22c55e}.oc-i.wait{color:#64748b}
+.btn-p{display:inline-block;padding:12px 24px;background:#1d4ed8;color:white;border-radius:8px;text-decoration:none;font-size:14px;font-weight:600;cursor:pointer;border:none}
+.btn-p:hover{background:#2563eb}
 .disc{font-size:10px;color:#475569;text-align:center;margin-top:24px;padding-top:10px;border-top:1px solid #1e293b}
-.toast{position:fixed;bottom:20px;right:20px;background:#1e293b;color:#e2e8f0;padding:10px 18px;border-radius:8px;border:1px solid #334155;z-index:100}
-`;
+.toast{position:fixed;bottom:20px;right:20px;background:#1e293b;color:#e2e8f0;padding:10px 18px;border-radius:8px;border:1px solid #334155;z-index:100}`;
