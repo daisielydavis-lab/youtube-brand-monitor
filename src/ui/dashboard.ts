@@ -45,20 +45,25 @@ async function loadDashboard() {
       retry.style.display = 'inline-block';
       return;
     }
-    // Reload with data in URL hash to avoid re-fetch
-    window.jsonData = json;
+    // Store in sessionStorage before reload (survives reload, unlike window vars)
+    sessionStorage.setItem('dashboardData', JSON.stringify(json));
     location.reload();
   } catch(e) {
     el.textContent = 'Connection failed. Please check your network.';
     retry.style.display = 'inline-block';
   }
 }
-// Check if data already loaded
-if (window.jsonData) {
-  document.getElementById('shell-content').innerHTML = '<p>✅ Data loaded — redirecting…</p>';
-  // Will be replaced by full render
-}
-loadDashboard();
+// Check if data already loaded via sessionStorage
+(function(){
+  var cached = sessionStorage.getItem('dashboardData');
+  if (cached) {
+    sessionStorage.removeItem('dashboardData');
+    // Redirect to server-rendered page; server will query fresh
+    location.href = '/';
+    return;
+  }
+  loadDashboard();
+})();
 </script></body></html>`;
 }
 

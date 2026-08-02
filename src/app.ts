@@ -140,12 +140,107 @@ app.post('/api/videos/:id/action', async (req, res) => {
   res.json({ success: true });
 });
 
-// ── Dashboard (shell renders immediately, data loaded client-side) ──
-app.get('/', (_req, res) => {
-  res.type('html').send(renderDashboardShell());
+// ── Shared dashboard query (used by both / and /api/dashboard) ──
+async function queryDashboardData(rangeDays: number) {
+  const since = new Date(Date.now() - rangeDays * 86400000).toISOString();
+  const db = getSupabase();
+
+  const { data: videos, error: vidErr } = await Promise.race([
+    db.from('youtube_competitor_videos')
+      .select('video_id,title,channel_id,channel_name,published_at,is_short,thumbnail_url,game_name,content_type,placement_type,sponsor_confidence,topic_category,promo_code,view_count,like_count,comment_count,classification_raw,workflow_status,first_seen_at')
+      .gte('published_at', since)
+      .order('published_at', { ascending: false })
+      .limit(500),
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error('TIMEOUT')), 5000)),
+  ]);
+
+  if (!videos || !videos.length) {
+    return { hasData: false as const, kpis: {} as any, brands: [], games: [], themes: [], creators: [], recentVideos: [], scanStatus: {} as any };
+  }
+
+  const brandMap = new Map<string, { count: number; creators: Set<string> }>();
+  const gameMap = new Map<string, number>();
+  const themeMap = new Map<string, number>();
+  let highConf = 0;
+  const creators = new Set<string>();
+
+  for (const v of videos) {
+    const brand = v.classification_raw?.sponsorship?.detectedBrand || 'unknown';
+    if (!brandMap.has(brand)) brandMap.set(brand, { count: 0, creators: new Set() });
+    const b = brandMap.get(brand)!; b.count++; b.creators.add(v.channel_id);
+    const game = v.game_name || 'uncategorized';
+    gameMap.set(game, (gameMap.get(game) || 0) + 1);
+    const theme = v.topic_category || 'uncategorized';
+    themeMap.set(theme, (themeMap.get(theme) || 0) + 1);
+    if (v.placement_type === 'confirmed_paid_placement' || v.placement_type === 'likely_sponsored') highConf++;
+    creators.add(v.channel_id);
+  }
+
+  const kpis = {
+    newPlacements: videos.filter(v => new Date(v.first_seen_at!) >= new Date(Date.now() - rangeDays * 86400000)).length,
+    activeCreators: creators.size,
+    videosMonitored: videos.length,
+    highConfidence: highConf,
+  };
+
+  const brandComparison = [...brandMap.entries()].map(([name, d]) => ({
+    brandName: name, newVideos: d.count, creators: d.creators.size, topGame: '', topMarket: '', median7dViews: 0,
+  }));
+
+  const topGames = [...gameMap.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10).map(([game, count]) => ({
+    game, videoCount: count, estimatedReach: 0, brands: {} as Record<string, number>,
+  }));
+
+  const topThemes = [...themeMap.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10).map(([topic, count]) => ({
+    topic, videoCount: count, brands: {} as Record<string, number>,
+  }));
+
+  const recentVideos = videos.slice(0, 20).map(v => ({
+    videoId: v.video_id, title: v.title, thumbnailUrl: v.thumbnail_url, channelName: v.channel_name,
+    brand: v.classification_raw?.sponsorship?.detectedBrand || 'unknown', game: v.game_name || 'unknown',
+    publishedAt: v.published_at, viewCount: v.view_count || 0,
+    placementType: v.placement_type || 'unknown', sponsorConfidence: v.sponsor_confidence || 0,
+    discoveryEvidence: [] as string[], promoCode: v.promo_code || null,
+    growth24h: null, growth72h: null,
+  }));
+
+  return {
+    hasData: true as const, kpis, brandComparison, topGames, topThemes, topCreators: [] as any[],
+    recentVideos, scanStatus: { lastScanAt: null, nextScanAt: 'Tomorrow 06:00 UTC', totalVideos: videos.length, totalCreators: creators.size, queriesActive: 6 },
+  };
+}
+
+// ── Dashboard (server-rendered, no client-side shell reload) ──
+app.get('/', async (_req, res) => {
+  const startedAt = Date.now();
+  const requestId = Math.random().toString(36).slice(2, 8);
+  console.log(`[Dashboard:${requestId}] Request started`);
+
+  try {
+    const data = await queryDashboardData(30);
+    const { data: campaigns } = await getSupabase().from('campaigns').select('*').eq('status', 'active').order('detected_at', { ascending: false }).limit(10);
+    const status = await getMonitorStatus();
+    console.log(`[Dashboard:${requestId}] Done: ${data.hasData ? data.recentVideos.length : 0} videos, totalMs: ${Date.now() - startedAt}`);
+
+    res.type('html').send(renderDashboard({
+      hasData: data.hasData,
+      scanStatus: data.scanStatus,
+      kpi: data.kpis,
+      brandComparison: data.brandComparison || [],
+      topGames: data.topGames || [],
+      topThemes: data.topThemes || [],
+      topCreators: data.topCreators || [],
+      recentVideos: data.recentVideos || [],
+      anomalies: [],
+    }, {}, campaigns || [], { ...status, creatorProfiles: [] }));
+  } catch (err) {
+    console.error(`[Dashboard:${requestId}] Server render failed: ${(err as Error).message}, ms: ${Date.now() - startedAt}`);
+    // Fallback: show shell that retries client-side
+    res.type('html').send(renderDashboardShell());
+  }
 });
 
-// ── API: Dashboard data (fail-open with Promise.allSettled) ──
+// ── API: Dashboard data (JSON, for client-side filtering + shell fallback) ──
 app.get('/api/dashboard', async (req, res) => {
   const requestId = Math.random().toString(36).slice(2, 8);
   const startedAt = Date.now();
@@ -153,80 +248,15 @@ app.get('/api/dashboard', async (req, res) => {
 
   try {
     const rangeDays = parseInt((req.query.range as string) || '30', 10);
-    const since = new Date(Date.now() - rangeDays * 86400000).toISOString();
-    const db = getSupabase();
+    const data = await queryDashboardData(rangeDays);
 
-    // Step 1: Load raw videos (max 3s)
-    console.log(`[Dashboard:${requestId}] Loading videos...`);
-    const { data: videos, error: vidErr } = await Promise.race([
-      db.from('youtube_competitor_videos')
-        .select('video_id,title,channel_id,channel_name,published_at,is_short,thumbnail_url,game_name,content_type,placement_type,sponsor_confidence,topic_category,promo_code,view_count,like_count,comment_count,classification_raw,workflow_status,first_seen_at')
-        .gte('published_at', since)
-        .order('published_at', { ascending: false })
-        .limit(500),
-      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('TIMEOUT')), 3000)),
-    ]);
-    console.log(`[Dashboard:${requestId}] Videos: ${videos?.length || 0}, err: ${vidErr?.message || 'none'}, ms: ${Date.now() - startedAt}`);
-
-    if (!videos?.length && !vidErr) {
+    if (!data.hasData) {
       return res.json({ ok: true, hasData: false, kpis: {}, brands: [], games: [], themes: [], creators: [], recentVideos: [], scanStatus: {} });
     }
 
-    // Aggregation in Node.js memory (fast)
-    const brandMap = new Map<string, { count: number; creators: Set<string> }>();
-    const gameMap = new Map<string, number>();
-    const themeMap = new Map<string, number>();
-    let highConf = 0;
-    const creators = new Set<string>();
+    console.log(`[Dashboard:${requestId}] Done: ${data.recentVideos.length} videos, ${data.scanStatus.totalCreators} creators, ${data.kpis.highConfidence} high-conf, totalMs: ${Date.now() - startedAt}`);
 
-    for (const v of videos!) {
-      const brand = v.classification_raw?.sponsorship?.detectedBrand || 'unknown';
-      if (!brandMap.has(brand)) brandMap.set(brand, { count: 0, creators: new Set() });
-      const b = brandMap.get(brand)!; b.count++; b.creators.add(v.channel_id);
-      const game = v.game_name || 'uncategorized';
-      gameMap.set(game, (gameMap.get(game) || 0) + 1);
-      const theme = v.topic_category || 'uncategorized';
-      themeMap.set(theme, (themeMap.get(theme) || 0) + 1);
-      if (v.placement_type === 'confirmed_paid_placement' || v.placement_type === 'likely_sponsored') highConf++;
-      creators.add(v.channel_id);
-    }
-
-    // Build response
-    const kpis = {
-      newPlacements: videos!.filter(v => new Date(v.first_seen_at!) >= new Date(Date.now() - rangeDays * 86400000)).length,
-      activeCreators: creators.size,
-      videosMonitored: videos!.length,
-      highConfidence: highConf,
-    };
-
-    const brandComparison = [...brandMap.entries()].map(([name, d]) => ({
-      brandName: name, newVideos: d.count, creators: d.creators.size, topGame: '', topMarket: '', median7dViews: 0,
-    }));
-
-    const topGames = [...gameMap.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10).map(([game, count]) => ({
-      game, videoCount: count, estimatedReach: 0, brands: {} as Record<string, number>,
-    }));
-
-    const topThemes = [...themeMap.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10).map(([topic, count]) => ({
-      topic, videoCount: count, brands: {} as Record<string, number>,
-    }));
-
-    const recentVideos = videos!.slice(0, 20).map(v => ({
-      videoId: v.video_id, title: v.title, thumbnailUrl: v.thumbnail_url, channelName: v.channel_name,
-      brand: v.classification_raw?.sponsorship?.detectedBrand || 'unknown', game: v.game_name || 'unknown',
-      publishedAt: v.published_at, viewCount: v.view_count || 0,
-      placementType: v.placement_type || 'unknown', sponsorConfidence: v.sponsor_confidence || 0,
-      discoveryEvidence: [] as string[], promoCode: v.promo_code || null,
-      growth24h: null, growth72h: null,
-    }));
-
-    console.log(`[Dashboard:${requestId}] Done: ${videos!.length} videos, ${creators.size} creators, ${highConf} high-conf, totalMs: ${Date.now() - startedAt}`);
-
-    return res.json({
-      ok: true, hasData: true, kpis, brandComparison, topGames, topThemes, topCreators: [], recentVideos,
-      scanStatus: { lastScanAt: null, nextScanAt: 'Tomorrow 06:00 UTC', totalVideos: videos!.length, totalCreators: creators.size, queriesActive: 6 },
-      totalMs: Date.now() - startedAt,
-    });
+    return res.json({ ok: true, ...data, totalMs: Date.now() - startedAt });
   } catch (err) {
     console.error(`[Dashboard:${requestId}] Failed: ${(err as Error).message}, ms: ${Date.now() - startedAt}`);
     res.status(503).json({ ok: false, hasData: false, error: 'Dashboard query timed out. Data is safe — please retry.' });
