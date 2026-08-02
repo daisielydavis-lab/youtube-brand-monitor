@@ -210,19 +210,33 @@ async function queryDashboardData(rangeDays: number) {
   };
 }
 
-// ── Dashboard (server-rendered, no client-side shell reload) ──
+// ── Dashboard (server-rendered, each sub-query safe-isolated) ──
 app.get('/', async (_req, res) => {
   const startedAt = Date.now();
   const requestId = Math.random().toString(36).slice(2, 8);
   console.log(`[Dashboard:${requestId}] Request started`);
 
   try {
+    // Step 1: Query video data (critical)
     const data = await queryDashboardData(30);
-    const { data: campaigns } = await getSupabase().from('campaigns').select('*').eq('status', 'active').order('detected_at', { ascending: false }).limit(10);
-    const status = await getMonitorStatus();
-    console.log(`[Dashboard:${requestId}] Done: ${data.hasData ? data.recentVideos.length : 0} videos, totalMs: ${Date.now() - startedAt}`);
+    console.log(`[Dashboard:${requestId}] Step1 videos done: hasData=${data.hasData}`);
 
-    res.type('html').send(renderDashboard({
+    // Step 2: Campaigns (non-critical, safe-fail)
+    let campaigns: any[] = [];
+    try {
+      const { data: c } = await getSupabase().from('campaigns').select('*').eq('status', 'active').order('detected_at', { ascending: false }).limit(10);
+      campaigns = c || [];
+    } catch (e) { console.warn(`[Dashboard:${requestId}] Campaigns query skipped: ${(e as Error).message}`); }
+
+    // Step 3: Status (non-critical, safe-fail)
+    let status: any = {};
+    try {
+      status = await getMonitorStatus();
+    } catch (e) { console.warn(`[Dashboard:${requestId}] Status query skipped: ${(e as Error).message}`); }
+
+    console.log(`[Dashboard:${requestId}] Rendering HTML...`);
+
+    const html = renderDashboard({
       hasData: data.hasData,
       scanStatus: data.scanStatus,
       kpi: data.kpis,
@@ -232,11 +246,21 @@ app.get('/', async (_req, res) => {
       topCreators: data.topCreators || [],
       recentVideos: data.recentVideos || [],
       anomalies: [],
-    }, {}, campaigns || [], { ...status, creatorProfiles: [] }));
+    }, {}, campaigns, { ...status, creatorProfiles: [] });
+
+    console.log(`[Dashboard:${requestId}] Done: ${data.recentVideos.length} videos, HTML=${html.length}chars, totalMs: ${Date.now() - startedAt}`);
+    res.type('html').send(html);
   } catch (err) {
-    console.error(`[Dashboard:${requestId}] Server render failed: ${(err as Error).message}, ms: ${Date.now() - startedAt}`);
-    // Fallback: show shell that retries client-side
-    res.type('html').send(renderDashboardShell());
+    console.error(`[Dashboard:${requestId}] FATAL: ${(err as Error).message}, ms: ${Date.now() - startedAt}`);
+    // Minimal fallback — no JS, no auto-reload
+    res.type('html').send(`<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Competitor Monitor</title>
+<style>body{font-family:-apple-system,sans-serif;background:#f3f6fb;color:#46546c;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0}
+.card{background:#fff;border-radius:16px;padding:40px;text-align:center;max-width:500px;box-shadow:0 8px 30px rgba(0,0,0,0.08)}
+h2{color:#14213d;margin-bottom:8px}p{color:#5f6f89;margin-bottom:20px}
+a{display:inline-block;padding:10px 24px;background:#3568e8;color:#fff;border-radius:8px;text-decoration:none;font-weight:600}
+a:hover{background:#2857cf}</style></head><body>
+<div class="card"><h2>Unable to load dashboard</h2><p>Server encountered an error: ${(err as Error).message}</p>
+<a href="/">Retry</a> &nbsp; <a href="/api/dashboard">Check API</a></div></body></html>`);
   }
 });
 
