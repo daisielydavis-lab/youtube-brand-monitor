@@ -42,7 +42,8 @@ export async function detectCampaigns(): Promise<number> {
   const groups = new Map<string, any[]>();
 
   for (const v of videos as any[]) {
-    const brand = v.classification_raw?.ai?.brand || v.game_name || 'unknown';
+    const brand = v.classification_raw?.final?.brand || v.classification_raw?.rule?.brand || v.classification_raw?.ai?.brand || 'unknown';
+    if (brand === 'unknown') continue; // skip unclassified
     const game = v.game_name || 'unknown';
     const published = new Date(v.published_at).getTime();
 
@@ -72,7 +73,7 @@ export async function detectCampaigns(): Promise<number> {
   for (const [, groupVids] of groups) {
     if (groupVids.length < 2) continue;
 
-    const brand = groupVids[0].classification_raw?.ai?.brand || groupVids[0].game_name || 'unknown';
+    const brand = groupVids[0].classification_raw?.final?.brand || groupVids[0].classification_raw?.rule?.brand || groupVids[0].classification_raw?.ai?.brand || 'unknown';
     const game = groupVids[0].game_name || groupVids[0].classification_raw?.ai?.game || 'unknown';
     const creators = new Set(groupVids.map((v: any) => v.channel_id));
     // Use topic_category (populated from AI theme) as selling point label
