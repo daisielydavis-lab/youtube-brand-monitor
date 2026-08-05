@@ -183,7 +183,7 @@ async function queryDashboardData(rangeDays: number) {
   const creators = new Set<string>();
 
   for (const v of videos) {
-    const brand = v.classification_raw?.rule?.brand || v.classification_raw?.ai?.brand || 'unknown';
+    const brand = v.classification_raw?.final?.brand || v.classification_raw?.rule?.brand || v.classification_raw?.ai?.brand || 'unknown';
     if (!brandMap.has(brand)) brandMap.set(brand, { count: 0, creators: new Set() });
     const b = brandMap.get(brand)!; b.count++; b.creators.add(v.channel_id);
     const game = v.game_name || v.classification_raw?.rule?.game || v.classification_raw?.ai?.game || 'uncategorized';
@@ -211,7 +211,7 @@ async function queryDashboardData(rangeDays: number) {
 
   const recentVideos = videos.slice(0, 20).map(v => ({
     videoId: v.video_id, title: v.title, thumbnailUrl: v.thumbnail_url, channelName: v.channel_name,
-    brand: v.classification_raw?.sponsorship?.detectedBrand || 'unknown', game: v.game_name || 'unknown',
+    brand: v.classification_raw?.final?.brand || v.classification_raw?.rule?.brand || v.classification_raw?.ai?.brand || 'unknown', game: v.game_name || 'unknown',
     publishedAt: v.published_at, viewCount: v.view_count || 0,
     placementType: v.placement_type || 'unknown', sponsorConfidence: v.sponsor_confidence || 0,
     discoveryEvidence: [] as string[], promoCode: v.promo_code || null,
