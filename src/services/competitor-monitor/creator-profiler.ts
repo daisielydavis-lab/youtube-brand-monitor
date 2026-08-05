@@ -197,8 +197,115 @@ export async function getAllCreators(): Promise<CreatorProfile[]> {
     .from('youtube_creator_profiles')
     .select('*')
     .order('subscriber_count', { ascending: false });
-
   return (data || []).map(mapProfileFromDb);
+}
+
+/**
+ * Aggregate creators from videos table — always returns rows even if no profile exists.
+ * Joins with youtube_creator_profiles for subscriber counts etc.
+ */
+export interface CreatorRow {
+  channelId: string;
+  channelName: string;
+  thumbnailUrl: string;
+  subscriberCount: number | null;
+  country: string | null;
+  primaryLanguage: string;
+  videosInWindow: number;
+  confirmedCount: number;
+  likelyCount: number;
+  brandMentions: Record<string, number>;
+  games: string[];
+  markets: string[];
+  avgViews: number;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  relationType: 'new' | 'recurring' | 'loyal' | 'multi_brand';
+}
+
+export async function getCreatorsFromVideos(options?: {
+  rangeDays?: number;
+  brand?: string;
+}): Promise<CreatorRow[]> {
+  const db = getSupabase();
+  const days = options?.rangeDays || 30;
+  const since = new Date(Date.now() - days * 86400000).toISOString();
+
+  // Get all confirmed/likely videos in window
+  const { data: videos } = await db
+    .from('youtube_competitor_videos')
+    .select('video_id,channel_id,channel_name,title,thumbnail_url,placement_type,game_name,market,language,view_count,like_count,comment_count,published_at,first_seen_at,classification_raw')
+    .in('placement_type', ['confirmed_paid_placement', 'likely_sponsored'])
+    .gte('published_at', since)
+    .order('published_at', { ascending: false })
+    .limit(1000);
+
+  if (!videos?.length) return [];
+
+  // Get all profiles for enrichment
+  const { data: profiles } = await db.from('youtube_creator_profiles').select('*');
+  const profileMap = new Map((profiles || []).map((p: any) => [p.channel_id, p]));
+
+  // Group by channel_id
+  const channelMap = new Map<string, any[]>();
+  for (const v of videos) {
+    const brand = v.classification_raw?.final?.brand || v.classification_raw?.rule?.brand || v.classification_raw?.ai?.brand;
+    if (options?.brand && brand !== options.brand) continue;
+    if (!channelMap.has(v.channel_id)) channelMap.set(v.channel_id, []);
+    channelMap.get(v.channel_id)!.push(v);
+  }
+
+  const creators: CreatorRow[] = [];
+  for (const [channelId, vids] of channelMap) {
+    const profile = profileMap.get(channelId);
+    const sorted = vids.sort((a: any, b: any) => new Date(b.published_at).getTime() - new Date(a.published_at).getTime());
+    const timestamps = sorted.map((v: any) => new Date(v.published_at).getTime());
+
+    // Brand mentions
+    const brandMentions: Record<string, number> = { ExitLag: 0, GearUP: 0, LagZapper: 0 };
+    const games = new Set<string>();
+    const markets = new Set<string>();
+    for (const v of sorted) {
+      const b = v.classification_raw?.final?.brand || v.classification_raw?.rule?.brand || v.classification_raw?.ai?.brand;
+      if (b && brandMentions.hasOwnProperty(b)) brandMentions[b]++;
+      if (v.game_name && v.game_name !== 'unknown') games.add(v.game_name);
+      if (v.market && v.market !== 'Unknown') markets.add(v.market);
+    }
+
+    // Relation type: derived from videos already in memory
+    const allBrands = new Set<string>();
+    sorted.forEach((v: any) => {
+      const b = v.classification_raw?.final?.brand || v.classification_raw?.rule?.brand || v.classification_raw?.ai?.brand;
+      if (b && b !== 'unknown') allBrands.add(b);
+    });
+    const firstEver = sorted[sorted.length - 1].first_seen_at;
+    const daysSinceFirst = firstEver ? (Date.now() - new Date(firstEver).getTime()) / 86400000 : 999;
+    const relationType: CreatorRow['relationType'] =
+      allBrands.size >= 2 ? 'multi_brand' :
+      daysSinceFirst <= 30 ? 'new' :
+      vids.length >= 3 ? 'loyal' : 'recurring';
+
+    creators.push({
+      channelId,
+      channelName: profile?.channel_name || sorted[0].channel_name || 'Unknown',
+      thumbnailUrl: profile?.thumbnail_url || sorted[0].thumbnail_url || '',
+      subscriberCount: profile?.subscriber_count || null,
+      country: profile?.country || null,
+      primaryLanguage: profile?.primary_language || sorted[0].language || 'en',
+      videosInWindow: vids.length,
+      confirmedCount: sorted.filter((v: any) => v.placement_type === 'confirmed_paid_placement').length,
+      likelyCount: sorted.filter((v: any) => v.placement_type === 'likely_sponsored').length,
+      brandMentions,
+      games: [...games].slice(0, 5),
+      markets: [...markets].slice(0, 5),
+      avgViews: Math.round(sorted.reduce((s: number, v: any) => s + (v.view_count || 0), 0) / sorted.length),
+      firstSeenAt: firstEver || sorted[sorted.length - 1].first_seen_at,
+      lastSeenAt: new Date(Math.max(...timestamps)).toISOString(),
+      relationType,
+    });
+  }
+
+  return creators.sort((a, b) => b.videosInWindow - a.videosInWindow);
 }
 
 /** Detect anomalies: creator switching brands, unusual activity */

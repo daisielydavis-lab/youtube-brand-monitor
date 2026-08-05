@@ -72,9 +72,11 @@ app.get('/api/campaigns', async (_req, res) => {
   res.json(await getCampaigns(status));
 });
 
-// ── Creators ──
-app.get('/api/creators', async (_req, res) => {
-  res.json(await getAllCreators());
+// ── Creators (aggregated from videos, joined with profiles) ──
+app.get('/api/creators', async (req, res) => {
+  const rangeDays = parseInt((req.query.range as string) || '30', 10);
+  const { getCreatorsFromVideos } = require('./services/competitor-monitor/creator-profiler');
+  res.json(await getCreatorsFromVideos({ rangeDays, brand: req.query.brand as string }));
 });
 
 // ── Comments ──
