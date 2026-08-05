@@ -1,6 +1,10 @@
 /**
- * Competitor Monitor — Two-Phase Pipeline
- * Uses unified DeepSeek client (src/services/ai/deepseek-client.ts)
+ * Competitor Monitor — Four-Layer Intelligence Pipeline
+ *
+ * Layer 1: Full collection (100% videos saved)
+ * Layer 2: Rule engine (70-80% classified, no AI cost)
+ * Layer 3: AI analysis (only remaining 20-30%, priority-queued)
+ * Layer 4: Weekly batch intelligence report
  */
 import { config, validateConfig } from '../../config';
 import { getSupabase } from '../../db/supabase';
@@ -10,10 +14,11 @@ import { fetchVideoComments, hasExistingComments, saveComments } from './video-e
 import { getOrCreateCreatorProfile } from './creator-profiler';
 import { saveSnapshot } from './performance-snapshot';
 import { chatJSON } from '../ai/deepseek-client';
+import { batchClassify as ruleClassify, type RuleClassification } from './rule-classifier';
 
 // ── Types ──
 export interface ScanState {
-  running: boolean; mode: string; phase: string; status: string;
+  running: boolean; mode: string; phase: 'idle' | 'discovery' | 'saving' | 'rule_classifying' | 'ai_classifying' | 'classifying' | 'completed' | 'failed' | string; status: string;
   searchQueriesTotal: number; searchQueriesSucceeded: number; searchQueriesFailed: number;
   creatorChannelsChecked: number;
   discoveredFromSearch: number; discoveredFromCreators: number; discoveredCount: number;
@@ -257,24 +262,95 @@ export async function runDiscoveryPipeline(options?: {
   }
 
   const actualCount = dbCount ?? 0;
-  scanState.selectedForAI = Math.min(MAX_AI_PER_SCAN, actualCount);
-  scanState.queued = Math.max(0, actualCount - MAX_AI_PER_SCAN);
 
-  // Phase 4: AI
-  if (!options?.skipAI && scanState.selectedForAI > 0) {
-    scanState.phase = 'classifying';
-    const aiCandidates = scored.slice(0, MAX_AI_PER_SCAN);
-    const result = await batchClassifyVideos(aiCandidates.map(c => ({
-      videoId: c.video.videoId, title: c.video.title, description: c.video.description,
-      channelName: c.video.channelTitle, publishedAt: c.video.publishedAt, tags: c.video.tags, hasPaidPlacementTag: c.video.hasPaidPlacementTag,
-    })));
-    scanState.errors.push(...result.errors);
-    for (const qv of scored.slice(MAX_AI_PER_SCAN)) {
-      await db.from('youtube_competitor_videos').update({ classification_raw: { priorityScore: qv.priority, queuedAt: new Date().toISOString() } }).eq('video_id', qv.video.videoId);
-    }
-    for (const c of aiCandidates) {
-      await saveSnapshot(c.video.videoId, 'discovery', Math.round((Date.now() - new Date(c.video.publishedAt).getTime()) / 3600000), c.video.viewCount, c.video.likeCount, c.video.commentCount, 0, 0.5, c.video.isShort);
-    }
+  // ── Phase 4: Rule Classification (Layer 2) — 100% coverage, zero AI cost ──
+  scanState.phase = 'rule_classifying';
+  console.log(`[Monitor] Phase 4: Rule classifying ${actualCount} videos...`);
+  const toClassify = scored.map(c => ({
+    videoId: c.video.videoId, title: c.video.title, description: c.video.description,
+    tags: c.video.tags, channelName: c.video.channelTitle, isShort: c.video.isShort,
+    viewCount: c.video.viewCount, publishedAt: c.video.publishedAt,
+    hasPaidPlacementTag: c.video.hasPaidPlacementTag,
+  }));
+  const { classified: ruleDone, aiQueue } = ruleClassify(toClassify);
+
+  // Update DB with rule classifications
+  let ruleClassified = 0;
+  for (const r of ruleDone) {
+    await db.from('youtube_competitor_videos').update({
+      placement_type: r.placementType !== 'unknown' ? r.placementType : null,
+      sponsor_confidence: r.brandConfidence,
+      game_name: r.game || null,
+      topic_category: r.topicCategory,
+      content_type: r.contentCategory,
+      language: r.language,
+      market: r.market,
+      workflow_status: 'rule_classified',
+      classification_raw: {
+        rule: {
+          brand: r.brand, brandConfidence: r.brandConfidence, brandEvidence: r.brandEvidence,
+          game: r.game, gameConfidence: r.gameConfidence,
+          placementType: r.placementType, sponsorSignals: r.sponsorSignals,
+          contentCategory: r.contentCategory, topicCategory: r.topicCategory,
+          language: r.language, market: r.market,
+        },
+        classifiedAt: new Date().toISOString(),
+      },
+      last_updated_at: new Date().toISOString(),
+    }).eq('video_id', r.videoId);
+    ruleClassified++;
+  }
+  console.log(`[Monitor] Rule classified: ${ruleClassified} videos (${Math.round(ruleClassified/actualCount*100)}%)`);
+
+  // ── Phase 5: AI Queue (Layer 3) — only videos rules couldn't classify ──
+  const aiCandidates = aiQueue.filter(r => r.needsAI).sort((a, b) => b.aiPriority - a.aiPriority);
+  const aiLimit = options?.skipAI ? 0 : MAX_AI_PER_SCAN;
+  const aiBatch = aiCandidates.slice(0, aiLimit);
+  const aiDeferred = aiCandidates.slice(aiLimit);
+
+  scanState.selectedForAI = aiBatch.length;
+  scanState.queued = aiDeferred.length + ruleDone.filter(r => r.placementType === 'unknown').length;
+  scanState.classified = ruleClassified;
+  scanState.likelyPlacements = ruleDone.filter(r =>
+    r.placementType === 'confirmed_paid_placement' || r.placementType === 'likely_sponsored'
+  ).length;
+
+  if (aiBatch.length > 0) {
+    scanState.phase = 'ai_classifying';
+    console.log(`[Monitor] Phase 5: AI classifying ${aiBatch.length} videos (priority-queued, ${aiDeferred.length} deferred)`);
+    // Map AI queue back to full video metadata for AI classification
+    const aiInputs = aiBatch.map(r => {
+      const orig = scored.find(s => s.video.videoId === r.videoId);
+      return {
+        videoId: r.videoId,
+        title: orig?.video.title || '', description: orig?.video.description || '',
+        channelName: orig?.video.channelTitle || '', publishedAt: orig?.video.publishedAt || '',
+        tags: orig?.video.tags || [], hasPaidPlacementTag: orig?.video.hasPaidPlacementTag || false,
+      };
+    });
+    const aiResult = await batchClassifyVideos(aiInputs);
+    scanState.errors.push(...aiResult.errors);
+    scanState.classified += aiResult.classified;
+    scanState.likelyPlacements += aiResult.likely;
+    console.log(`[Monitor] AI classified: ${aiResult.classified} additional videos`);
+  } else {
+    console.log(`[Monitor] Phase 5: Skipped — all ${actualCount} videos classified by rules (no AI needed)`);
+  }
+
+  // Save snapshots for all classified videos
+  for (const c of scored.slice(0, 50)) {
+    await saveSnapshot(c.video.videoId, 'discovery', Math.round((Date.now() - new Date(c.video.publishedAt).getTime()) / 3600000), c.video.viewCount, c.video.likeCount, c.video.commentCount, 0, 0.5, c.video.isShort);
+  }
+
+  // Mark deferred videos in DB with priority
+  for (const r of aiDeferred) {
+    await db.from('youtube_competitor_videos').update({
+      workflow_status: 'rule_classified',
+      classification_raw: {
+        rule: { brand: r.brand, game: r.game, needsAI: true, aiPriority: r.aiPriority, aiReason: r.aiReason },
+        queuedAt: new Date().toISOString(),
+      },
+    }).eq('video_id', r.videoId);
   }
 
   // Phase 5: Comments (high-conf only)
@@ -294,21 +370,54 @@ export async function runDiscoveryPipeline(options?: {
   return { videosDiscovered: scanState.discoveredCount, videosClassified: scanState.classified };
 }
 
-// ── Retry classification (AI only) ──
+// ── Retry classification (Rules-first, then AI for priority queue) ──
 export async function retryClassification(limit: number = MAX_AI_PER_SCAN): Promise<{ classified: number }> {
   const db = getSupabase();
-  const { data: pending } = await db.from('youtube_competitor_videos').select('*').eq('workflow_status', 'discovered').is('placement_type', null).order('first_seen_at', { ascending: false }).limit(limit);
+  // Find videos that need classification: discovered (never processed) OR rule_classified with needsAI flag
+  const { data: pending } = await db.from('youtube_competitor_videos')
+    .select('*')
+    .or('workflow_status.eq.discovered,and(workflow_status.eq.rule_classified,placement_type.is.null)')
+    .order('first_seen_at', { ascending: false })
+    .limit(limit);
   if (!pending?.length) return { classified: 0 };
+
   resetState('retry');
-  scanState.selectedForAI = pending.length;
   scanState.discoveredCount = pending.length;
-  const result = await batchClassifyVideos((pending as any[]).map(v => ({
-    videoId: v.video_id, title: v.title, description: v.description || '', channelName: v.channel_name || '', publishedAt: v.published_at || '', tags: v.tags || [], hasPaidPlacementTag: v.has_paid_placement_tag || false,
+
+  // Step 1: Run rule classifier first
+  const { classified: ruleDone, aiQueue } = ruleClassify((pending as any[]).map(v => ({
+    videoId: v.video_id, title: v.title, description: v.description || '',
+    tags: v.tags || [], channelName: v.channel_name || '', isShort: v.is_short || false,
+    viewCount: v.view_count || 0, publishedAt: v.published_at || '', hasPaidPlacementTag: v.has_paid_placement_tag || false,
   })));
-  scanState.classified = result.classified;
-  scanState.likelyPlacements = result.likely;
+
+  // Update DB with rule classifications
+  for (const r of ruleDone) {
+    await db.from('youtube_competitor_videos').update({
+      placement_type: r.placementType !== 'unknown' ? r.placementType : null,
+      sponsor_confidence: r.brandConfidence,
+      game_name: r.game || null, topic_category: r.topicCategory,
+      content_type: r.contentCategory, language: r.language, market: r.market,
+      workflow_status: 'rule_classified',
+      classification_raw: { rule: { brand: r.brand, game: r.game, placementType: r.placementType, aiPriority: r.aiPriority, aiReason: r.aiReason }, classifiedAt: new Date().toISOString() },
+      last_updated_at: new Date().toISOString(),
+    }).eq('video_id', r.videoId);
+  }
+
+  // Step 2: AI for priority queue (top priority first)
+  const aiBatch = aiQueue.slice(0, MAX_AI_PER_SCAN);
+  const result = aiBatch.length > 0
+    ? await batchClassifyVideos(aiBatch.map(r => {
+        const orig = (pending as any[]).find((v: any) => v.video_id === r.videoId);
+        return { videoId: r.videoId, title: orig?.title || '', description: orig?.description || '', channelName: orig?.channel_name || '', publishedAt: orig?.published_at || '', tags: orig?.tags || [], hasPaidPlacementTag: orig?.has_paid_placement_tag || false };
+      }))
+    : { classified: 0, likely: 0, errors: [] as string[] };
+
+  scanState.classified = ruleDone.length + result.classified;
+  scanState.likelyPlacements = ruleDone.filter(r => r.placementType === 'confirmed_paid_placement' || r.placementType === 'likely_sponsored').length + result.likely;
   scanState.done = true; scanState.running = false; scanState.phase = 'completed';
-  return { classified: result.classified };
+  console.log(`[Retry] Rule: ${ruleDone.length} + AI: ${result.classified} = ${scanState.classified} total`);
+  return { classified: scanState.classified };
 }
 
 export async function getMonitorStatus() {

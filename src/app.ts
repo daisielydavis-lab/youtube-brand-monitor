@@ -111,6 +111,14 @@ app.post('/api/hotspot/start', async (req, res) => {
   res.json({ success: true, activeUntil: until });
 });
 
+// ── Process AI Priority Queue (rules-first, AI only for deferred) ──
+app.all('/api/monitor/process-ai-queue', async (req, res) => {
+  if (scanState.running) return res.json({ success: false, error: 'Scan already running' });
+  const limit = parseInt((req.query?.limit as string) || (req.body?.limit) || '50', 10);
+  res.json({ success: true, message: `AI queue processing started (limit=${limit})` });
+  try { await retryClassification(limit); } catch (err) { console.error('[Queue] Failed:', (err as Error).message); }
+});
+
 // ── Retry AI Classification (no search, no channel scan) ──
 // GET: browser-friendly. POST: JSON. Query param: ?limit=N (default 50)
 app.all('/api/monitor/retry-classification', async (req, res) => {
