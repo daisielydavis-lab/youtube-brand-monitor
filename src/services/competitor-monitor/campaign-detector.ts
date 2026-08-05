@@ -72,7 +72,7 @@ export async function detectCampaigns(): Promise<number> {
     .select('*')
     .is('campaign_id', null)
     .in('placement_type', ['confirmed_paid_placement', 'likely_sponsored'])
-    .gte('first_seen_at', since)
+    .gte('published_at', since)
     .order('published_at', { ascending: false });
 
   if (!videos?.length) return 0;
