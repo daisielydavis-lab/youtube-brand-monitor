@@ -103,6 +103,9 @@ export function renderDashboard(
     <div class="kpi"><div class="kpi-n">${kpi.newCreatorsThisWeek ?? 0}</div><div class="kpi-l">New Creators</div></div>
   </div>
 
+  <div style="font-size:11px;color:#8490A6;margin-bottom:12px;padding:6px 10px;background:#F8FAFD;border-radius:6px;border:1px solid #E3E8F1">
+    Data scope: ${kpi.totalVideos ?? 0} videos · ${kpi.confirmedLikely ?? 0} placements · ${kpi.activeCreators ?? 0} creators · ${kpi.activeCampaigns ?? 0} campaigns
+  </div>
   <h2>🚨 Recent Competitive Moves</h2>
   ${campaigns.length ? campaigns.slice(0, 8).map((c: any) => {
     const brandColor = ({GearUP:'#f59e0b',ExitLag:'#3b82f6',LagZapper:'#22c55e'} as any)[c.brand]||'#94a3b8';

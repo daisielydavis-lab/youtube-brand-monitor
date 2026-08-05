@@ -234,7 +234,8 @@ app.get('/', async (_req, res) => {
 
   try {
     // Step 1: Query video data (critical)
-    const data = await queryDashboardData(30);
+    const range = parseInt((_req.query.range as string) || '30', 10);
+    const data = await queryDashboardData(range);
     console.log(`[Dashboard:${requestId}] Step1 videos done: hasData=${data.hasData}`);
 
     // Step 2: Campaigns — multi_creator_campaign + creator_series, parsed from landing_domain
