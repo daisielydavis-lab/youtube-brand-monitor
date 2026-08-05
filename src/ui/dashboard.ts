@@ -201,18 +201,18 @@ export function renderDashboard(
     <a href="#" class="tab" onclick="switchTab('comments')" id="tab-comments">Comments</a>
     <a href="#" class="tab" onclick="switchTab('system')" id="tab-system">System</a>
   </nav>
-  <div id="tab-overview" class="tab-content">${overview}</div>
-  <div id="tab-campaigns" class="tab-content" style="display:none">${campaignsTab}</div>
-  <div id="tab-videos" class="tab-content" style="display:none">${videosTab}</div>
-  <div id="tab-creators" class="tab-content" style="display:none">${creatorsTab}</div>
-  <div id="tab-comments" class="tab-content" style="display:none">${commentsTab}</div>
-  <div id="tab-system" class="tab-content" style="display:none">${systemTab}</div>
+  <div id="tab-panel-overview" class="tab-content">${overview}</div>
+  <div id="tab-panel-campaigns" class="tab-content" style="display:none">${campaignsTab}</div>
+  <div id="tab-panel-videos" class="tab-content" style="display:none">${videosTab}</div>
+  <div id="tab-panel-creators" class="tab-content" style="display:none">${creatorsTab}</div>
+  <div id="tab-panel-comments" class="tab-content" style="display:none">${commentsTab}</div>
+  <div id="tab-panel-system" class="tab-content" style="display:none">${systemTab}</div>
   <div class="disc">ⓘ Public data estimates only. <span onclick="this.nextElementSibling.style.display='inline'" style="color:#38bdf8;cursor:pointer">More</span><span style="display:none;color:#64748b"> Does not represent ROI, CPA, conversion rate, or ad spend. Shorts and long-form tracked separately.</span></div>
   <div id="toast" class="toast" style="display:none"></div>
 </div>
 <script>
 function applyFilter(k,v){const u=new URL(location);v==='all'?u.searchParams.delete(k):u.searchParams.set(k,v);location=u.toString()}
-function switchTab(t){document.querySelectorAll('.tab-content').forEach(e=>e.style.display='none');document.querySelectorAll('.tab').forEach(e=>e.classList.remove('active'));document.getElementById('tab-'+t).style.display='block';document.getElementById('tab-'+t).classList.add('active');if(t==='comments')loadComments();if(t==='system')loadSystem();localStorage.setItem('tab',t)}
+function switchTab(t){document.querySelectorAll('.tab-content').forEach(e=>e.style.display='none');document.querySelectorAll('.tab').forEach(e=>e.classList.remove('active'));document.getElementById('tab-panel-'+t).style.display='block';document.getElementById('tab-'+t).classList.add('active');if(t==='comments')loadComments();if(t==='system')loadSystem();localStorage.setItem('tab',t)}
 async function va(id,a){try{const r=await fetch('/api/videos/'+id+'/action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:a})});const d=await r.json();showToast(d.success?'✅ Updated':'❌ '+d.error);if(d.success)setTimeout(()=>location.reload(),500)}catch(e){showToast('❌ Failed')}}
 function showToast(m){const t=document.getElementById('toast');t.textContent=m;t.style.display='block';setTimeout(()=>t.style.display='none',2000)}
 async function loadComments(){const el=document.getElementById('comments-load');try{const r=await fetch('/api/comments?limit=50');const d=await r.json();el.innerHTML=d.length?d.slice(0,30).map(c=>'<div class="comment"><b>'+escapeHtml(c.author_name||'?')+'</b> on '+escapeHtml((c.youtube_competitor_videos||{}).title||'?').slice(0,50)+'<br>'+escapeHtml((c.comment_text||'').slice(0,200))+'<br><span class="bt">'+(c.has_purchase_intent?'💳 Intent':'')+' '+(c.is_brand_related?'🏷 Brand':'')+' '+(c.sentiment||'')+'</span></div>').join(''):'<p class="mt">No comments analyzed yet</p>'}catch(e){el.innerHTML='<p class="mt">Failed to load</p>'}}
