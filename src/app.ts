@@ -234,7 +234,7 @@ app.get('/', async (_req, res) => {
 
   try {
     // Step 1: Query video data (critical)
-    const range = parseInt((_req.query.range as string) || '30', 10);
+    const range = parseInt((_req.query.range as string) || '7', 10);
     const data = await queryDashboardData(range);
     console.log(`[Dashboard:${requestId}] Step1 videos done: hasData=${data.hasData}`);
 
