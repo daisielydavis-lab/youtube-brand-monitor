@@ -11,7 +11,9 @@ type: project
 ## 项目位置
 - **本地目录**: `E:\youtube-report-test`
 - **GitHub**: `https://github.com/daisielydavis-lab/youtube-brand-monitor`
-- **Railway**: `https://railway.com/project/abc6ef3e-de34-454d-ad2f-515a62dc64fb`
+- **Railway 项目**: `https://railway.com/project/abc6ef3e-de34-454d-ad2f-515a62dc64fb`
+- **Railway 服务**: `https://railway.com/project/abc6ef3e-de34-454d-ad2f-515a62dc64fb/service/8e48f1d6-56f4-4071-8f9a-cdb5755be05d`
+- **Railway Variables**: `https://railway.com/project/abc6ef3e-de34-454d-ad2f-515a62dc64fb/service/8e48f1d6-56f4-4071-8f9a-cdb5755be05d/variables`
 - **Railway URL**: `https://youtube-brand-monitor-production.up.railway.app`
 - **Supabase**: `https://supabase.com/dashboard/project/cnzctiicglcgccszeuxb`
 

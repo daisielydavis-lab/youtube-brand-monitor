@@ -235,14 +235,24 @@ app.get('/', async (_req, res) => {
     const data = await queryDashboardData(30);
     console.log(`[Dashboard:${requestId}] Step1 videos done: hasData=${data.hasData}`);
 
-    // Step 2: Campaigns — get active + emerging for competitive moves
+    // Step 2: Campaigns — multi_creator_campaign + creator_series, parsed from landing_domain
     let campaigns: any[] = [];
     try {
-      const { data: c } = await getSupabase().from('campaigns').select('*').in('status', ['active','emerging','cooling']).order('detected_at', { ascending: false }).limit(10);
-      campaigns = c || [];
-      // Inject campaign count into KPIs
-      const activeCampCount = (c || []).filter((x: any) => x.status === 'active' || x.status === 'emerging').length;
+      const { data: c } = await getSupabase().from('campaigns').select('*').order('detected_at', { ascending: false }).limit(30);
+      // Parse cluster_type from landing_domain, strip prefix from primary_selling_point
+      campaigns = (c || []).map((x: any) => ({
+        ...x,
+        cluster_type: x.landing_domain || 'multi_creator_campaign',
+        primary_selling_point: (x.primary_selling_point || '').replace(/^[^:]*::/, ''),
+      }));
+      // Filter: only show multi_creator_campaign + creator_series
+      const visibleCampaigns = campaigns.filter((x: any) =>
+        x.cluster_type === 'multi_creator_campaign' || x.cluster_type === 'creator_series');
+      // Active count for KPI
+      const activeCampCount = visibleCampaigns.filter((x: any) => x.status === 'active').length;
       (data.kpis as any).activeCampaigns = activeCampCount;
+      // For Overview competitive moves, show active ones
+      campaigns = visibleCampaigns.filter((x: any) => x.status === 'active' || x.status === 'cooling').slice(0, 10);
     } catch (e) { console.warn(`[Dashboard:${requestId}] Campaigns query skipped: ${(e as Error).message}`); }
 
     // Step 3: Status (non-critical, safe-fail)

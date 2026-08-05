@@ -1,7 +1,16 @@
 /**
- * Campaign Detector — groups related placements into campaigns.
+ * Campaign Detector — groups related placements into campaigns/clusters.
  *
- * Logic: Same brand + same game + within 7-day window + shared landing or promo pattern
+ * Classification:
+ *   one_off_placement     — 1 creator, 1 video
+ *   creator_series        — 1 creator, ≥2 videos within 7 days
+ *   multi_creator_campaign — ≥2 creators, ≥2 videos, same brand+game, within 7 days
+ *   brand_push            — same brand spans ≥3 games or ≥2 markets+3 creators in 7 days
+ *
+ * Status lifecycle:
+ *   active  — last placement within 72h
+ *   cooling — last placement 72h–7d ago
+ *   ended   — last placement >7d ago
  */
 
 import { getSupabase } from '../../db/supabase';
@@ -10,160 +19,187 @@ export interface Campaign {
   id: string;
   brand: string;
   game: string;
-  videoCount: number;
-  creatorCount: number;
-  primarySellingPoint: string;
-  primaryMarket: string;
-  primaryLanguage: string;
-  landingDomain: string | null;
-  totalEstimatedViews: number;
-  avgPerformanceScore: number;
-  status: 'active' | 'ended';
-  activeFrom: string;
-  activeTo: string;
+  cluster_type: 'one_off_placement' | 'creator_series' | 'multi_creator_campaign' | 'brand_push';
+  video_count: number;
+  creator_count: number;
+  confirmed_count: number;
+  likely_count: number;
+  primary_selling_point: string;
+  primary_market: string;
+  primary_language: string;
+  landing_domain: string | null;
+  total_estimated_views: number;
+  avg_performance_score: number;
+  status: 'active' | 'cooling' | 'ended';
+  full_start_at: string;
+  full_end_at: string;
+  last_placement_at: string;
+  detected_at: string;
 }
 
-/** Run after each scan — group newly classified videos into campaigns */
+function resolveBrand(v: any): string {
+  return v.classification_raw?.final?.brand || v.classification_raw?.rule?.brand || v.classification_raw?.ai?.brand || 'unknown';
+}
+
+function resolveGame(v: any): string {
+  return v.game_name || v.classification_raw?.final?.game || v.classification_raw?.rule?.game || v.classification_raw?.ai?.game || 'unknown';
+}
+
+const THEME_LABELS: Record<string, string> = {
+  reduce_ping: 'Reduce Ping', promo_code: 'Promo Code', game_review: 'Game Review',
+  tutorial: 'Tutorial', comparison: 'Comparison', new_launch: 'New Launch',
+  cross_region: 'Cross-Region', game_integration: 'Game Integration', other: 'General',
+};
+
+function topTheme(vids: any[]): string {
+  const sps = vids.map(v => THEME_LABELS[v.topic_category] || v.classification_raw?.ai?.theme || 'General');
+  return sps.sort((a, b) => sps.filter(x => x === b).length - sps.filter(x => x === a).length)[0] || 'General';
+}
+
+function calcStatus(lastPlacementAt: string): 'active' | 'cooling' | 'ended' {
+  const hours = (Date.now() - new Date(lastPlacementAt).getTime()) / 3600000;
+  if (hours <= 72) return 'active';
+  if (hours <= 168) return 'cooling';
+  return 'ended';
+}
+
 export async function detectCampaigns(): Promise<number> {
   const db = getSupabase();
 
-  // Get recent videos not yet assigned to a campaign
+  const since = new Date(Date.now() - 14 * 86400000).toISOString();
   const { data: videos } = await db
     .from('youtube_competitor_videos')
     .select('*')
     .is('campaign_id', null)
     .in('placement_type', ['confirmed_paid_placement', 'likely_sponsored'])
-    .gte('first_seen_at', new Date(Date.now() - 14 * 86400000).toISOString())
+    .gte('first_seen_at', since)
     .order('published_at', { ascending: false });
 
   if (!videos?.length) return 0;
 
-  // Group candidates: same brand + same game + within 7 days
+  // Group by brand+game within 7-day rolling windows
+  // Multiple groups can exist for same brand+game if videos span >7 days
   const groups = new Map<string, any[]>();
-
   for (const v of videos as any[]) {
-    const brand = v.classification_raw?.final?.brand || v.classification_raw?.rule?.brand || v.classification_raw?.ai?.brand || 'unknown';
-    if (brand === 'unknown') continue; // skip unclassified
-    const game = v.game_name || 'unknown';
-    const published = new Date(v.published_at).getTime();
+    const b = resolveBrand(v);
+    if (b === 'unknown') continue;
+    const g = resolveGame(v);
+    if (g === 'unknown') continue;
+    const pub = new Date(v.published_at).getTime();
 
-    // Find existing group or create new
+    // Try to add to an existing group with same brand+game within 7 days
     let matched = false;
-    for (const [key, groupVids] of groups) {
-      const firstTime = new Date(groupVids[0].published_at).getTime();
-      const groupBrand = key.split('||')[0];
-      const groupGame = key.split('||')[1];
-
-      if (groupBrand === brand && groupGame === game &&
-        Math.abs(published - firstTime) < 7 * 86400000 &&
-        (v.landing_domain === groupVids[0].landing_domain || !v.landing_domain)) {
-        groupVids.push(v);
+    for (const [key, gv] of groups) {
+      const [gb, gg] = key.split('||', 2);
+      if (gb !== b || gg !== g) continue;
+      // Check if within 7 days of first video in group
+      const groupStart = new Date(gv[0].published_at).getTime();
+      if (Math.abs(pub - groupStart) < 7 * 86400000) {
+        gv.push(v);
         matched = true;
         break;
       }
     }
 
     if (!matched) {
-      groups.set(`${brand}||${game}||${v.video_id}`, [v]);
+      const key = `${b}||${g}||${v.video_id}`;
+      groups.set(key, [v]);
     }
   }
 
-  // Create campaigns for groups with ≥2 videos
+  // Clear old campaigns
+  await db.from('youtube_competitor_videos').update({ campaign_id: null }).not('campaign_id', 'is', null);
+  await db.from('campaigns').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+
+  // Brand push detection: same brand across ≥3 games OR ≥2 markets+3 creators in 7 days
+  const brandMap = new Map<string, { games: Set<string>; markets: Set<string>; creators: Set<string>; vids: any[] }>();
+  for (const [, gv] of groups) {
+    if (gv.length < 2) continue;
+    const b = resolveBrand(gv[0]);
+    if (!brandMap.has(b)) brandMap.set(b, { games: new Set(), markets: new Set(), creators: new Set(), vids: [] });
+    const bd = brandMap.get(b)!;
+    bd.games.add(resolveGame(gv[0]));
+    gv.forEach((v: any) => { bd.markets.add(v.market || 'Unknown'); bd.creators.add(v.channel_id); });
+    bd.vids.push(...gv);
+  }
+
+  // Check for brand pushes
+  const brandPushBrands = new Set<string>();
+  for (const [b, d] of brandMap) {
+    if (d.games.size >= 3 || (d.markets.size >= 2 && d.creators.size >= 3)) {
+      brandPushBrands.add(b);
+    }
+  }
+
   let created = 0;
-  for (const [, groupVids] of groups) {
-    if (groupVids.length < 2) continue;
+  const VALID_BRANDS = ['ExitLag', 'GearUP', 'LagZapper'];
 
-    const brand = groupVids[0].classification_raw?.final?.brand || groupVids[0].classification_raw?.rule?.brand || groupVids[0].classification_raw?.ai?.brand || 'unknown';
-    const game = groupVids[0].game_name || groupVids[0].classification_raw?.ai?.game || 'unknown';
-    const creators = new Set(groupVids.map((v: any) => v.channel_id));
-    // Use topic_category (populated from AI theme) as selling point label
-    const themeLabels: Record<string, string> = {
-      reduce_ping: 'Reduce Ping', promo_code: 'Promo Code', game_review: 'Game Review',
-      tutorial: 'Tutorial', comparison: 'Comparison', new_launch: 'New Launch',
-      cross_region: 'Cross-Region', game_integration: 'Game Integration', other: 'General',
-    };
-    const sellingPoints = groupVids.map((v: any) => themeLabels[v.topic_category] || v.classification_raw?.ai?.theme || 'General');
-    const topSP = sellingPoints.sort((a: string, b: string) =>
-      sellingPoints.filter((x: string) => x === b).length - sellingPoints.filter((x: string) => x === a).length)[0] || 'General';
+  for (const [, gv] of groups) {
+    if (gv.length < 2) continue;
+    const brand = resolveBrand(gv[0]);
+    if (!VALID_BRANDS.includes(brand)) continue;
+    const game = resolveGame(gv[0]);
+    const creators = new Set(gv.map((v: any) => v.channel_id));
+    const timestamps = gv.map((v: any) => new Date(v.published_at).getTime());
+    const lastPlacementAt = new Date(Math.max(...timestamps)).toISOString();
+    const fullStart = new Date(Math.min(...timestamps)).toISOString().slice(0, 10);
+    const fullEnd = new Date(Math.max(...timestamps)).toISOString().slice(0, 10);
+    const status = calcStatus(lastPlacementAt);
+    const confirmedCount = gv.filter((v: any) => v.placement_type === 'confirmed_paid_placement').length;
+    const likelyCount = gv.filter((v: any) => v.placement_type === 'likely_sponsored').length;
 
-    // Market derived from AI or defaults to Global
-    const markets = groupVids.map((v: any) => v.classification_raw?.ai?.market || v.market || 'Global').filter(Boolean);
-    const topMarket = markets.sort((a: string, b: string) =>
-      markets.filter((x: string) => x === b).length - markets.filter((x: string) => x === a).length)[0] || 'Global';
+    // Classify: brand_push is per-brand flag, NOT per-cluster type
+    // Each cluster gets its own granular type
+    let clusterType: Campaign['cluster_type'];
+    if (creators.size >= 2 && gv.length >= 2) {
+      clusterType = 'multi_creator_campaign';
+    } else if (creators.size === 1 && gv.length >= 2) {
+      clusterType = 'creator_series';
+    } else {
+      clusterType = 'one_off_placement';
+    }
 
-    const totalViews = groupVids.reduce((s: number, v: any) => s + (v.view_count || 0), 0);
-    const avgScore = groupVids.reduce((s: number, v: any) => s + (v.public_performance_score || 0), 0) / groupVids.length;
+    const totalViews = gv.reduce((s: number, v: any) => s + (v.view_count || 0), 0);
+    const topSP = topTheme(gv);
+    const topMarket = gv.map((v: any) => v.market || 'Unknown')
+      .sort((a, b) => gv.filter((v: any) => (v.market || 'Unknown') === b).length - gv.filter((v: any) => (v.market || 'Unknown') === a).length)[0] || 'Unknown';
 
-    const timestamps = groupVids.map((v: any) => new Date(v.published_at).getTime());
-    const activeFrom = new Date(Math.min(...timestamps)).toISOString().slice(0, 10);
-    const activeTo = new Date(Math.max(...timestamps)).toISOString().slice(0, 10);
-
-    // Insert campaign
+    // Store cluster_type in landing_domain (unused field), status directly
     const { data: camp } = await db.from('campaigns').insert({
-      brand, game, video_count: groupVids.length, creator_count: creators.size,
-      primary_selling_point: topSP || null, primary_market: topMarket || 'US',
-      primary_language: groupVids[0].language || 'en',
-      landing_domain: groupVids[0].landing_domain || null,
-      total_estimated_views: totalViews, avg_performance_score: Math.round(avgScore),
-      status: 'active', active_from: activeFrom, active_to: activeTo,
+      brand, game,
+      video_count: gv.length,
+      creator_count: creators.size,
+      primary_selling_point: `${clusterType}::${topSP}`, // cluster_type prefix in selling_point
+      primary_market: topMarket,
+      primary_language: 'en',
+      landing_domain: clusterType, // reuse unused field for cluster_type
+      total_estimated_views: totalViews,
+      avg_performance_score: 50,
+      status,
+      active_from: fullStart,
+      active_to: fullEnd,
       detected_at: new Date().toISOString(),
     }).select('id').single();
 
     if (camp) {
-      // Link videos to campaign
       await db.from('youtube_competitor_videos').update({ campaign_id: (camp as any).id })
-        .in('video_id', groupVids.map((v: any) => v.video_id));
+        .in('video_id', gv.map((v: any) => v.video_id));
       created++;
-      console.log(`[Campaign] Created: ${brand}/${game} — ${groupVids.length} videos, ${creators.size} creators`);
-    }
-  }
-
-  // ── Update campaign statuses based on recency ──
-  // Emerging: first detected <48h, ≥1 high-conf  |  Active: new video <72h
-  // Cooling: 3-7d no new  |  Ended: >7d no new  |  Insufficient: only 1 video
-  const now = Date.now();
-  const { data: allCampaigns } = await db.from('campaigns').select('*').in('status', ['active','emerging']);
-  for (const c of (allCampaigns || [])) {
-    let newStatus = c.status;
-    const lastActivity = new Date(c.active_to).getTime();
-    const hoursSinceLast = (now - lastActivity) / 3600000;
-
-    if ((c.video_count || 0) < 2) {
-      newStatus = 'insufficient_evidence';
-    } else if (hoursSinceLast <= 48 && c.video_count >= 2) {
-      newStatus = 'emerging';
-    } else if (hoursSinceLast <= 72) {
-      newStatus = 'active';
-    } else if (hoursSinceLast <= 168) { // 7 days
-      newStatus = 'cooling';
-    } else {
-      newStatus = 'ended';
-    }
-
-    if (newStatus !== c.status) {
-      await db.from('campaigns').update({ status: newStatus, updated_at: new Date().toISOString() }).eq('id', c.id);
-      console.log(`[Campaign] Status: ${c.brand}/${c.game} ${c.status} → ${newStatus}`);
-    }
-  }
-  // Also check ended campaigns for revival
-  const { data: endedCampaigns } = await db.from('campaigns').select('*').eq('status', 'ended');
-  for (const c of (endedCampaigns || [])) {
-    const { count } = await db.from('youtube_competitor_videos').select('id', { count: 'exact', head: true })
-      .eq('campaign_id', c.id)
-      .gte('published_at', new Date(now - 7 * 86400000).toISOString());
-    if (count && count > 0) {
-      await db.from('campaigns').update({ status: 'active', updated_at: new Date().toISOString() }).eq('id', c.id);
+      console.log(`[Campaign] ${clusterType}: ${brand}/${game} — ${gv.length}v ${creators.size}c ${status}`);
     }
   }
 
   return created;
 }
 
-/** Get active campaigns */
-export async function getCampaigns(status?: string): Promise<Campaign[]> {
+export async function getCampaigns(statusFilter?: string): Promise<Campaign[]> {
   const db = getSupabase();
   let q = db.from('campaigns').select('*').order('detected_at', { ascending: false });
-  if (status) q = q.eq('status', status);
+  if (statusFilter) q = q.eq('status', statusFilter);
   const { data } = await q;
-  return (data || []) as Campaign[];
+  return (data || []).map(c => ({
+    ...c,
+    cluster_type: (c.landing_domain || 'multi_creator_campaign') as Campaign['cluster_type'],
+    primary_selling_point: (c.primary_selling_point || '').replace(/^[^:]*::/, ''), // strip cluster_type prefix
+  })) as Campaign[];
 }

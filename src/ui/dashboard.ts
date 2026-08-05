@@ -106,23 +106,24 @@ export function renderDashboard(
   <h2>🚨 Recent Competitive Moves</h2>
   ${campaigns.length ? campaigns.slice(0, 8).map((c: any) => {
     const brandColor = ({GearUP:'#f59e0b',ExitLag:'#3b82f6',LagZapper:'#22c55e'} as any)[c.brand]||'#94a3b8';
-    const brandIcon = ({GearUP:'🔵',ExitLag:'🔴',LagZapper:'🟡'} as any)[c.brand]||'⚪';
-    const daysAgo = c.active_to ? Math.round((Date.now() - new Date(c.active_to).getTime()) / 86400000) : 0;
-    const recency = daysAgo <= 1 ? 'Today' : daysAgo <= 3 ? `${daysAgo}d ago` : `${daysAgo}d ago`;
+    const ovCtLabel: Record<string,string> = {multi_creator_campaign:'Multi-Creator',creator_series:'Creator Series',one_off_placement:'Placement',brand_push:'Brand Push'};
+    const statusColor = c.status === 'active' ? '#19A974' : c.status === 'cooling' ? '#F59E0B' : '#8490A6';
+    const angle = c.primary_selling_point || c.primarySellingPoint || '';
     return `<div class="camp-card" style="margin-bottom:10px;border-left:3px solid ${brandColor}">
       <div style="display:flex;justify-content:space-between;align-items:center">
         <div>
-          <span style="font-size:16px;font-weight:700;color:${brandColor}">${brandIcon} ${esc(c.brand)}</span>
+          <span style="font-size:16px;font-weight:700;color:${brandColor}">${esc(c.brand)}</span>
           <span style="font-size:14px;color:#4B5870"> × ${esc(c.game)}</span>
+          <span style="font-size:10px;background:#F3F7FF;color:#3B6EF5;padding:1px 6px;border-radius:3px;margin-left:6px">${ovCtLabel[c.cluster_type]||c.cluster_type||'Campaign'}</span>
         </div>
-        <span style="font-size:11px;color:#8490A6">${c.active_from} → ${c.active_to} · ${recency}</span>
+        <span style="font-size:11px;color:${statusColor}">${c.status} · ${c.active_from} → ${c.active_to}</span>
       </div>
       <div style="display:flex;gap:16px;margin-top:8px;font-size:12px;color:#4B5870">
         <span>👤 <b>${c.creator_count}</b> creators</span>
         <span>🎬 <b>${c.video_count}</b> videos</span>
         <span>👁 <b>${fmt(c.total_estimated_views||0)}</b> views</span>
         <span>🌍 ${esc(c.primary_market||c.primaryMarket||'Global')}</span>
-        ${c.primary_selling_point ? `<span style="background:#F3F7FF;color:#3B6EF5;padding:1px 8px;border-radius:4px">${esc(c.primary_selling_point||c.primarySellingPoint)}</span>` : ''}
+        ${angle ? `<span style="background:#F3F7FF;color:#3B6EF5;padding:1px 8px;border-radius:4px">${esc(angle)}</span>` : ''}
       </div>
     </div>`;
   }).join('') : '<p class="mt">No active campaigns detected. Run a scan to discover competitive moves.</p>'}
@@ -146,15 +147,18 @@ export function renderDashboard(
   </div>`;
 
   // ── TAB 2: Campaigns ──
+  const ctLabel: Record<string,string> = {multi_creator_campaign:'Multi-Creator Campaign',creator_series:'Creator Series',one_off_placement:'One-off Placement',brand_push:'Brand Push'};
   const campaignsTab = campaigns.length ? campaigns.map((c:any)=>{
     const brandColor = ({GearUP:'#f59e0b',ExitLag:'#3b82f6',LagZapper:'#22c55e'} as any)[c.brand]||'#94a3b8';
+    const statusColor = c.status === 'active' ? '#19A974' : c.status === 'cooling' ? '#F59E0B' : '#8490A6';
     return `<div class="camp-card" style="margin-bottom:14px;border-left:3px solid ${brandColor};padding:16px">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px">
         <div>
           <span style="font-size:17px;font-weight:700;color:${brandColor}">${esc(c.brand)}</span>
-          <span style="font-size:15px;color:#4B5870"> × ${esc(c.game)} Campaign</span>
+          <span style="font-size:15px;color:#4B5870"> × ${esc(c.game)}</span>
+          <span style="font-size:11px;background:#F3F7FF;color:#3B6EF5;padding:2px 8px;border-radius:3px;margin-left:8px">${ctLabel[c.cluster_type]||c.cluster_type||'Campaign'}</span>
         </div>
-        <span class="b b-${c.status==='active'?'confirmed_paid_placement':'unknown'}" style="font-size:12px;padding:4px 10px">🟢 ${c.status}</span>
+        <span style="font-size:12px;padding:4px 10px;border-radius:8px;color:#fff;background:${statusColor}">${c.status}</span>
       </div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:10px;margin-bottom:10px">
         <div><span style="font-size:11px;color:#8490A6;display:block">Period</span><span style="font-size:13px;font-weight:600;color:#172033">${c.active_from} → ${c.active_to}</span></div>
@@ -165,13 +169,12 @@ export function renderDashboard(
       </div>
       <div style="font-size:12px;color:#4B5870">
         <span style="background:#F3F7FF;color:#3B6EF5;padding:2px 8px;border-radius:4px;margin-right:6px">${esc(c.primary_selling_point||c.primarySellingPoint||'General')}</span>
-        ${c.primary_selling_point||c.primarySellingPoint ? '· Content angle detected' : ''}
       </div>
     </div>`;
   }).join('') : '<p class="mt">No campaigns detected yet. Campaigns are auto-detected when the same brand+game combination has multiple placements within 7 days.</p>';
 
   // ── TAB 3: Videos with filter + actions ──
-  const ctLabel: Record<string,string> = {dedicated:'Dedicated',integrated:'Integration',shorts:'Shorts',live:'Livestream',dedicated_review:'Dedicated',integrated_placement:'Integration',live_replay:'Livestream'};
+  const contentTypeLabel: Record<string,string> = {dedicated:'Dedicated',integrated:'Integration',shorts:'Shorts',live:'Livestream',dedicated_review:'Dedicated',integrated_placement:'Integration',live_replay:'Livestream'};
   const evidenceIcon = (rc: string[]) => {
     if (!rc?.length) return '⚪';
     const hasStrong = rc.some(r => ['brand_in_title','promo_code','sponsored_tag','paid_tag','brand_link'].includes(r));
@@ -190,7 +193,7 @@ export function renderDashboard(
     <td style="white-space:nowrap">${esc(v.channelName)}</td>
     <td style="white-space:nowrap">${esc(v.brand)}</td>
     <td style="white-space:nowrap">${esc(v.game)}</td>
-    <td><span class="et">${esc(ctLabel[(v as any).contentCategory]||(v as any).contentCategory||'?')}</span></td>
+    <td><span class="et">${esc(contentTypeLabel[(v as any).contentCategory]||(v as any).contentCategory||'?')}</span></td>
     <td style="white-space:nowrap">${fmt(v.viewCount)}</td>
     <td><span title="${esc((v.reasonCodes||v.discoveryEvidence||[]).join(', '))}" style="cursor:help">${evidenceIcon(v.reasonCodes||v.discoveryEvidence)} ${badge(v.placementType)}</span></td>
     <td class="acts"><button onclick="va('${v.videoId}','confirm_placement')" class="a a-y" title="Confirm">✓</button><button onclick="va('${v.videoId}','mark_organic')" class="a a-o" title="Organic">O</button><button onclick="va('${v.videoId}','ignore')" class="a a-r" title="Ignore">✕</button></td>
