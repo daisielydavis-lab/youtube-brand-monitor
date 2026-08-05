@@ -15,10 +15,10 @@ export interface DashboardData {
     queriesActive: number;
   };
   kpi: {
-    newPlacements: number;
+    newAds: number;
     activeCreators: number;
-    videosMonitored: number;
-    highConfidence: number;
+    activeGames: number;
+    activeMarkets: number;
   };
   brandComparison: BrandCard[];
   topGames: GameRow[];
@@ -73,10 +73,15 @@ export interface VideoRow {
   game: string;
   publishedAt: string;
   viewCount: number;
+  likeCount?: number;
+  commentCount?: number;
   growth24h: number | null;
   growth72h: number | null;
   placementType: string;
   sponsorConfidence: number;
+  contentCategory?: string;
+  topicCategory?: string;
+  reasonCodes?: string[];
   discoveryEvidence: string[];
   promoCode: string | null;
 }
@@ -127,7 +132,7 @@ export async function getDashboardData(filter?: {
         totalCreators: 0,
         queriesActive: 15,
       },
-      kpi: { newPlacements: 0, activeCreators: 0, videosMonitored: 0, highConfidence: 0 },
+      kpi: { newAds: 0, activeCreators: 0, activeGames: 0, activeMarkets: 0 },
       brandComparison: [],
       topGames: [],
       topThemes: [],
@@ -141,7 +146,7 @@ export async function getDashboardData(filter?: {
   let filteredVideos = videos as any[];
   if (filter?.brand && filter.brand !== 'all') {
     filteredVideos = filteredVideos.filter(v => {
-      const b = v.classification_raw?.sponsorship?.detectedBrand || v.classification_raw?.detectedBrand;
+      const b = v.classification_raw?.ai?.brand || v.game_name;
       return b?.toLowerCase() === filter.brand!.toLowerCase();
     });
   }
@@ -160,10 +165,10 @@ export async function getDashboardData(filter?: {
   );
 
   const kpi = {
-    newPlacements: periodVideos.length,
+    newAds: highConf.length,
     activeCreators: creatorSet.size,
-    videosMonitored: filteredVideos.length,
-    highConfidence: highConf.length,
+    activeGames: new Set(periodVideos.map((v: any) => v.game_name || 'unknown')).size,
+    activeMarkets: new Set(periodVideos.map((v: any) => v.classification_raw?.ai?.market || 'Global')).size,
   };
 
   // ── Brand Comparison ──
@@ -175,7 +180,7 @@ export async function getDashboardData(filter?: {
   }
 
   for (const v of periodVideos) {
-    const b = v.classification_raw?.sponsorship?.detectedBrand || v.classification_raw?.detectedBrand || 'unknown';
+    const b = v.classification_raw?.ai?.brand || v.game_name || 'unknown';
     if (!brandMap.has(b)) continue;
     const entry = brandMap.get(b)!;
     entry.videos++;
@@ -209,7 +214,7 @@ export async function getDashboardData(filter?: {
     const g = gameMap.get(game)!;
     g.count++;
     g.reach += v.view_count || 0;
-    const b = v.classification_raw?.sponsorship?.detectedBrand || 'unknown';
+    const b = v.classification_raw?.ai?.brand || 'unknown';
     g.brands.set(b, (g.brands.get(b) || 0) + 1);
   }
 
@@ -230,7 +235,7 @@ export async function getDashboardData(filter?: {
     if (!themeMap.has(topic)) themeMap.set(topic, { count: 0, brands: new Map() });
     const t = themeMap.get(topic)!;
     t.count++;
-    const b = v.classification_raw?.sponsorship?.detectedBrand || 'unknown';
+    const b = v.classification_raw?.ai?.brand || 'unknown';
     t.brands.set(b, (t.brands.get(b) || 0) + 1);
   }
 
@@ -273,7 +278,7 @@ export async function getDashboardData(filter?: {
         channelName: c.channel_name,
         thumbnailUrl: c.thumbnail_url || '',
         subscriberCount: c.subscriber_count || 0,
-        recentBrand: latest.classification_raw?.sponsorship?.detectedBrand || 'unknown',
+        recentBrand: latest.classification_raw?.ai?.brand || 'unknown',
         recentGame: latest.game_name || 'unknown',
         format: latest.content_type || 'unknown',
         views7d: creatorVideos.reduce((sum: number, v: any) => sum + (v.view_count || 0), 0),
@@ -299,7 +304,7 @@ export async function getDashboardData(filter?: {
       title: v.title || '',
       thumbnailUrl: v.thumbnail_url || '',
       channelName: v.channel_name || '',
-      brand: v.classification_raw?.sponsorship?.detectedBrand || 'unknown',
+      brand: v.classification_raw?.ai?.brand || 'unknown',
       game: v.game_name || 'unknown',
       publishedAt: v.published_at,
       viewCount: v.view_count || 0,

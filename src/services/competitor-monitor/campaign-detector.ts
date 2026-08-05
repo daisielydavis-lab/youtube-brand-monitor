@@ -42,7 +42,7 @@ export async function detectCampaigns(): Promise<number> {
   const groups = new Map<string, any[]>();
 
   for (const v of videos as any[]) {
-    const brand = v.classification_raw?.sponsorship?.detectedBrand || 'unknown';
+    const brand = v.classification_raw?.ai?.brand || v.game_name || 'unknown';
     const game = v.game_name || 'unknown';
     const published = new Date(v.published_at).getTime();
 
@@ -72,16 +72,23 @@ export async function detectCampaigns(): Promise<number> {
   for (const [, groupVids] of groups) {
     if (groupVids.length < 2) continue;
 
-    const brand = groupVids[0].classification_raw?.sponsorship?.detectedBrand || 'unknown';
-    const game = groupVids[0].game_name || 'unknown';
+    const brand = groupVids[0].classification_raw?.ai?.brand || groupVids[0].game_name || 'unknown';
+    const game = groupVids[0].game_name || groupVids[0].classification_raw?.ai?.game || 'unknown';
     const creators = new Set(groupVids.map((v: any) => v.channel_id));
-    const sellingPoints = groupVids.flatMap((v: any) => v.product_selling_points || []);
+    // Use topic_category (populated from AI theme) as selling point label
+    const themeLabels: Record<string, string> = {
+      reduce_ping: 'Reduce Ping', promo_code: 'Promo Code', game_review: 'Game Review',
+      tutorial: 'Tutorial', comparison: 'Comparison', new_launch: 'New Launch',
+      cross_region: 'Cross-Region', game_integration: 'Game Integration', other: 'General',
+    };
+    const sellingPoints = groupVids.map((v: any) => themeLabels[v.topic_category] || v.classification_raw?.ai?.theme || 'General');
     const topSP = sellingPoints.sort((a: string, b: string) =>
-      sellingPoints.filter((x: string) => x === b).length - sellingPoints.filter((x: string) => x === a).length)[0];
+      sellingPoints.filter((x: string) => x === b).length - sellingPoints.filter((x: string) => x === a).length)[0] || 'General';
 
-    const markets = groupVids.map((v: any) => v.market).filter(Boolean);
+    // Market derived from AI or defaults to Global
+    const markets = groupVids.map((v: any) => v.classification_raw?.ai?.market || v.market || 'Global').filter(Boolean);
     const topMarket = markets.sort((a: string, b: string) =>
-      markets.filter((x: string) => x === b).length - markets.filter((x: string) => x === a).length)[0];
+      markets.filter((x: string) => x === b).length - markets.filter((x: string) => x === a).length)[0] || 'Global';
 
     const totalViews = groupVids.reduce((s: number, v: any) => s + (v.view_count || 0), 0);
     const avgScore = groupVids.reduce((s: number, v: any) => s + (v.public_performance_score || 0), 0) / groupVids.length;

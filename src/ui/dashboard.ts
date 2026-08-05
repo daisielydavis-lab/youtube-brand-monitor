@@ -92,58 +92,106 @@ export function renderDashboard(
   const quotaPct = Math.round((sysStatus.searchQuotaUsed||0)/100*100);
 
   // ── TAB 1: Overview ──
+  // KPI labels map new field names
+  const kpi = data.kpi as any;
   const overview = `
-  <div class="kpi-row">
-    <div class="kpi"><div class="kpi-n">${data.kpi.newPlacements}</div><div class="kpi-l">New Placements</div></div>
-    <div class="kpi"><div class="kpi-n">${data.kpi.activeCreators}</div><div class="kpi-l">Active Creators</div></div>
-    <div class="kpi"><div class="kpi-n">${data.kpi.videosMonitored}</div><div class="kpi-l">Monitored</div></div>
-    <div class="kpi hl"><div class="kpi-n">${data.kpi.highConfidence}</div><div class="kpi-l">High-Confidence</div></div>
+  <div class="kpi-row" style="grid-template-columns:repeat(4,1fr)">
+    <div class="kpi"><div class="kpi-n">${kpi.newAds ?? kpi.newPlacements ?? 0}</div><div class="kpi-l">New Ads</div></div>
+    <div class="kpi"><div class="kpi-n">${kpi.activeCreators ?? 0}</div><div class="kpi-l">Creators</div></div>
+    <div class="kpi"><div class="kpi-n">${kpi.activeGames ?? 0}</div><div class="kpi-l">Games</div></div>
+    <div class="kpi hl"><div class="kpi-n">${kpi.activeMarkets ?? 0}</div><div class="kpi-l">Markets</div></div>
   </div>
-  <h2>🔍 Competitor Comparison</h2>
+
+  <h2>🚨 Recent Competitive Moves</h2>
+  ${campaigns.length ? campaigns.slice(0, 8).map((c: any) => {
+    const brandColor = ({GearUP:'#f59e0b',ExitLag:'#3b82f6',LagZapper:'#22c55e'} as any)[c.brand]||'#94a3b8';
+    const brandIcon = ({GearUP:'🔵',ExitLag:'🔴',LagZapper:'🟡'} as any)[c.brand]||'⚪';
+    const daysAgo = c.active_to ? Math.round((Date.now() - new Date(c.active_to).getTime()) / 86400000) : 0;
+    const recency = daysAgo <= 1 ? 'Today' : daysAgo <= 3 ? `${daysAgo}d ago` : `${daysAgo}d ago`;
+    return `<div class="camp-card" style="margin-bottom:10px;border-left:3px solid ${brandColor}">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div>
+          <span style="font-size:16px;font-weight:700;color:${brandColor}">${brandIcon} ${esc(c.brand)}</span>
+          <span style="font-size:14px;color:#4B5870"> × ${esc(c.game)}</span>
+        </div>
+        <span style="font-size:11px;color:#8490A6">${c.active_from} → ${c.active_to} · ${recency}</span>
+      </div>
+      <div style="display:flex;gap:16px;margin-top:8px;font-size:12px;color:#4B5870">
+        <span>👤 <b>${c.creator_count}</b> creators</span>
+        <span>🎬 <b>${c.video_count}</b> videos</span>
+        <span>👁 <b>${fmt(c.total_estimated_views||0)}</b> views</span>
+        <span>🌍 ${esc(c.primary_market||c.primaryMarket||'Global')}</span>
+        ${c.primary_selling_point ? `<span style="background:#F3F7FF;color:#3B6EF5;padding:1px 8px;border-radius:4px">${esc(c.primary_selling_point||c.primarySellingPoint)}</span>` : ''}
+      </div>
+    </div>`;
+  }).join('') : '<p class="mt">No active campaigns detected. Run a scan to discover competitive moves.</p>'}
+
+  <h2>🔍 Competitor Breakdown</h2>
   <div class="brand-grid">
-    ${data.brandComparison.map(b=>`
+    ${data.brandComparison.slice(0, 3).map(b=>`
     <div class="brand-card" style="border-top:3px solid ${bc(b.brandName)}">
       <div class="bc-n" style="color:${bc(b.brandName)}">${esc(b.brandName)}</div>
-      <div class="bc-s"><span>${b.newVideos}</span> new · <span>${b.creators}</span> creators · <span>${fmt(b.median7dViews)}</span> median views</div>
-      <div class="bc-s">Top: ${esc(b.topGame)} · ${esc(b.topMarket)}</div>
+      <div class="bc-s"><span>${b.newVideos}</span> placements · <span>${b.creators}</span> creators</div>
     </div>`).join('')}
   </div>
+
   <div class="two-col">
     <div><h2>🎮 Top Games</h2>
-      ${data.topGames.slice(0,8).map(g=>`<div class="game-row"><span>${esc(g.game)}</span><span class="g-bar"><span class="g-fill" style="width:${Math.round(g.videoCount/Math.max(...data.topGames.map(x=>x.videoCount),1)*100)}%"></span></span><span>${g.videoCount}</span><span>${Object.entries(g.brands).map(([b,n])=>`<i style="color:${bc(b)}">${b} ${n}</i>`).join(' ')}</span></div>`).join('')||'<p class="mt">No data</p>'}
+      ${data.topGames.slice(0,6).map(g=>`<div class="game-row"><span style="flex:1">${esc(g.game)}</span><span>${g.videoCount} videos</span></div>`).join('')||'<p class="mt">No data</p>'}
     </div>
-    <div><h2>🏷 Top Themes</h2>
-      ${data.topThemes.slice(0,8).map(t=>`<div class="game-row"><span>${fmtTopic(t.topic)}</span><span>${t.videoCount}</span><span>${Object.entries(t.brands).map(([b,n])=>`<i style="color:${bc(b)}">${b} ${n}</i>`).join(' ')}</span></div>`).join('')||'<p class="mt">No data</p>'}
+    <div><h2>🏷 Content Angles</h2>
+      ${data.topThemes.slice(0,6).map(t=>`<div class="game-row"><span style="flex:1">${fmtTopic(t.topic)}</span><span>${t.videoCount}</span></div>`).join('')||'<p class="mt">No data</p>'}
     </div>
-  </div>
-  <h2>📊 Active Campaigns</h2>
-  ${campaigns.length?campaigns.slice(0,5).map((c:any)=>`<div class="camp-card"><b>${esc(c.brand)} · ${esc(c.game)}</b> — ${c.video_count} videos · ${c.creator_count} creators · ${fmt(c.total_estimated_views||0)} views · ${c.primary_selling_point||'N/A'}</div>`).join(''):'<p class="mt">No active campaigns detected</p>'}
-  <h2>⭐ Top Creators</h2>
-  <table class="dt"><thead><tr><th>Creator</th><th>Brand</th><th>Game</th><th>Subs</th><th>7D Views</th><th>Eng.</th><th>Sponsor</th><th>vs Baseline</th></tr></thead><tbody>
-  ${data.topCreators.slice(0,10).map(c=>`<tr><td>${esc(c.channelName)}</td><td>${esc(c.recentBrand)}</td><td>${esc(c.recentGame)}</td><td>${fmt(c.subscriberCount)}</td><td>${fmt(c.views7d)}</td><td>${(c.engagementRate*100).toFixed(1)}%</td><td>${badge(c.sponsorship)}</td><td>${c.performanceVsBaseline!==null?`<span style="color:${c.performanceVsBaseline>0?'#22c55e':'#ef4444'}">${c.performanceVsBaseline>0?'+':''}${c.performanceVsBaseline}%</span>`:'-'}</td></tr>`).join('')}
-  </tbody></table>`;
+  </div>`;
 
   // ── TAB 2: Campaigns ──
-  const campaignsTab = campaigns.length ? campaigns.map((c:any)=>`
-    <div class="camp-card" style="margin-bottom:12px">
-      <div style="display:flex;justify-content:space-between"><b>${esc(c.brand)} · ${esc(c.game)}</b><span class="b b-${c.status==='active'?'confirmed_paid_placement':'unknown'}">${c.status}</span></div>
-      <div class="bc-s">${c.video_count} videos · ${c.creator_count} creators · ${fmt(c.total_estimated_views||0)} total views</div>
-      <div class="bc-s">Selling point: ${esc(c.primary_selling_point||'N/A')} · Market: ${esc(c.primary_market||'N/A')} · ${c.active_from}→${c.active_to}</div>
-    </div>`).join('') : '<p class="mt">No campaigns detected yet. Campaigns are auto-detected when the same brand+game combination has multiple placements within 7 days.</p>';
+  const campaignsTab = campaigns.length ? campaigns.map((c:any)=>{
+    const brandColor = ({GearUP:'#f59e0b',ExitLag:'#3b82f6',LagZapper:'#22c55e'} as any)[c.brand]||'#94a3b8';
+    return `<div class="camp-card" style="margin-bottom:14px;border-left:3px solid ${brandColor};padding:16px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px">
+        <div>
+          <span style="font-size:17px;font-weight:700;color:${brandColor}">${esc(c.brand)}</span>
+          <span style="font-size:15px;color:#4B5870"> × ${esc(c.game)} Campaign</span>
+        </div>
+        <span class="b b-${c.status==='active'?'confirmed_paid_placement':'unknown'}" style="font-size:12px;padding:4px 10px">🟢 ${c.status}</span>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:10px;margin-bottom:10px">
+        <div><span style="font-size:11px;color:#8490A6;display:block">Period</span><span style="font-size:13px;font-weight:600;color:#172033">${c.active_from} → ${c.active_to}</span></div>
+        <div><span style="font-size:11px;color:#8490A6;display:block">Creators</span><span style="font-size:13px;font-weight:600;color:#172033">${c.creator_count}</span></div>
+        <div><span style="font-size:11px;color:#8490A6;display:block">Videos</span><span style="font-size:13px;font-weight:600;color:#172033">${c.video_count}</span></div>
+        <div><span style="font-size:11px;color:#8490A6;display:block">Est. Views</span><span style="font-size:13px;font-weight:600;color:#172033">${fmt(c.total_estimated_views||0)}</span></div>
+        <div><span style="font-size:11px;color:#8490A6;display:block">Market</span><span style="font-size:13px;font-weight:600;color:#172033">${esc(c.primary_market||c.primaryMarket||'Global')}</span></div>
+      </div>
+      <div style="font-size:12px;color:#4B5870">
+        <span style="background:#F3F7FF;color:#3B6EF5;padding:2px 8px;border-radius:4px;margin-right:6px">${esc(c.primary_selling_point||c.primarySellingPoint||'General')}</span>
+        ${c.primary_selling_point||c.primarySellingPoint ? '· Content angle detected' : ''}
+      </div>
+    </div>`;
+  }).join('') : '<p class="mt">No campaigns detected yet. Campaigns are auto-detected when the same brand+game combination has multiple placements within 7 days.</p>';
 
   // ── TAB 3: Videos with filter + actions ──
+  const ctLabel: Record<string,string> = {dedicated:'Dedicated',integrated:'Integration',shorts:'Shorts',live:'Livestream',dedicated_review:'Dedicated',integrated_placement:'Integration',live_replay:'Livestream'};
+  const evidenceIcon = (rc: string[]) => {
+    if (!rc?.length) return '⚪';
+    const hasStrong = rc.some(r => ['brand_in_title','promo_code','sponsored_tag','paid_tag','brand_link'].includes(r));
+    if (hasStrong) return '🟢';
+    return '🟡';
+  };
   const videosTab = `
   <div class="ctrls">
     <select onchange="applyFilter('placement',this.value)"><option value="all">All Placements</option><option value="confirmed_paid_placement" ${sel('placement','confirmed_paid_placement')}>Confirmed</option><option value="likely_sponsored" ${sel('placement','likely_sponsored')}>Likely</option><option value="organic_mention" ${sel('placement','organic_mention')}>Organic</option></select>
-    <select onchange="applyFilter('type',this.value)"><option value="all">All</option><option value="long" ${sel('type','long')}>Long-form</option><option value="short" ${sel('type','short')}>Shorts</option></select>
+    <select onchange="applyFilter('type',this.value)"><option value="all">All Types</option><option value="dedicated" ${sel('type','dedicated')}>Dedicated</option><option value="integrated" ${sel('type','integrated')}>Integrated</option><option value="shorts" ${sel('type','shorts')}>Shorts</option><option value="live" ${sel('type','live')}>Livestream</option></select>
   </div>
-  <table class="dt vf"><thead><tr><th></th><th>Title</th><th>Channel</th><th>Brand</th><th>Game</th><th>Views</th><th>Confidence</th><th>Status</th><th>Actions</th></tr></thead><tbody>
+  <table class="dt vf"><thead><tr><th></th><th>Title</th><th>Channel</th><th>Brand</th><th>Game</th><th>Type</th><th>Views</th><th>Evidence</th><th>Actions</th></tr></thead><tbody>
   ${data.recentVideos.slice(0,30).map(v=>`<tr>
     <td>${v.thumbnailUrl?`<img src="${esc(v.thumbnailUrl)}" width="80" height="45" style="border-radius:4px">`:''}</td>
-    <td><a href="https://youtube.com/watch?v=${esc(v.videoId)}" target="_blank">${esc(v.title.slice(0,60))}${v.title.length>60?'…':''}</a></td>
-    <td>${esc(v.channelName)}</td><td>${esc(v.brand)}</td><td>${esc(v.game)}</td>
-    <td>${fmt(v.viewCount)}</td><td>${badge(v.placementType)}</td>
-    <td>${v.discoveryEvidence.slice(0,2).map(e=>`<span class="et">${esc(e)}</span>`).join('')}</td>
+    <td><a href="https://youtube.com/watch?v=${esc(v.videoId)}" target="_blank">${esc(v.title.slice(0,55))}${v.title.length>55?'…':''}</a></td>
+    <td style="white-space:nowrap">${esc(v.channelName)}</td>
+    <td style="white-space:nowrap">${esc(v.brand)}</td>
+    <td style="white-space:nowrap">${esc(v.game)}</td>
+    <td><span class="et">${esc(ctLabel[(v as any).contentCategory]||(v as any).contentCategory||'?')}</span></td>
+    <td style="white-space:nowrap">${fmt(v.viewCount)}</td>
+    <td><span title="${esc((v.reasonCodes||v.discoveryEvidence||[]).join(', '))}" style="cursor:help">${evidenceIcon(v.reasonCodes||v.discoveryEvidence)} ${badge(v.placementType)}</span></td>
     <td class="acts"><button onclick="va('${v.videoId}','confirm_placement')" class="a a-y" title="Confirm">✓</button><button onclick="va('${v.videoId}','mark_organic')" class="a a-o" title="Organic">O</button><button onclick="va('${v.videoId}','ignore')" class="a a-r" title="Ignore">✕</button></td>
   </tr>`).join('')}
   </tbody></table>`;

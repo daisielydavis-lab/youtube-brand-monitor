@@ -177,10 +177,10 @@ async function queryDashboardData(rangeDays: number) {
   }
 
   const kpis = {
-    newAds: videos.filter(v => v.placement_type === 'confirmed_paid_placement' || v.placement_type === 'likely_sponsored').length,
+    newPlacements: videos.filter(v => new Date(v.first_seen_at!) >= new Date(Date.now() - rangeDays * 86400000)).length,
     activeCreators: creators.size,
-    activeGames: gameMap.size,
-    activeMarkets: new Set(videos.map(v => v.classification_raw?.ai?.market || 'Global')).size,
+    videosMonitored: videos.length,
+    highConfidence: highConf,
   };
 
   const brandComparison = [...brandMap.entries()].map(([name, d]) => ({
@@ -278,7 +278,7 @@ app.get('/api/dashboard', async (req, res) => {
       return res.json({ ok: true, hasData: false, kpis: {}, brands: [], games: [], themes: [], creators: [], recentVideos: [], scanStatus: {} });
     }
 
-    console.log(`[Dashboard:${requestId}] Done: ${data.recentVideos.length} videos, ${data.scanStatus.totalCreators} creators, ${data.kpis.activeCreators} active, totalMs: ${Date.now() - startedAt}`);
+    console.log(`[Dashboard:${requestId}] Done: ${data.recentVideos.length} videos, ${data.scanStatus.totalCreators} creators, ${data.kpis.highConfidence} high-conf, totalMs: ${Date.now() - startedAt}`);
 
     return res.json({ ok: true, ...data, totalMs: Date.now() - startedAt });
   } catch (err) {
