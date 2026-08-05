@@ -92,14 +92,15 @@ export function renderDashboard(
   const quotaPct = Math.round((sysStatus.searchQuotaUsed||0)/100*100);
 
   // ── TAB 1: Overview ──
-  // KPI labels map new field names
   const kpi = data.kpi as any;
+  const coverageColor = (kpi.coveragePct ?? 0) >= 80 ? '#19A974' : (kpi.coveragePct ?? 0) >= 50 ? '#F59E0B' : '#EF5B5B';
   const overview = `
-  <div class="kpi-row" style="grid-template-columns:repeat(4,1fr)">
-    <div class="kpi"><div class="kpi-n">${kpi.newAds ?? kpi.newPlacements ?? 0}</div><div class="kpi-l">New Ads</div></div>
-    <div class="kpi"><div class="kpi-n">${kpi.activeCreators ?? 0}</div><div class="kpi-l">Creators</div></div>
-    <div class="kpi"><div class="kpi-n">${kpi.activeGames ?? 0}</div><div class="kpi-l">Games</div></div>
-    <div class="kpi hl"><div class="kpi-n">${kpi.activeMarkets ?? 0}</div><div class="kpi-l">Markets</div></div>
+  <div class="kpi-row" style="grid-template-columns:repeat(5,1fr)">
+    <div class="kpi"><div class="kpi-n">${kpi.confirmedLikely ?? kpi.newAds ?? 0}</div><div class="kpi-l">Confirmed/Likely</div></div>
+    <div class="kpi"><div class="kpi-n">${kpi.activeCreators ?? 0}</div><div class="kpi-l">Active Creators</div></div>
+    <div class="kpi"><div class="kpi-n">${kpi.activeCampaigns ?? 0}</div><div class="kpi-l">Active Campaigns</div></div>
+    <div class="kpi hl"><div class="kpi-n" style="color:${coverageColor}">${kpi.coveragePct ?? 0}%</div><div class="kpi-l">Analysis Coverage</div></div>
+    <div class="kpi"><div class="kpi-n">${kpi.newCreatorsThisWeek ?? 0}</div><div class="kpi-l">New Creators</div></div>
   </div>
 
   <h2>🚨 Recent Competitive Moves</h2>

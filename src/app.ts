@@ -166,29 +166,35 @@ async function queryDashboardData(rangeDays: number) {
     return { hasData: false as const, kpis: {} as any, brands: [], games: [], themes: [], creators: [], recentVideos: [], scanStatus: {} as any };
   }
 
+  // Coverage metrics
+  const { count: totalVideosAll } = await db.from('youtube_competitor_videos').select('id', { count: 'exact', head: true });
+  const { count: classifiedCountVal } = await db.from('youtube_competitor_videos').select('id', { count: 'exact', head: true }).or('workflow_status.eq.rule_classified,workflow_status.eq.classified');
+  const totalAnalyzed = classifiedCountVal ?? 0;
+  const totalAll = totalVideosAll ?? 0;
+  const coveragePct = totalAll > 0 ? Math.round((totalAnalyzed / totalAll) * 100) : 0;
+  const weekAgo = new Date(Date.now() - 7 * 86400000).toISOString();
+  const { data: newCreatorsThisWeek } = await db.from('youtube_competitor_videos').select('channel_id').gte('first_seen_at', weekAgo);
+  const newCreatorIds = new Set((newCreatorsThisWeek || []).map((v: any) => v.channel_id));
+
   const brandMap = new Map<string, { count: number; creators: Set<string> }>();
   const gameMap = new Map<string, number>();
   const themeMap = new Map<string, number>();
-  let highConf = 0;
+  let confirmedLikely = 0;
   const creators = new Set<string>();
 
   for (const v of videos) {
-    const brand = v.classification_raw?.ai?.brand || v.game_name || 'unknown';
+    const brand = v.classification_raw?.rule?.brand || v.classification_raw?.ai?.brand || 'unknown';
     if (!brandMap.has(brand)) brandMap.set(brand, { count: 0, creators: new Set() });
     const b = brandMap.get(brand)!; b.count++; b.creators.add(v.channel_id);
-    const game = v.game_name || 'uncategorized';
+    const game = v.game_name || v.classification_raw?.rule?.game || v.classification_raw?.ai?.game || 'uncategorized';
     gameMap.set(game, (gameMap.get(game) || 0) + 1);
     const theme = v.topic_category || 'uncategorized';
     themeMap.set(theme, (themeMap.get(theme) || 0) + 1);
-    if (v.placement_type === 'confirmed_paid_placement' || v.placement_type === 'likely_sponsored') highConf++;
+    if (v.placement_type === 'confirmed_paid_placement' || v.placement_type === 'likely_sponsored') confirmedLikely++;
     creators.add(v.channel_id);
   }
 
-  const kpis = {
-    newAds: videos.filter(v => v.placement_type === 'confirmed_paid_placement' || v.placement_type === 'likely_sponsored').length,
-    activeCreators: creators.size,
-    activeGames: gameMap.size,
-    activeMarkets: new Set(videos.map(v => v.classification_raw?.ai?.market || 'Global')).size,
+  const kpis = { confirmedLikely, activeCreators: creators.size, activeCampaigns: 0, coveragePct, newCreatorsThisWeek: newCreatorIds.size, totalVideos: totalAll, totalAnalyzed,
   };
 
   const brandComparison = [...brandMap.entries()].map(([name, d]) => ({
@@ -229,11 +235,14 @@ app.get('/', async (_req, res) => {
     const data = await queryDashboardData(30);
     console.log(`[Dashboard:${requestId}] Step1 videos done: hasData=${data.hasData}`);
 
-    // Step 2: Campaigns (non-critical, safe-fail)
+    // Step 2: Campaigns — get active + emerging for competitive moves
     let campaigns: any[] = [];
     try {
-      const { data: c } = await getSupabase().from('campaigns').select('*').eq('status', 'active').order('detected_at', { ascending: false }).limit(10);
+      const { data: c } = await getSupabase().from('campaigns').select('*').in('status', ['active','emerging','cooling']).order('detected_at', { ascending: false }).limit(10);
       campaigns = c || [];
+      // Inject campaign count into KPIs
+      const activeCampCount = (c || []).filter((x: any) => x.status === 'active' || x.status === 'emerging').length;
+      (data.kpis as any).activeCampaigns = activeCampCount;
     } catch (e) { console.warn(`[Dashboard:${requestId}] Campaigns query skipped: ${(e as Error).message}`); }
 
     // Step 3: Status (non-critical, safe-fail)
@@ -286,7 +295,7 @@ app.get('/api/dashboard', async (req, res) => {
       return res.json({ ok: true, hasData: false, kpis: {}, brands: [], games: [], themes: [], creators: [], recentVideos: [], scanStatus: {} });
     }
 
-    console.log(`[Dashboard:${requestId}] Done: ${data.recentVideos.length} videos, ${data.scanStatus.totalCreators} creators, ${data.kpis.activeCreators} active, totalMs: ${Date.now() - startedAt}`);
+    console.log(`[Dashboard:${requestId}] Done: ${data.recentVideos.length} videos, ${data.scanStatus.totalCreators} creators, ${data.kpis.confirmedLikely} active, totalMs: ${Date.now() - startedAt}`);
 
     return res.json({ ok: true, ...data, totalMs: Date.now() - startedAt });
   } catch (err) {

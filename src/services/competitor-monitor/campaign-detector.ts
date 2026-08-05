@@ -117,11 +117,43 @@ export async function detectCampaigns(): Promise<number> {
     }
   }
 
-  // Auto-end campaigns with no new videos in 14 days
-  const { error } = await db.from('campaigns').update({ status: 'ended', updated_at: new Date().toISOString() })
-    .eq('status', 'active')
-    .lt('active_to', new Date(Date.now() - 14 * 86400000).toISOString().slice(0, 10));
-  if (!error && false) console.log('[Campaign] Ended stale campaigns'); // suppress noisy log
+  // ── Update campaign statuses based on recency ──
+  // Emerging: first detected <48h, ≥1 high-conf  |  Active: new video <72h
+  // Cooling: 3-7d no new  |  Ended: >7d no new  |  Insufficient: only 1 video
+  const now = Date.now();
+  const { data: allCampaigns } = await db.from('campaigns').select('*').in('status', ['active','emerging']);
+  for (const c of (allCampaigns || [])) {
+    let newStatus = c.status;
+    const lastActivity = new Date(c.active_to).getTime();
+    const hoursSinceLast = (now - lastActivity) / 3600000;
+
+    if ((c.video_count || 0) < 2) {
+      newStatus = 'insufficient_evidence';
+    } else if (hoursSinceLast <= 48 && c.video_count >= 2) {
+      newStatus = 'emerging';
+    } else if (hoursSinceLast <= 72) {
+      newStatus = 'active';
+    } else if (hoursSinceLast <= 168) { // 7 days
+      newStatus = 'cooling';
+    } else {
+      newStatus = 'ended';
+    }
+
+    if (newStatus !== c.status) {
+      await db.from('campaigns').update({ status: newStatus, updated_at: new Date().toISOString() }).eq('id', c.id);
+      console.log(`[Campaign] Status: ${c.brand}/${c.game} ${c.status} → ${newStatus}`);
+    }
+  }
+  // Also check ended campaigns for revival
+  const { data: endedCampaigns } = await db.from('campaigns').select('*').eq('status', 'ended');
+  for (const c of (endedCampaigns || [])) {
+    const { count } = await db.from('youtube_competitor_videos').select('id', { count: 'exact', head: true })
+      .eq('campaign_id', c.id)
+      .gte('published_at', new Date(now - 7 * 86400000).toISOString());
+    if (count && count > 0) {
+      await db.from('campaigns').update({ status: 'active', updated_at: new Date().toISOString() }).eq('id', c.id);
+    }
+  }
 
   return created;
 }
