@@ -12,33 +12,41 @@
 
 interface BrandRule {
   brandName: string;
-  brandKeywords: string[];       // high-confidence: title contains → brand = true
+  brandKeywords: string[];       // high-confidence: title/tag contains → brand = true
   brandWeakKeywords: string[];   // lower-confidence: description only → mark for AI verify
+  brandHashtags: string[];       // social media hashtags (#exitlag, etc.)
   domainPatterns: string[];      // URL/domain in description
   promoCodePrefixes: string[];   // known promo code patterns
+  channelNamePatterns: string[]; // channel name contains these → likely brand channel
 }
 
 const BRAND_RULES: BrandRule[] = [
   {
     brandName: 'ExitLag',
-    brandKeywords: ['exitlag', 'exit lag', 'exit-lag'],
-    brandWeakKeywords: ['exitlag', 'exit lag'],
-    domainPatterns: ['exitlag.com', 'exitlag.net'],
-    promoCodePrefixes: ['EXITLAG', 'EXIT'],
+    brandKeywords: ['exitlag', 'exit lag', 'exit-lag', 'exitlag.', 'exit lag.'],
+    brandWeakKeywords: ['exitlag', 'exit lag', 'exit lag.', 'reduce lag', 'fix lag', 'lag fix'],
+    brandHashtags: ['#exitlag', '#exit', '#exitlagreview', '#exitlagpartner'],
+    domainPatterns: ['exitlag.com', 'exitlag.net', 'exitlag.app', 'exitlag.io'],
+    promoCodePrefixes: ['EXITLAG', 'EXIT', 'EL'],
+    channelNamePatterns: ['exitlag', 'exit lag', 'exit-lag'],
   },
   {
     brandName: 'GearUP',
-    brandKeywords: ['gearup', 'gear up', 'gear-up', 'gearupbooster', 'gearup booster'],
-    brandWeakKeywords: ['gearup', 'gear up booster'],
-    domainPatterns: ['gearupbooster.com', 'gearup.com'],
-    promoCodePrefixes: ['GEARUP', 'GEAR'],
+    brandKeywords: ['gearup', 'gear up', 'gear-up', 'gearup.', 'gear up.', 'gearupbooster', 'gearup booster', 'gearup game booster'],
+    brandWeakKeywords: ['gearup', 'gear up', 'gear up booster', 'gearup booster', 'game booster'],
+    brandHashtags: ['#gearup', '#gearupbooster', '#gearuppartner', '#gearupreview'],
+    domainPatterns: ['gearupbooster.com', 'gearup.com', 'gearup.app', 'gearup.gg'],
+    promoCodePrefixes: ['GEARUP', 'GEAR', 'GUP', 'GU'],
+    channelNamePatterns: ['gearup', 'gear up', 'gear-up', 'gearupbooster'],
   },
   {
     brandName: 'LagZapper',
-    brandKeywords: ['lagzapper', 'lag zapper', 'lag-zapper'],
-    brandWeakKeywords: ['lagzapper', 'lag zapper'],
-    domainPatterns: ['lagzapper.com'],
-    promoCodePrefixes: ['LAGZAPPER', 'ZAPPER', 'LAGZAP'],
+    brandKeywords: ['lagzapper', 'lag zapper', 'lag-zapper', 'lagzapper.', 'lag zapper.'],
+    brandWeakKeywords: ['lagzapper', 'lag zapper', 'lag zapper.', 'zapper'],
+    brandHashtags: ['#lagzapper', '#zapper', '#lagzapperreview'],
+    domainPatterns: ['lagzapper.com', 'lagzapper.app'],
+    promoCodePrefixes: ['LAGZAPPER', 'ZAPPER', 'LAGZAP', 'LZ'],
+    channelNamePatterns: ['lagzapper', 'lag zapper', 'lag-zapper'],
   },
 ];
 
@@ -210,34 +218,56 @@ export function classifyVideo(input: {
   const d = (input.description || '').toLowerCase();
   const combined = `${t} ${d} ${(input.tags || []).join(' ')}`.toLowerCase();
 
-  // ── 1. Brand detection ──
+  // ── 1. Brand detection (enhanced v2) ──
   let brand: string | null = null;
   let brandConfidence = 0;
   const brandEvidence: string[] = [];
+  const chName = (input.channelName || '').toLowerCase();
 
   for (const rule of BRAND_RULES) {
     // High-confidence: brand keyword in title
     const titleMatch = rule.brandKeywords.some(kw => t.includes(kw));
-    const descMatch = rule.brandWeakKeywords.some(kw => d.includes(kw));
-    const domainMatch = rule.domainPatterns.some(pat => d.includes(pat));
-    const tagMatch = (input.tags || []).some(tag => rule.brandKeywords.some(kw => tag.toLowerCase().includes(kw)));
+    // Description match — use BOTH strong and weak keywords for broader coverage
+    const descKeywords = [...new Set([...rule.brandKeywords, ...rule.brandWeakKeywords])];
+    const descMatch = descKeywords.some(kw => d.includes(kw));
+    const domainMatch = rule.domainPatterns.some(pat => d.includes(pat) || combined.includes(pat));
+    const tagMatch = (input.tags || []).some(tag =>
+      rule.brandKeywords.some(kw => tag.toLowerCase().includes(kw)));
+    const hashtagMatch = rule.brandHashtags.some(ht =>
+      t.includes(ht) || d.includes(ht) || (input.tags || []).some(tg => tg.toLowerCase() === ht.replace('#', '').toLowerCase()));
     const promoMatch = rule.promoCodePrefixes.some(prefix =>
       new RegExp(`\\b${prefix}[A-Za-z0-9_-]{2,15}\\b`, 'i').test(combined));
+    const channelMatch = rule.channelNamePatterns.some(pat => chName.includes(pat));
 
-    if (titleMatch || tagMatch) {
+    // Title match OR tag match → high confidence
+    if (titleMatch || tagMatch || hashtagMatch) {
       brand = rule.brandName;
       brandConfidence = 0.95;
-      brandEvidence.push(`title contains '${rule.brandName}'`);
+      if (titleMatch) brandEvidence.push(`title contains '${rule.brandName}'`);
+      if (tagMatch) brandEvidence.push(`tag contains '${rule.brandName}'`);
+      if (hashtagMatch) brandEvidence.push(`hashtag '${rule.brandName}'`);
       if (domainMatch) { brandConfidence = 0.98; brandEvidence.push('brand domain in description'); }
       if (promoMatch) { brandConfidence = 0.98; brandEvidence.push('promo code detected'); }
+      if (channelMatch) { brandConfidence = 0.99; brandEvidence.push('official brand channel'); }
       break; // first match wins (title is high-confidence)
     }
 
+    // Description match or domain match
     if (descMatch || domainMatch) {
       brand = rule.brandName;
-      brandConfidence = descMatch ? 0.70 : 0.75;
-      if (domainMatch) { brandConfidence = 0.85; brandEvidence.push('official domain detected'); }
+      brandConfidence = domainMatch ? 0.85 : 0.75; // raised from 0.70
+      if (domainMatch) brandEvidence.push('official domain detected');
       if (descMatch && !domainMatch) brandEvidence.push(`brand mentioned in description`);
+      if (promoMatch) { brandConfidence = Math.max(brandConfidence, 0.90); brandEvidence.push('promo code detected'); }
+      if (channelMatch) { brandConfidence = Math.max(brandConfidence, 0.90); brandEvidence.push('brand channel name'); }
+      break;
+    }
+
+    // Channel name match alone (no other signal)
+    if (channelMatch) {
+      brand = rule.brandName;
+      brandConfidence = 0.65;
+      brandEvidence.push(`channel name matches '${rule.brandName}'`);
       break;
     }
   }
@@ -289,12 +319,12 @@ export function classifyVideo(input: {
     sponsorSignals.push('commercial content pattern');
   }
 
-  // Determine placement type
+  // Determine placement type (v2 — raised confidence thresholds)
   if (placementType === 'confirmed_paid_placement') {
     // already set by explicit sponsor tag
-  } else if (brand && (sponsorSignals.length >= 2 || (sponsorSignals.length >= 1 && brandConfidence >= 0.9))) {
+  } else if (brand && (sponsorSignals.length >= 2 || (sponsorSignals.length >= 1 && brandConfidence >= 0.85))) {
     placementType = 'likely_sponsored';
-  } else if (brand && brandConfidence >= 0.7) {
+  } else if (brand && brandConfidence >= 0.65) {
     placementType = 'organic_mention';
   }
 
@@ -307,7 +337,7 @@ export function classifyVideo(input: {
   // ── 6. Language & market ──
   const { language, market } = detectLanguage(input.title, input.description);
 
-  // ── 7. AI escalation logic ──
+  // ── 7. AI escalation logic (v2 — cross-signal boosting) ──
   let needsAI = false;
   let aiPriority = 0;
   let aiReason = '';
@@ -316,10 +346,19 @@ export function classifyVideo(input: {
   const isRecent = hoursAgo < 72;
   const isHighViews = input.viewCount > 5000;
 
-  if (!brand || brandConfidence < 0.7) {
+  // Brand unclear → AI needed
+  if (!brand || brandConfidence < 0.65) {
     needsAI = true;
     aiPriority += 3;
     aiReason = 'brand unclear';
+  }
+
+  // Cross-signal boost: no brand detected, but video has promo code + gaming/lag context
+  // → likely a booster sponsorship, AI should prioritize
+  if (!brand && sponsorSignals.length >= 2 && (game || topicCategory !== 'game_integration')) {
+    needsAI = true;
+    aiPriority += 4; // HIGH priority — strong commercial signals, just needs brand ID
+    aiReason = aiReason ? aiReason + '; strong cross-signals' : 'strong cross-signals (promo + gaming context)';
   }
 
   if (!game || gameConfidence < 0.5) {

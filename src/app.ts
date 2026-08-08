@@ -10,7 +10,7 @@ import cron from 'node-cron';
 import { config, validateConfig } from './config';
 import { runDiscoveryPipeline, getMonitorStatus, scanState, retryClassification } from './services/competitor-monitor';
 import { detectCampaigns, getCampaigns } from './services/competitor-monitor/campaign-detector';
-import { generateDailyReport, generateWeeklyReport } from './services/competitor-monitor/competitor-report';
+import { generateDailyReport, generateWeeklyReport, generateQuarterlyReport } from './services/competitor-monitor/competitor-report';
 import { getDashboardData } from './services/competitor-monitor/dashboard-data';
 import { getAllCreators } from './services/competitor-monitor/creator-profiler';
 import { getSupabase } from './db/supabase';
@@ -74,7 +74,7 @@ app.get('/api/campaigns', async (_req, res) => {
 
 // ── Creators (aggregated from videos, joined with profiles) ──
 app.get('/api/creators', async (req, res) => {
-  const rangeDays = parseInt((req.query.range as string) || '30', 10);
+  const rangeDays = parseInt((req.query.range as string) || '7', 10);
   const { getCreatorsFromVideos } = require('./services/competitor-monitor/creator-profiler');
   res.json(await getCreatorsFromVideos({ rangeDays, brand: req.query.brand as string }));
 });
@@ -90,6 +90,45 @@ app.get('/api/comments', async (req, res) => {
   }
   const { data } = await q;
   res.json(data || []);
+});
+
+// ── Comments Summary (aggregated insights) ──
+app.get('/api/comments/summary', async (_req, res) => {
+  const db = getSupabase();
+  const { data: comments } = await db.from('youtube_comment_insights').select('has_purchase_intent,is_brand_related,sentiment,video_id,author_name').limit(500);
+  if (!comments?.length) return res.json({ total: 0, purchaseIntentRate: 0, brandRelatedRate: 0, sentiment: {}, topVideos: [] });
+
+  const total = comments.length;
+  const purchaseIntent = comments.filter((c: any) => c.has_purchase_intent).length;
+  const brandRelated = comments.filter((c: any) => c.is_brand_related).length;
+  const sentiment: Record<string, number> = {};
+  comments.forEach((c: any) => {
+    const s = c.sentiment || 'neutral';
+    sentiment[s] = (sentiment[s] || 0) + 1;
+  });
+
+  // Top discussed videos
+  const videoMap = new Map<string, number>();
+  comments.forEach((c: any) => { videoMap.set(c.video_id, (videoMap.get(c.video_id) || 0) + 1); });
+  const topVideoIds = [...videoMap.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10).map(([id]) => id);
+
+  // Fetch video titles for top videos
+  const { data: topVids } = await db.from('youtube_competitor_videos').select('video_id,title,channel_name').in('video_id', topVideoIds);
+  const titleMap = new Map((topVids || []).map((v: any) => [v.video_id, { title: v.title, channelName: v.channel_name }]));
+  const topVideos = topVideoIds.map(id => ({
+    videoId: id,
+    title: titleMap.get(id)?.title || '?',
+    channelName: titleMap.get(id)?.channelName || '?',
+    commentCount: videoMap.get(id) || 0,
+  }));
+
+  res.json({
+    total,
+    purchaseIntentRate: total > 0 ? Math.round((purchaseIntent / total) * 100) : 0,
+    brandRelatedRate: total > 0 ? Math.round((brandRelated / total) * 100) : 0,
+    sentiment,
+    topVideos,
+  });
 });
 
 // ── System ──
@@ -157,50 +196,71 @@ async function queryDashboardData(rangeDays: number) {
 
   const { data: videos, error: vidErr } = await Promise.race([
     db.from('youtube_competitor_videos')
-      .select('video_id,title,channel_id,channel_name,published_at,is_short,thumbnail_url,game_name,content_type,placement_type,sponsor_confidence,topic_category,promo_code,view_count,like_count,comment_count,classification_raw,workflow_status,first_seen_at')
+      .select('video_id,title,channel_id,channel_name,published_at,is_short,thumbnail_url,game_name,content_type,placement_type,sponsor_confidence,topic_category,promo_code,view_count,like_count,comment_count,classification_raw,workflow_status,first_seen_at,market,language')
       .gte('published_at', since)
       .order('published_at', { ascending: false })
       .limit(500),
     new Promise<never>((_, reject) => setTimeout(() => reject(new Error('TIMEOUT')), 5000)),
   ]);
 
+  console.log(`[Dashboard] rangeDays=${rangeDays} since=${since} videos=${videos?.length || 0} err=${vidErr?.message || 'none'}`);
+
+  if (vidErr) {
+    console.error(`[Dashboard] Query error: code=${vidErr.code} msg=${vidErr.message} details=${vidErr.details}`);
+  }
+
   if (!videos || !videos.length) {
     return { hasData: false as const, kpis: {} as any, brands: [], games: [], themes: [], creators: [], recentVideos: [], scanStatus: {} as any };
   }
 
-  // Coverage metrics
-  const { count: totalVideosAll } = await db.from('youtube_competitor_videos').select('id', { count: 'exact', head: true });
-  const { count: classifiedCountVal } = await db.from('youtube_competitor_videos').select('id', { count: 'exact', head: true }).or('workflow_status.eq.rule_classified,workflow_status.eq.classified');
-  const totalAnalyzed = classifiedCountVal ?? 0;
-  const totalAll = totalVideosAll ?? 0;
-  const coveragePct = totalAll > 0 ? Math.round((totalAnalyzed / totalAll) * 100) : 0;
+  // Coverage metrics — time-filtered to current window, with workflow status breakdown
+  const { count: totalVideosInRange } = await db.from('youtube_competitor_videos').select('id', { count: 'exact', head: true }).gte('published_at', since);
+  const { count: classifiedInRange } = await db.from('youtube_competitor_videos').select('id', { count: 'exact', head: true }).gte('published_at', since).or('workflow_status.eq.rule_classified,workflow_status.eq.classified');
+  const totalAnalyzed = classifiedInRange ?? 0;
+  const totalInRange = totalVideosInRange ?? 0;
+  const coveragePct = totalInRange > 0 ? Math.round((totalAnalyzed / totalInRange) * 100) : 0;
+  // Global total for reference only
+  const { count: totalAll } = await db.from('youtube_competitor_videos').select('id', { count: 'exact', head: true });
   const weekAgo = new Date(Date.now() - 7 * 86400000).toISOString();
   const { data: newCreatorsThisWeek } = await db.from('youtube_competitor_videos').select('channel_id').gte('first_seen_at', weekAgo);
   const newCreatorIds = new Set((newCreatorsThisWeek || []).map((v: any) => v.channel_id));
 
-  const brandMap = new Map<string, { count: number; creators: Set<string> }>();
+  const brandMap = new Map<string, { count: number; creators: Set<string>; markets: Map<string, number> }>();
   const gameMap = new Map<string, number>();
   const themeMap = new Map<string, number>();
   let confirmedLikely = 0;
-  const creators = new Set<string>();
+  const allCreators = new Set<string>();
+  const activeCreators = new Set<string>(); // only confirmed/likely placements
+
+  // Resolve market: rule.market → ai.market → db.market column → 'Unknown'
+  const resolveMarket = (v: any) => v.classification_raw?.rule?.market || v.classification_raw?.ai?.market || v.market || 'Unknown';
+  // Resolve brand: final → rule → ai → unknown
+  const resolveBrand = (v: any) => v.classification_raw?.final?.brand || v.classification_raw?.rule?.brand || v.classification_raw?.ai?.brand || 'unknown';
 
   for (const v of videos) {
-    const brand = v.classification_raw?.final?.brand || v.classification_raw?.rule?.brand || v.classification_raw?.ai?.brand || 'unknown';
-    if (!brandMap.has(brand)) brandMap.set(brand, { count: 0, creators: new Set() });
+    const brand = resolveBrand(v);
+    if (!brandMap.has(brand)) brandMap.set(brand, { count: 0, creators: new Set(), markets: new Map() });
     const b = brandMap.get(brand)!; b.count++; b.creators.add(v.channel_id);
+    const mkt = resolveMarket(v);
+    b.markets.set(mkt, (b.markets.get(mkt) || 0) + 1);
     const game = v.game_name || v.classification_raw?.rule?.game || v.classification_raw?.ai?.game || 'uncategorized';
     gameMap.set(game, (gameMap.get(game) || 0) + 1);
     const theme = v.topic_category || 'uncategorized';
     themeMap.set(theme, (themeMap.get(theme) || 0) + 1);
-    if (v.placement_type === 'confirmed_paid_placement' || v.placement_type === 'likely_sponsored') confirmedLikely++;
-    creators.add(v.channel_id);
+    if (v.placement_type === 'confirmed_paid_placement' || v.placement_type === 'likely_sponsored') {
+      confirmedLikely++;
+      activeCreators.add(v.channel_id);
+    }
+    allCreators.add(v.channel_id);
   }
 
-  const kpis = { confirmedLikely, activeCreators: creators.size, activeCampaigns: 0, coveragePct, newCreatorsThisWeek: newCreatorIds.size, totalVideos: totalAll, totalAnalyzed,
+  const kpis = { confirmedLikely, activeCreators: activeCreators.size, allCreatorsInWindow: allCreators.size, activeCampaigns: 0, coveragePct, newCreatorsThisWeek: newCreatorIds.size, totalVideos: totalInRange, totalAnalyzed,
   };
 
   const brandComparison = [...brandMap.entries()].map(([name, d]) => ({
-    brandName: name, newVideos: d.count, creators: d.creators.size, topGame: '', topMarket: '', median7dViews: 0,
+    brandName: name, newVideos: d.count, creators: d.creators.size,
+    topGame: '', topMarket: [...d.markets.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || 'Unknown',
+    median7dViews: 0,
   }));
 
   const topGames = [...gameMap.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10).map(([game, count]) => ({
@@ -222,7 +282,7 @@ async function queryDashboardData(rangeDays: number) {
 
   return {
     hasData: true as const, kpis, brandComparison, topGames, topThemes, topCreators: [] as any[],
-    recentVideos, scanStatus: { lastScanAt: null, nextScanAt: 'Tomorrow 06:00 UTC', totalVideos: videos.length, totalCreators: creators.size, queriesActive: 6 },
+    recentVideos, scanStatus: { lastScanAt: null, nextScanAt: 'Tomorrow 06:00 UTC', totalVideos: videos.length, totalCreators: activeCreators.size, queriesActive: 6 },
   };
 }
 
@@ -301,7 +361,7 @@ app.get('/api/dashboard', async (req, res) => {
   console.log(`[Dashboard:${requestId}] Request started`);
 
   try {
-    const rangeDays = parseInt((req.query.range as string) || '30', 10);
+    const rangeDays = parseInt((req.query.range as string) || '7', 10);
     const data = await queryDashboardData(rangeDays);
 
     if (!data.hasData) {
@@ -327,6 +387,13 @@ app.get('/report/weekly', async (_req, res) => {
   const db = getSupabase();
   const { data: saved } = await db.from('competitor_reports').select('*').eq('report_type','weekly').order('created_at',{ascending:false}).limit(1).maybeSingle();
   res.json(saved?.report_data || await generateWeeklyReport());
+});
+
+// ── Quarterly Report ──
+app.get('/report/quarterly', async (_req, res) => {
+  const db = getSupabase();
+  const { data: saved } = await db.from('competitor_reports').select('*').eq('report_type','quarterly').order('created_at',{ascending:false}).limit(1).maybeSingle();
+  res.json(saved?.report_data || await generateQuarterlyReport());
 });
 
 // ── Start ──
@@ -372,6 +439,25 @@ cron.schedule('0 */4 * * *', async () => {
 cron.schedule('0 8 * * 1', async () => {
   try { await generateWeeklyReport(); console.log('[Cron] Weekly report done'); }
   catch (err) { console.error('[Cron] Weekly failed:', (err as Error).message); }
+});
+
+// ── Cron: Quarterly report — 2nd day of each quarter at 08:00 UTC ──
+// Jan-Mar=Q1, Apr-Jun=Q2, Jul-Sep=Q3, Oct-Dec=Q4
+cron.schedule('0 8 2 1,4,7,10 *', async () => {
+  console.log('[Cron] Quarterly report generation');
+  try { await generateQuarterlyReport(); console.log('[Cron] Quarterly report done'); }
+  catch (err) { console.error('[Cron] Quarterly failed:', (err as Error).message); }
+});
+
+// ── Cron: AI backlog processing daily at 10:00 UTC (20 items/day, low cost) ──
+cron.schedule('0 10 * * *', async () => {
+  const backlogLimit = parseInt(process.env.AI_BACKLOG_DAILY_LIMIT || '20', 10);
+  if (backlogLimit <= 0) { console.log('[Cron] AI backlog skipped (limit=0)'); return; }
+  console.log(`[Cron] AI backlog processing — limit=${backlogLimit}`);
+  try {
+    const result = await retryClassification(backlogLimit);
+    console.log(`[Cron] AI backlog done — ${result.classified} classified`);
+  } catch (err) { console.error('[Cron] AI backlog failed:', (err as Error).message); }
 });
 
 export default app;

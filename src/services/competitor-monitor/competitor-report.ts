@@ -24,6 +24,21 @@
 import { getSupabase } from '../../db/supabase';
 import { detectCreatorAnomalies } from './creator-profiler';
 
+// Brand resolution chain: final → rule → ai → unknown
+function resolveBrand(v: any): string {
+  return v.classification_raw?.final?.brand || v.classification_raw?.rule?.brand || v.classification_raw?.ai?.brand || 'unknown';
+}
+
+// Simple public performance score from visible metrics (0-100)
+function computeScore(v: any): number {
+  const views = v.view_count || 0;
+  const likes = v.like_count || 0;
+  const comments = v.comment_count || 0;
+  const viewsScore = Math.min(views / 1000, 50); // up to 50 points for views
+  const engagementScore = Math.min((likes + comments * 2) / 100, 50); // up to 50 for engagement
+  return Math.round(viewsScore + engagementScore);
+}
+
 export interface DailyReport {
   reportDate: string;
   period: { start: string; end: string };
@@ -86,7 +101,7 @@ export async function generateDailyReport(): Promise<DailyReport> {
     .from('youtube_competitor_videos')
     .select('*')
     .gte('first_seen_at', startOfToday)
-    .order('public_performance_score', { ascending: false });
+    .order('view_count', { ascending: false });
 
   const videos = (newVideos || []) as any[];
 
@@ -98,10 +113,7 @@ export async function generateDailyReport(): Promise<DailyReport> {
 
   for (const v of videos) {
     // By brand
-    const vBrand = v.detected_brand ||
-      (v.classification_raw?.detectedBrand) ||
-      (v.classification_raw?.brandName) ||
-      'unknown';
+    const vBrand = resolveBrand(v);
     if (!brandSet.has(vBrand)) {
       brandSet.set(vBrand, { videos: 0, creators: new Set() });
     }
@@ -149,11 +161,11 @@ export async function generateDailyReport(): Promise<DailyReport> {
     }
   }
   const topCreators = [...creatorMap.values()]
-    .sort((a, b) => (b.public_performance_score || 0) - (a.public_performance_score || 0))
+    .sort((a, b) => (b.view_count || 0) - (a.view_count || 0))
     .slice(0, 10)
     .map(v => ({
       channelName: v.channel_name || 'Unknown',
-      brand: (v.classification_raw?.detectedBrand) || 'unknown',
+      brand: resolveBrand(v),
       game: v.game_name || 'unknown',
       contentType: v.content_type || 'unknown',
       views24h: v.view_count || 0,
@@ -161,7 +173,7 @@ export async function generateDailyReport(): Promise<DailyReport> {
       engagementRate: v.like_count && v.view_count ? (v.like_count + v.comment_count) / v.view_count : 0,
       viewSubRatio: 0,
       promoCode: v.promo_code || null,
-      performanceScore: v.public_performance_score || 0,
+      performanceScore: computeScore(v),
     }));
 
   // Anomalies
@@ -172,10 +184,10 @@ export async function generateDailyReport(): Promise<DailyReport> {
     videoId: v.video_id,
     title: v.title,
     channelName: v.channel_name || 'Unknown',
-    brand: (v.classification_raw?.detectedBrand) || 'unknown',
+    brand: resolveBrand(v),
     game: v.game_name || 'unknown',
     placementType: v.placement_type || 'unknown',
-    performanceScore: v.public_performance_score || 0,
+    performanceScore: computeScore(v),
     viewCount: v.view_count || 0,
     publishedAt: v.published_at,
   }));
@@ -216,7 +228,7 @@ export async function generateWeeklyReport(): Promise<WeeklyReport> {
     .from('youtube_competitor_videos')
     .select('*')
     .gte('first_seen_at', weekAgo)
-    .order('public_performance_score', { ascending: false });
+    .order('view_count', { ascending: false });
 
   // Last week's videos (for trend comparison)
   const { data: lastWeekVideos } = await db
@@ -235,7 +247,7 @@ export async function generateWeeklyReport(): Promise<WeeklyReport> {
   const topicCount = new Map<string, number>();
 
   for (const v of thisWeek) {
-    const vBrand = (v.classification_raw?.detectedBrand) || 'unknown';
+    const vBrand = resolveBrand(v);
     if (!brandSet.has(vBrand)) brandSet.set(vBrand, { videos: 0, creators: new Set() });
     const b = brandSet.get(vBrand)!;
     b.videos++;
@@ -252,12 +264,12 @@ export async function generateWeeklyReport(): Promise<WeeklyReport> {
   // Trends: brand growth week-over-week
   const brandGrowth: Record<string, { thisWeek: number; lastWeek: number; changePercent: number }> = {};
   const allBrands = new Set<string>();
-  thisWeek.forEach(v => allBrands.add((v.classification_raw?.detectedBrand) || 'unknown'));
-  lastWeek.forEach(v => allBrands.add((v.classification_raw?.detectedBrand) || 'unknown'));
+  thisWeek.forEach(v => allBrands.add(resolveBrand(v)));
+  lastWeek.forEach(v => allBrands.add(resolveBrand(v)));
 
   for (const brand of allBrands) {
-    const tw = thisWeek.filter(v => (v.classification_raw?.detectedBrand || 'unknown') === brand).length;
-    const lw = lastWeek.filter(v => (v.classification_raw?.detectedBrand || 'unknown') === brand).length;
+    const tw = thisWeek.filter(v => resolveBrand(v) === brand).length;
+    const lw = lastWeek.filter(v => resolveBrand(v) === brand).length;
     brandGrowth[brand] = {
       thisWeek: tw,
       lastWeek: lw,
@@ -282,7 +294,7 @@ export async function generateWeeklyReport(): Promise<WeeklyReport> {
 
   // Check for brand concentration in new markets
   for (const brand of allBrands) {
-    const brandVideos = thisWeek.filter(v => (v.classification_raw?.detectedBrand || 'unknown') === brand);
+    const brandVideos = thisWeek.filter(v => resolveBrand(v) === brand);
     const ruCount = brandVideos.filter(v => v.language === 'ru').length;
     const ptCount = brandVideos.filter(v => v.language === 'pt').length;
     if (ruCount >= 3) marketSignals.push(`${brand} increasing Russian market presence (${ruCount} videos)`);
@@ -298,13 +310,13 @@ export async function generateWeeklyReport(): Promise<WeeklyReport> {
         videos: 0,
         scores: [],
         views: 0,
-        brand: (v.classification_raw?.detectedBrand) || 'unknown',
+        brand: resolveBrand(v),
         name: v.channel_name || 'Unknown',
       });
     }
     const p = performerMap.get(key)!;
     p.videos++;
-    p.scores.push(v.public_performance_score || 0);
+    p.scores.push(computeScore(v));
     p.views += v.view_count || 0;
   }
 
@@ -343,7 +355,7 @@ export async function generateWeeklyReport(): Promise<WeeklyReport> {
     })),
     topCreators: thisWeek.slice(0, 10).map(v => ({
       channelName: v.channel_name || 'Unknown',
-      brand: (v.classification_raw?.detectedBrand) || 'unknown',
+      brand: resolveBrand(v),
       game: v.game_name || 'unknown',
       contentType: v.content_type || 'unknown',
       views24h: v.view_count || 0,
@@ -351,17 +363,17 @@ export async function generateWeeklyReport(): Promise<WeeklyReport> {
       engagementRate: v.like_count && v.view_count ? (v.like_count + v.comment_count) / v.view_count : 0,
       viewSubRatio: 0,
       promoCode: v.promo_code || null,
-      performanceScore: v.public_performance_score || 0,
+      performanceScore: computeScore(v),
     })),
     anomalies,
     newVideos: thisWeek.slice(0, 50).map(v => ({
       videoId: v.video_id,
       title: v.title,
       channelName: v.channel_name || 'Unknown',
-      brand: (v.classification_raw?.detectedBrand) || 'unknown',
+      brand: resolveBrand(v),
       game: v.game_name || 'unknown',
       placementType: v.placement_type || 'unknown',
-      performanceScore: v.public_performance_score || 0,
+      performanceScore: computeScore(v),
       viewCount: v.view_count || 0,
       publishedAt: v.published_at,
     })),
@@ -384,6 +396,424 @@ export async function generateWeeklyReport(): Promise<WeeklyReport> {
 
   console.log(`[Report] Weekly report generated: ${overview.totalNewVideos} videos, ${overview.totalCreators} creators`);
   return report;
+}
+
+// ═══════════════════════════════════════════
+// Quarterly Competitive Intelligence Report
+// ═══════════════════════════════════════════
+
+export interface QuarterlyReport {
+  reportDate: string;
+  quarter: string;               // e.g. "2026-Q3"
+  period: { start: string; end: string };
+  previousQuarter: { start: string; end: string };
+  executiveSummary: string;
+  overview: {
+    totalPlacements: number;
+    totalCreators: number;
+    confirmedPlacements: number;
+    likelyPlacements: number;
+  };
+  brandAnalysis: Array<{
+    brand: string;
+    thisQuarter: { placements: number; creators: number; games: number; markets: number; avgViews: number };
+    lastQuarter: { placements: number; creators: number };
+    qoqChange: number;             // percentage
+    topGame: string;
+    topMarket: string;
+    primaryAngle: string;          // most used content angle
+  }>;
+  gamePenetration: Array<{
+    game: string;
+    totalVideos: number;
+    brands: Record<string, number>;
+    qoqTrend: 'rising' | 'stable' | 'declining' | 'new';
+  }>;
+  creatorEcosystem: {
+    newThisQuarter: number;
+    retained: number;
+    churned: number;               // present last quarter, absent this quarter
+    multiBrandCount: number;       // creators who worked with ≥2 brands
+    topNewCreators: Array<{ channelName: string; brand: string; game: string; views: number }>;
+  };
+  marketExpansion: Array<{
+    market: string;
+    brands: string[];
+    videoCount: number;
+    signal: string;                // e.g. "first significant presence"
+  }>;
+  strategicInsights: string[];     // AI-worthy observations
+  topVideos: Array<{
+    videoId: string;
+    title: string;
+    channelName: string;
+    brand: string;
+    game: string;
+    viewCount: number;
+    performanceScore: number;
+  }>;
+}
+
+function getQuarterDates(offset: number = 0): { start: string; end: string; label: string } {
+  const now = new Date();
+  const currentQuarter = Math.floor(now.getMonth() / 3);
+  const quarterStartMonth = currentQuarter * 3;
+
+  // Current quarter start
+  const qStart = new Date(now.getFullYear(), quarterStartMonth, 1);
+  // offset = 0: current quarter, offset = 1: previous quarter
+  qStart.setMonth(qStart.getMonth() - offset * 3);
+
+  const qEnd = new Date(qStart);
+  qEnd.setMonth(qEnd.getMonth() + 3);
+  qEnd.setMilliseconds(-1);
+
+  const year = qStart.getFullYear();
+  const qNum = Math.floor(qStart.getMonth() / 3) + 1;
+
+  return {
+    start: qStart.toISOString(),
+    end: qEnd.toISOString(),
+    label: `${year}-Q${qNum}`,
+  };
+}
+
+/** Generate a quarterly competitive intelligence report (~90 days) */
+export async function generateQuarterlyReport(): Promise<QuarterlyReport> {
+  const db = getSupabase();
+  const thisQ = getQuarterDates(0);
+  const lastQ = getQuarterDates(1);
+
+  console.log(`[Report] Generating quarterly report: ${thisQ.label} (${thisQ.start} → ${thisQ.end})`);
+
+  // Fetch this quarter's confirmed/likely videos
+  const { data: thisQVideos } = await db
+    .from('youtube_competitor_videos')
+    .select('*')
+    .in('placement_type', ['confirmed_paid_placement', 'likely_sponsored'])
+    .gte('published_at', thisQ.start)
+    .lt('published_at', thisQ.end)
+    .order('view_count', { ascending: false });
+
+  // Fetch last quarter's videos for comparison
+  const { data: lastQVideos } = await db
+    .from('youtube_competitor_videos')
+    .select('*')
+    .in('placement_type', ['confirmed_paid_placement', 'likely_sponsored'])
+    .gte('published_at', lastQ.start)
+    .lt('published_at', lastQ.end);
+
+  const thisVids = (thisQVideos || []) as any[];
+  const lastVids = (lastQVideos || []) as any[];
+
+  // ── Brand Analysis ──
+  const VALID_BRANDS = ['ExitLag', 'GearUP', 'LagZapper'];
+  const brandAnalysis = VALID_BRANDS.map(brand => {
+    const tq = thisVids.filter(v => resolveBrand(v) === brand);
+    const lq = lastVids.filter(v => resolveBrand(v) === brand);
+
+    const tqGames = new Set(tq.map(v => v.game_name).filter(Boolean));
+    const tqMarkets = new Set(tq.map(v => v.classification_raw?.rule?.market || v.market || 'Unknown').filter(Boolean));
+    const tqViews = tq.reduce((s, v) => s + (v.view_count || 0), 0);
+    const tqAvgViews = tq.length > 0 ? Math.round(tqViews / tq.length) : 0;
+
+    // Primary angle — most common topic_category
+    const angleCounts = new Map<string, number>();
+    tq.forEach(v => {
+      const a = v.topic_category || 'game_integration';
+      angleCounts.set(a, (angleCounts.get(a) || 0) + 1);
+    });
+    const primaryAngle = [...angleCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || 'general';
+
+    // Top game
+    const gameCounts = new Map<string, number>();
+    tq.forEach(v => {
+      const g = v.game_name || 'unknown';
+      gameCounts.set(g, (gameCounts.get(g) || 0) + 1);
+    });
+    const topGame = [...gameCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || 'unknown';
+
+    // Top market
+    const mktCounts = new Map<string, number>();
+    tq.forEach(v => {
+      const m = v.classification_raw?.rule?.market || v.market || 'Unknown';
+      mktCounts.set(m, (mktCounts.get(m) || 0) + 1);
+    });
+    const topMarket = [...mktCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || 'Unknown';
+
+    const qoqChange = lq.length > 0 ? Math.round(((tq.length - lq.length) / lq.length) * 100) : (tq.length > 0 ? 100 : 0);
+
+    return {
+      brand,
+      thisQuarter: {
+        placements: tq.length,
+        creators: new Set(tq.map(v => v.channel_id)).size,
+        games: tqGames.size,
+        markets: tqMarkets.size,
+        avgViews: tqAvgViews,
+      },
+      lastQuarter: {
+        placements: lq.length,
+        creators: new Set(lq.map(v => v.channel_id)).size,
+      },
+      qoqChange,
+      topGame,
+      topMarket,
+      primaryAngle,
+    };
+  });
+
+  // ── Game Penetration ──
+  const gameMap = new Map<string, { thisQ: number; lastQ: number; brands: Map<string, number> }>();
+  thisVids.forEach(v => {
+    const g = v.game_name || 'unknown';
+    if (!gameMap.has(g)) gameMap.set(g, { thisQ: 0, lastQ: 0, brands: new Map() });
+    const entry = gameMap.get(g)!;
+    entry.thisQ++;
+    const b = resolveBrand(v);
+    entry.brands.set(b, (entry.brands.get(b) || 0) + 1);
+  });
+  lastVids.forEach(v => {
+    const g = v.game_name || 'unknown';
+    if (!gameMap.has(g)) gameMap.set(g, { thisQ: 0, lastQ: 0, brands: new Map() });
+    gameMap.get(g)!.lastQ++;
+  });
+
+  const gamePenetration = [...gameMap.entries()]
+    .filter(([, d]) => d.thisQ >= 2) // skip single-video games
+    .sort((a, b) => b[1].thisQ - a[1].thisQ)
+    .slice(0, 15)
+    .map(([game, d]) => {
+      let qoqTrend: 'rising' | 'stable' | 'declining' | 'new' = 'stable';
+      if (d.lastQ === 0) qoqTrend = 'new';
+      else if (d.thisQ > d.lastQ * 1.3) qoqTrend = 'rising';
+      else if (d.thisQ < d.lastQ * 0.7) qoqTrend = 'declining';
+      return {
+        game,
+        totalVideos: d.thisQ,
+        brands: Object.fromEntries(d.brands),
+        qoqTrend,
+      };
+    });
+
+  // ── Creator Ecosystem ──
+  const tqCreators = new Set(thisVids.map(v => v.channel_id));
+  const lqCreators = new Set(lastVids.map(v => v.channel_id));
+  const newThisQuarter = [...tqCreators].filter(id => !lqCreators.has(id)).length;
+  const retained = [...tqCreators].filter(id => lqCreators.has(id)).length;
+  const churned = [...lqCreators].filter(id => !tqCreators.has(id)).length;
+
+  // Multi-brand creators
+  const creatorBrands = new Map<string, Set<string>>();
+  thisVids.forEach(v => {
+    if (!creatorBrands.has(v.channel_id)) creatorBrands.set(v.channel_id, new Set());
+    creatorBrands.get(v.channel_id)!.add(resolveBrand(v));
+  });
+  const multiBrandCount = [...creatorBrands.values()].filter(s => s.size >= 2).length;
+
+  // Top new creators
+  const newCreatorVids = thisVids
+    .filter(v => !lqCreators.has(v.channel_id))
+    .sort((a, b) => (b.view_count || 0) - (a.view_count || 0));
+  const seenNewCreators = new Set<string>();
+  const topNewCreators = newCreatorVids
+    .filter(v => {
+      if (seenNewCreators.has(v.channel_id)) return false;
+      seenNewCreators.add(v.channel_id);
+      return true;
+    })
+    .slice(0, 10)
+    .map(v => ({
+      channelName: v.channel_name || 'Unknown',
+      brand: resolveBrand(v),
+      game: v.game_name || 'unknown',
+      views: v.view_count || 0,
+    }));
+
+  const creatorEcosystem = { newThisQuarter, retained, churned, multiBrandCount, topNewCreators };
+
+  // ── Market Expansion ──
+  const marketSignals: Array<{ market: string; brands: string[]; videoCount: number; signal: string }> = [];
+  const NON_DEFAULT_MARKETS = ['RU', 'BR', 'LATAM', 'KR', 'JP', 'CN'];
+  for (const mkt of NON_DEFAULT_MARKETS) {
+    const vids = thisVids.filter(v => {
+      const m = v.classification_raw?.rule?.market || v.market || 'Unknown';
+      return m === mkt;
+    });
+    if (vids.length >= 3) {
+      const brands = [...new Set(vids.map(v => resolveBrand(v)))];
+      const lastVidsInMkt = lastVids.filter(v => {
+        const m = v.classification_raw?.rule?.market || v.market || 'Unknown';
+        return m === mkt;
+      });
+      const signal = lastVidsInMkt.length === 0 ? 'first significant presence' :
+        vids.length > lastVidsInMkt.length * 2 ? 'rapid expansion' :
+        'sustained presence';
+      marketSignals.push({ market: mkt, brands, videoCount: vids.length, signal });
+    }
+  }
+
+  // ── Strategic Insights ──
+  const insights: string[] = [];
+
+  // Brand with highest growth
+  const fastestGrowing = brandAnalysis.sort((a, b) => b.qoqChange - a.qoqChange)[0];
+  if (fastestGrowing && fastestGrowing.qoqChange > 20) {
+    insights.push(`${fastestGrowing.brand} showed ${fastestGrowing.qoqChange > 0 ? '+' : ''}${fastestGrowing.qoqChange}% QoQ placement growth, driven primarily by ${fastestGrowing.topGame} content.`);
+  }
+
+  // Brand with most diverse game portfolio
+  const mostDiverse = brandAnalysis.sort((a, b) => b.thisQuarter.games - a.thisQuarter.games)[0];
+  if (mostDiverse && mostDiverse.thisQuarter.games >= 5) {
+    insights.push(`${mostDiverse.brand} targeted ${mostDiverse.thisQuarter.games} different games — the broadest game portfolio.`);
+  }
+
+  // Rising games
+  const risingGames = gamePenetration.filter(g => g.qoqTrend === 'rising' || g.qoqTrend === 'new');
+  if (risingGames.length > 0) {
+    insights.push(`Emerging game targets: ${risingGames.slice(0, 3).map(g => g.game).join(', ')} — these games saw increased booster sponsorship activity.`);
+  }
+
+  // Creator churn signal
+  if (churned > retained * 0.5) {
+    insights.push(`High creator churn: ${churned} creators from last quarter did not appear this quarter (${retained} retained). Possible campaign cycle rotation.`);
+  }
+
+  // Multi-brand creator signal
+  if (multiBrandCount >= 5) {
+    insights.push(`${multiBrandCount} creators worked with 2+ booster brands this quarter — these are high-value comparison targets.`);
+  }
+
+  // Market expansion
+  const firstTimeMarkets = marketSignals.filter(m => m.signal === 'first significant presence');
+  if (firstTimeMarkets.length > 0) {
+    insights.push(`New market entry: ${firstTimeMarkets.map(m => `${m.market} (${m.brands.join('/')})`).join(', ')}.`);
+  }
+
+  // ── Executive Summary ──
+  const totalPlacements = thisVids.length;
+  const dominantBrand = brandAnalysis.sort((a, b) => b.thisQuarter.placements - a.thisQuarter.placements)[0];
+  const summary = `${thisQ.label} Competitive Intelligence: ${totalPlacements} confirmed/likely placements across ${tqCreators.size} creators. ` +
+    `${dominantBrand?.brand || 'N/A'} led with ${dominantBrand?.thisQuarter.placements || 0} placements. ` +
+    `${newThisQuarter} new creators entered the ecosystem. ` +
+    `Top games: ${gamePenetration.slice(0, 3).map(g => g.game).join(', ')}.`;
+
+  // ── Top Videos ──
+  const topVideos = thisVids.slice(0, 20).map(v => ({
+    videoId: v.video_id,
+    title: v.title,
+    channelName: v.channel_name || 'Unknown',
+    brand: resolveBrand(v),
+    game: v.game_name || 'unknown',
+    viewCount: v.view_count || 0,
+    performanceScore: computeScore(v),
+  }));
+
+  // ── Overview ──
+  const confirmedCount = thisVids.filter(v => v.placement_type === 'confirmed_paid_placement').length;
+  const likelyCount = thisVids.filter(v => v.placement_type === 'likely_sponsored').length;
+
+  const report: QuarterlyReport = {
+    reportDate: new Date().toISOString().slice(0, 10),
+    quarter: thisQ.label,
+    period: { start: thisQ.start, end: thisQ.end },
+    previousQuarter: { start: lastQ.start, end: lastQ.end },
+    executiveSummary: summary,
+    overview: {
+      totalPlacements,
+      totalCreators: tqCreators.size,
+      confirmedPlacements: confirmedCount,
+      likelyPlacements: likelyCount,
+    },
+    brandAnalysis,
+    gamePenetration,
+    creatorEcosystem,
+    marketExpansion: marketSignals,
+    strategicInsights: insights,
+    topVideos,
+  };
+
+  // Save to Supabase
+  await db.from('competitor_reports').insert({
+    report_type: 'quarterly',
+    report_period_start: thisQ.start.slice(0, 10),
+    report_period_end: thisQ.end.slice(0, 10),
+    report_data: report,
+    summary_text: summary,
+  });
+
+  console.log(`[Report] Quarterly report generated: ${thisQ.label} — ${totalPlacements} placements, ${insights.length} insights`);
+  return report;
+}
+
+/** Format a quarterly report as human-readable text */
+export function formatQuarterlyReportText(report: QuarterlyReport): string {
+  const fmt = (n: number) => n >= 1000000 ? (n / 1000000).toFixed(1) + 'M' : n >= 1000 ? (n / 1000).toFixed(1) + 'K' : String(n);
+  const lines: string[] = [
+    `══════════════════════════════════════════════`,
+    `  Quarterly Competitive Intelligence Report`,
+    `  ${report.quarter} | ${report.reportDate}`,
+    `══════════════════════════════════════════════`,
+    ``,
+    `📊 EXECUTIVE SUMMARY`,
+    `   ${report.executiveSummary}`,
+    ``,
+    `📈 OVERVIEW`,
+    `   Total placements: ${report.overview.totalPlacements}`,
+    `   Unique creators: ${report.overview.totalCreators}`,
+    `   Confirmed: ${report.overview.confirmedPlacements} | Likely: ${report.overview.likelyPlacements}`,
+    ``,
+    `🏢 BRAND ANALYSIS`,
+  ];
+
+  for (const b of report.brandAnalysis) {
+    const arrow = b.qoqChange > 0 ? '↑' : b.qoqChange < 0 ? '↓' : '→';
+    lines.push(`   ${b.brand}: ${b.thisQuarter.placements} placements (${arrow}${Math.abs(b.qoqChange)}% QoQ) | ${b.thisQuarter.creators} creators | ${b.thisQuarter.games} games | ${b.thisQuarter.markets} markets`);
+    lines.push(`     Top game: ${b.topGame} | Top market: ${b.topMarket} | Angle: ${b.primaryAngle}`);
+  }
+
+  lines.push('');
+  lines.push('🎮 GAME PENETRATION');
+  for (const g of report.gamePenetration.slice(0, 8)) {
+    const trend = { rising: '📈', stable: '➡️', declining: '📉', new: '🆕' }[g.qoqTrend];
+    const brandStr = Object.entries(g.brands).map(([b, n]) => `${b}:${n}`).join(' ');
+    lines.push(`   ${trend} ${g.game}: ${g.totalVideos} videos (${brandStr})`);
+  }
+
+  lines.push('');
+  lines.push('👥 CREATOR ECOSYSTEM');
+  lines.push(`   New: ${report.creatorEcosystem.newThisQuarter} | Retained: ${report.creatorEcosystem.retained} | Churned: ${report.creatorEcosystem.churned}`);
+  lines.push(`   Multi-brand creators: ${report.creatorEcosystem.multiBrandCount}`);
+  if (report.creatorEcosystem.topNewCreators.length > 0) {
+    lines.push('   Top new creators:');
+    report.creatorEcosystem.topNewCreators.slice(0, 5).forEach(c => {
+      lines.push(`     • ${c.channelName} (${c.brand}/${c.game}) — ${fmt(c.views)} views`);
+    });
+  }
+
+  if (report.marketExpansion.length > 0) {
+    lines.push('');
+    lines.push('🌍 MARKET EXPANSION');
+    report.marketExpansion.forEach(m => {
+      lines.push(`   ${m.market}: ${m.brands.join('/')} (${m.videoCount} videos) — ${m.signal}`);
+    });
+  }
+
+  if (report.strategicInsights.length > 0) {
+    lines.push('');
+    lines.push('💡 STRATEGIC INSIGHTS');
+    report.strategicInsights.forEach((insight, i) => {
+      lines.push(`   ${i + 1}. ${insight}`);
+    });
+  }
+
+  lines.push('');
+  lines.push('─── Note ───');
+  lines.push('All metrics are PUBLIC performance estimates based on visible YouTube data.');
+  lines.push('Scores do NOT represent ROI, CPA, conversion rate, or ad spend.');
+  lines.push('══════════════════════════════════════════════');
+
+  return lines.join('\n');
 }
 
 /** Format a daily report as human-readable text */

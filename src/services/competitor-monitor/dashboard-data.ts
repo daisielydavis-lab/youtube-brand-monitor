@@ -146,7 +146,7 @@ export async function getDashboardData(filter?: {
   let filteredVideos = videos as any[];
   if (filter?.brand && filter.brand !== 'all') {
     filteredVideos = filteredVideos.filter(v => {
-      const b = v.classification_raw?.ai?.brand || v.game_name;
+      const b = v.classification_raw?.final?.brand || v.classification_raw?.rule?.brand || v.classification_raw?.ai?.brand || 'unknown';
       return b?.toLowerCase() === filter.brand!.toLowerCase();
     });
   }
@@ -180,7 +180,7 @@ export async function getDashboardData(filter?: {
   }
 
   for (const v of periodVideos) {
-    const b = v.classification_raw?.ai?.brand || v.game_name || 'unknown';
+    const b = v.classification_raw?.final?.brand || v.classification_raw?.rule?.brand || v.classification_raw?.ai?.brand || 'unknown';
     if (!brandMap.has(b)) continue;
     const entry = brandMap.get(b)!;
     entry.videos++;
@@ -214,7 +214,7 @@ export async function getDashboardData(filter?: {
     const g = gameMap.get(game)!;
     g.count++;
     g.reach += v.view_count || 0;
-    const b = v.classification_raw?.ai?.brand || 'unknown';
+    const b = v.classification_raw?.final?.brand || v.classification_raw?.rule?.brand || v.classification_raw?.ai?.brand || 'unknown';
     g.brands.set(b, (g.brands.get(b) || 0) + 1);
   }
 
@@ -235,7 +235,7 @@ export async function getDashboardData(filter?: {
     if (!themeMap.has(topic)) themeMap.set(topic, { count: 0, brands: new Map() });
     const t = themeMap.get(topic)!;
     t.count++;
-    const b = v.classification_raw?.ai?.brand || 'unknown';
+    const b = v.classification_raw?.final?.brand || v.classification_raw?.rule?.brand || v.classification_raw?.ai?.brand || 'unknown';
     t.brands.set(b, (t.brands.get(b) || 0) + 1);
   }
 
@@ -278,7 +278,7 @@ export async function getDashboardData(filter?: {
         channelName: c.channel_name,
         thumbnailUrl: c.thumbnail_url || '',
         subscriberCount: c.subscriber_count || 0,
-        recentBrand: latest.classification_raw?.ai?.brand || 'unknown',
+        recentBrand: latest.classification_raw?.final?.brand || latest.classification_raw?.rule?.brand || latest.classification_raw?.ai?.brand || 'unknown',
         recentGame: latest.game_name || 'unknown',
         format: latest.content_type || 'unknown',
         views7d: creatorVideos.reduce((sum: number, v: any) => sum + (v.view_count || 0), 0),
@@ -304,7 +304,7 @@ export async function getDashboardData(filter?: {
       title: v.title || '',
       thumbnailUrl: v.thumbnail_url || '',
       channelName: v.channel_name || '',
-      brand: v.classification_raw?.ai?.brand || 'unknown',
+      brand: v.classification_raw?.final?.brand || v.classification_raw?.rule?.brand || v.classification_raw?.ai?.brand || 'unknown',
       game: v.game_name || 'unknown',
       publishedAt: v.published_at,
       viewCount: v.view_count || 0,
