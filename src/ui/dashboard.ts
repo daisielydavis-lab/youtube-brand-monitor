@@ -148,7 +148,7 @@ export function renderDashboard(
   </div>
 
   ${(kpi.campaignPlacements ?? 0) + (kpi.standalonePlacements ?? 0) > 0 ? `
-  <div style="display:flex;align-items:center;gap:10px;font-size:12px;margin-bottom:12px;padding:8px 12px;background:#F3F7FF;border:1px solid #DCE5F7;border-radius:8px;color:#4B5870">
+  <div style="display:flex;align-items:center;gap:10px;font-size:12px;margin-bottom:12px;padding:8px 12px;background:#F3F7FF;border:1px solid #DCE5F7;border-radius:8px;color:#4B5870" title="竞品投放视频的构成（当前筛选范围内）：集中投放项目 = 同一品牌+游戏在7天内≥2条视频组成的一个投放活动（左=属于项目的视频数·项目数）；独立投放 = 未构成项目的零散单条；两者相加 = 全部竞品投放视频">
     <span style="font-weight:700;color:#172033">${totalPlacementsN.toLocaleString()} 条竞品投放视频</span>
     <span style="color:#A3ADC2">→</span>
     <span>🟦 <b style="color:#3B6EF5">${(kpi.campaignPlacements ?? 0).toLocaleString()}</b> 条属于集中投放项目 · 共 <b>${kpi.activeCampaigns ?? 0}</b> 个项目</span>
@@ -204,7 +204,7 @@ export function renderDashboard(
   const campCoveragePct = (kpi.totalPlacements ?? kpi.competitorPlacements ?? 0) > 0
     ? Math.round((kpi.campaignPlacements ?? 0) / (kpi.totalPlacements ?? 1) * 100) : 0;
   const campaignsTab = (`
-  <div style="font-size:11px;color:#8490A6;margin-bottom:12px;padding:6px 10px;background:#F8FAFD;border-radius:6px;border:1px solid #E3E8F1">
+  <div style="font-size:11px;color:#8490A6;margin-bottom:12px;padding:6px 10px;background:#F8FAFD;border-radius:6px;border:1px solid #E3E8F1" title="范围 = 当前顶部筛选器组合（品牌 · 区域 · 时间窗口）；集中投放覆盖率 = 集中投放项目内的视频数 ÷ 全部竞品投放视频数（如 513÷588≈87%）">
     范围: <b>${kpi.activeCampaigns ?? 0} 个集中投放项目</b> · ${(kpi.campaignPlacements ?? 0).toLocaleString()} 条集中投放 · ${(kpi.uniqueCreators ?? 0).toLocaleString()} 位博主 · 覆盖 ${(kpi.totalPlacements ?? kpi.competitorPlacements ?? 0).toLocaleString()} 条竞品投放视频的 ${campCoveragePct}%（${scopeBrandZh} · ${scopeMarketZh} · ${rangeLabel}）
   </div><div style="text-align:right;margin:8px 0"><button onclick="exportCampaigns()" style="background:#3568e8;color:#fff;border:none;padding:6px 16px;border-radius:6px;font-size:12px;cursor:pointer">⬇ 导出 CSV</button></div>
 <script>var __campaigns = ${JSON.stringify(campaigns).replace(/</g,'<')};</script>
