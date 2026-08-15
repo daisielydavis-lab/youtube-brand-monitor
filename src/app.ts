@@ -13,7 +13,7 @@ import { detectCampaigns } from './services/competitor-monitor/campaign-detector
 import { generateDailyReport, generateWeeklyReport, generateQuarterlyReport } from './services/competitor-monitor/competitor-report';
 import { getCreatorsFromVideos } from './services/competitor-monitor/creator-profiler';
 import { analyzePendingComments } from './services/competitor-monitor/topic-classifier';
-import { resolveBrand, resolveGame, resolveMarket, COMPETITOR_BRANDS, filterCompetitorPlacements, filterUnresolvedCandidates, needsAIVerification, isCompetitorPlacement } from './services/competitor-monitor/data-scope';
+import { marketMatches, resolveBrand, resolveGame, resolveMarket, COMPETITOR_BRANDS, filterCompetitorPlacements, filterUnresolvedCandidates, needsAIVerification, isCompetitorPlacement } from './services/competitor-monitor/data-scope';
 import { getSupabase } from './db/supabase';
 import { renderDashboard } from './ui/dashboard';
 
@@ -140,7 +140,7 @@ app.get('/api/comments', async (req, res) => {
   let competitorVideoIds = (cpVids || [])
     .filter((v: any) => isCompetitorPlacement(v))
     .filter((v: any) => !brandFilter || brandFilter === 'all' || resolveBrand(v) === brandFilter)
-    .filter((v: any) => !marketFilter || marketFilter === 'all' || (v.market || '') === marketFilter)
+    .filter((v: any) => marketMatches(v, marketFilter))
     .map((v: any) => v.video_id);
 
   // Stage ③ fallback: no competitor-specific comments this window — show
@@ -154,7 +154,7 @@ app.get('/api/comments', async (req, res) => {
       .gte('published_at', since)
       .limit(200);
     return (candVids || [])
-      .filter((v: any) => !marketFilter || marketFilter === 'all' || (v.market || '') === marketFilter)
+      .filter((v: any) => marketMatches(v, marketFilter))
       .map((v: any) => v.video_id);
   };
 
@@ -219,7 +219,7 @@ app.get('/api/comments/summary', async (req, res) => {
   let competitorVideoIds = (cpVids || [])
     .filter(isCompetitorPlacement)
     .filter((v: any) => !brandFilter || brandFilter === 'all' || resolveBrand(v) === brandFilter)
-    .filter((v: any) => !marketFilter || marketFilter === 'all' || (v.market || '') === marketFilter)
+    .filter((v: any) => marketMatches(v, marketFilter))
     .map((v: any) => v.video_id);
   // Stage ⑧: placementTotal 始终 = Current Scope 内投放视频数。
   // fallback 只换评论数据来源 (候选视频), 绝不覆盖口径数字。
@@ -236,7 +236,7 @@ app.get('/api/comments/summary', async (req, res) => {
       .gte('published_at', since)
       .limit(200);
     return (candVids || [])
-      .filter((v: any) => !marketFilter || marketFilter === 'all' || (v.market || '') === marketFilter)
+      .filter((v: any) => marketMatches(v, marketFilter))
       .map((v: any) => v.video_id);
   };
 
@@ -320,6 +320,31 @@ app.get('/api/comments/summary', async (req, res) => {
 });
 
 // ── System ──
+// ── Markets 列表（顶部市场筛选器动态数据源）──
+app.get('/api/markets', async (_req: any, res: any) => {
+  try {
+    const db = getSupabase();
+    const { data } = await db.from('youtube_competitor_videos').select('market');
+    const counts: Record<string, number> = {};
+    let none = 0;
+    for (const v of (data || []) as any[]) {
+      const m = (v.market as string) || '';
+      if (!m) { none++; continue; }
+      for (const part of m.split('|')) {
+        const k = part.trim();
+        if (k && k !== 'Unknown') counts[k] = (counts[k] || 0) + 1;
+      }
+    }
+    const MKT_ZH: Record<string, string> = { US: '美国', RU: '俄罗斯', BR: '巴西', UA: '乌克兰', GE: '格鲁吉亚', CN: '中国', KR: '韩国', JP: '日本', LATAM: '拉美' };
+    const list = Object.entries(counts)
+      .map(([code, count]) => ({ code, label: MKT_ZH[code] || code, count }))
+      .sort((a, b) => b.count - a.count);
+    if (none > 0) list.push({ code: '__none__', label: '未识别', count: none });
+    res.json(list);
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
 app.get('/api/system', async (_req, res) => {
   const status = await getMonitorStatus();
   const db = getSupabase();
@@ -550,7 +575,7 @@ async function queryDashboardData(rangeDays: number, brandFilter?: string, marke
     competitorPlacements = competitorPlacements.filter(v => resolveBrand(v) === brandFilter);
   }
   if (marketFilter && marketFilter !== 'all') {
-    competitorPlacements = competitorPlacements.filter(v => (v.market || '') === marketFilter);
+    competitorPlacements = competitorPlacements.filter(v => marketMatches(v, marketFilter));
   }
 
   // All discovered unique creators in window

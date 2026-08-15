@@ -4,6 +4,7 @@
  */
 
 import { getSupabase } from '../../db/supabase';
+import { marketMatches } from './data-scope';
 import { getChannelById, type YouTubeChannelResult } from './youtube-discovery';
 import type { TopicResult } from './topic-classifier';
 import type { SponsorshipResult } from './sponsorship-detector';
@@ -322,7 +323,7 @@ export async function getCreatorsFromVideos(options?: {
     // Layer 3 filter: competitor placements only (brand ∈ valid AND placement ∈ confirmed/likely)
     if (options?.competitorOnly && !isCompetitorPlacement(v)) continue;
     if (options?.brand && options.brand !== 'all' && brand !== options.brand) continue;
-    if (options?.market && options.market !== 'all' && (v.market || '') !== options.market) continue;
+    if (options?.market && !marketMatches(v, options.market)) continue;
     if (!channelMap.has(v.channel_id)) channelMap.set(v.channel_id, []);
     channelMap.get(v.channel_id)!.push(v);
   }

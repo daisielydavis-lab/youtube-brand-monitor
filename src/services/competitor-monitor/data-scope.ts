@@ -59,6 +59,16 @@ export function isAIVerified(v: any): boolean {
 }
 
 /** Is this video queued for AI verification (rule says maybe, AI hasn't ruled)? */
+/**
+ * Market filter matching — supports pipe-separated multi-market values
+ * and the special '__none__' code (video with no market tag).
+ */
+export function marketMatches(v: { market?: string | null }, marketFilter?: string | null): boolean {
+  if (!marketFilter || marketFilter === 'all') return true;
+  if (marketFilter === '__none__') return !v.market;
+  return (v.market || '').split('|').map(s => s.trim()).indexOf(marketFilter) !== -1;
+}
+
 export function needsAIVerification(v: any): boolean {
   return !!v?.classification_raw?.rule?.needsAI && !v?.classification_raw?.ai;
 }
