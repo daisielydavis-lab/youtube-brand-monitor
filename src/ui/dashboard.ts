@@ -169,7 +169,7 @@ export function renderDashboard(
           <span style="font-size:14px;color:#4B5870"> × ${esc(c.game)}</span>
           <span style="font-size:10px;background:#F3F7FF;color:#3B6EF5;padding:1px 6px;border-radius:3px;margin-left:6px">${CT_ZH[c.cluster_type]||c.cluster_type||'集中投放'}</span>
         </div>
-        <span style="font-size:11px;color:${statusColor}">${STATUS_ZH[c.status]||c.status} · ${c.active_from} → ${c.active_to}</span>
+        <span style="font-size:11px;color:${statusColor}" title="${STATUS_TIP[c.status]||''}">${STATUS_ZH[c.status]||c.status} · ${c.active_from} → ${c.active_to}</span>
       </div>
       <div style="display:flex;gap:16px;margin-top:8px;font-size:12px;color:#4B5870">
         <span>👤 <b>${c.creator_count}</b> 位博主</span>
@@ -219,7 +219,7 @@ export function renderDashboard(
           <span style="font-size:15px;color:#4B5870"> × ${esc(c.game)}</span>
           <span style="font-size:11px;background:#F3F7FF;color:#3B6EF5;padding:2px 8px;border-radius:3px;margin-left:8px">${CT_ZH[c.cluster_type]||c.cluster_type||'集中投放'}</span>
         </div>
-        <span style="font-size:12px;padding:4px 10px;border-radius:8px;color:#fff;background:${statusColor}">${STATUS_ZH[c.status]||c.status}</span>
+        <span style="font-size:12px;padding:4px 10px;border-radius:8px;color:#fff;background:${statusColor}" title="${STATUS_TIP[c.status]||''}">${STATUS_ZH[c.status]||c.status}</span>
       </div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:10px;margin-bottom:10px">
         <div><span style="font-size:11px;color:#8490A6;display:block">周期</span><span style="font-size:13px;font-weight:600;color:#172033">${c.active_from} → ${c.active_to}</span></div>
@@ -538,6 +538,7 @@ const ANGLE_ZH: Record<string,string> = {'Reduce Ping':'降低延迟','Promo Cod
 const CT_ZH: Record<string,string> = {multi_creator_campaign:'多博主投放',creator_series:'单博主连续投放',one_off_placement:'单次投放',brand_push:'品牌集中推广'};
 // 状态中文化
 const STATUS_ZH: Record<string,string> = {active:'进行中',cooling:'降温中',ended:'已结束'};
+const STATUS_TIP: Record<string,string> = {active:'进行中：本窗口内最近3天内仍在上新（持续投放）',cooling:'降温中：本窗口内最近3-7天无新投放（投放强度下降）',ended:'已结束：本窗口内超过7天无新投放（本轮投放已结束）'};
 // 市场显示: Unknown → 地区未知
 const fmtMarket = (mkt: string): string => (mkt === 'Unknown' || !mkt) ? '地区未知' : mkt;
 
