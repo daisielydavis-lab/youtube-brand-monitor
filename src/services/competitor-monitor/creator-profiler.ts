@@ -7,7 +7,7 @@ import { getSupabase } from '../../db/supabase';
 import { getChannelById, type YouTubeChannelResult } from './youtube-discovery';
 import type { TopicResult } from './topic-classifier';
 import type { SponsorshipResult } from './sponsorship-detector';
-import { resolveBrand, isCompetitorPlacement } from './data-scope';
+import { resolveBrand, isCompetitorPlacement, COMPETITOR_BRANDS } from './data-scope';
 
 export interface CreatorProfile {
   channelId: string;
@@ -219,9 +219,10 @@ export interface CreatorRow {
   games: string[];
   markets: string[];
   avgViews: number;
+  vsBaselinePct: number | null; // sponsored avg views vs creator's own non-sponsored avg (e.g. 31 = +31%)
   firstSeenAt: string;
   lastSeenAt: string;
-  relationType: 'new' | 'recurring' | 'loyal' | 'multi_brand';
+  relationType: 'new' | 'recurring' | 'long_term' | 'multi_brand';
 }
 
 export async function getCreatorsFromVideos(options?: {
@@ -232,17 +233,76 @@ export async function getCreatorsFromVideos(options?: {
   const db = getSupabase();
   const days = options?.rangeDays || 30;
   const since = new Date(Date.now() - days * 86400000).toISOString();
+  const sinceTs = Date.now() - days * 86400000;
 
-  // Get all confirmed/likely videos in window
-  const { data: videos } = await db
-    .from('youtube_competitor_videos')
-    .select('video_id,channel_id,channel_name,title,thumbnail_url,placement_type,game_name,market,language,view_count,like_count,comment_count,published_at,first_seen_at,classification_raw')
-    .in('placement_type', ['confirmed_paid_placement', 'likely_sponsored'])
-    .gte('published_at', since)
-    .order('published_at', { ascending: false })
-    .limit(1000);
+  // Get all confirmed/likely videos in window (paged — REST caps at 1000/query)
+  const videos: any[] = [];
+  for (let from = 0; ; from += 1000) {
+    const { data } = await db
+      .from('youtube_competitor_videos')
+      .select('video_id,channel_id,channel_name,title,thumbnail_url,placement_type,game_name,market,language,view_count,like_count,comment_count,published_at,first_seen_at,classification_raw')
+      .in('placement_type', ['confirmed_paid_placement', 'likely_sponsored'])
+      .gte('published_at', since)
+      .order('published_at', { ascending: false })
+      .range(from, from + 999);
+    if (!data?.length) break;
+    videos.push(...data);
+    if (data.length < 1000) break;
+  }
 
   if (!videos?.length) return [];
+
+  // ── Baseline (Vs Baseline column) ──
+  // Baseline = creator's own NON-placement videos in the window (organic/
+  // unknown — the "usual" videos the system sees from this channel).
+  // vsBaselinePct = sponsored avg views vs that baseline, e.g. +31%.
+  const baselineByChannel = new Map<string, { sum: number; n: number }>();
+  {
+    const baselineRows: any[] = [];
+    for (let from = 0; ; from += 1000) {
+      const { data } = await db.from('youtube_competitor_videos')
+        .select('channel_id,view_count')
+        .gte('published_at', since)
+        .not('placement_type', 'in', '("confirmed_paid_placement","likely_sponsored")')
+        .range(from, from + 999);
+      if (!data?.length) break;
+      baselineRows.push(...data);
+      if (data.length < 1000) break;
+    }
+    for (const v of baselineRows) {
+      const e = baselineByChannel.get(v.channel_id) || { sum: 0, n: 0 };
+      e.sum += v.view_count || 0; e.n++;
+      baselineByChannel.set(v.channel_id, e);
+    }
+  }
+
+  // ── Historical relation (Recurring / Long-term) ──
+  // Videos published BEFORE the window: if this channel already has a
+  // placement with the same brand, today's appearance is Recurring (or
+  // Long-term if that history spans >60 days). New = first time ever.
+  const historyByChannel = new Map<string, { brands: Set<string>; earliest: number }>();
+  {
+    const historyRows: any[] = [];
+    for (let from = 0; ; from += 1000) {
+      const { data } = await db.from('youtube_competitor_videos')
+        .select('channel_id,published_at,classification_raw')
+        .in('placement_type', ['confirmed_paid_placement', 'likely_sponsored'])
+        .lt('published_at', since)
+        .range(from, from + 999);
+      if (!data?.length) break;
+      historyRows.push(...data);
+      if (data.length < 1000) break;
+    }
+    for (const v of historyRows) {
+      const b = resolveBrand(v);
+      if (!COMPETITOR_BRANDS.includes(b as any) || b === 'unknown') continue;
+      const e = historyByChannel.get(v.channel_id) || { brands: new Set<string>(), earliest: Date.now() };
+      e.brands.add(b);
+      const t = new Date(v.published_at).getTime();
+      if (t < e.earliest) e.earliest = t;
+      historyByChannel.set(v.channel_id, e);
+    }
+  }
 
   // Get all profiles for enrichment
   const { data: profiles } = await db.from('youtube_creator_profiles').select('*');
@@ -276,18 +336,29 @@ export async function getCreatorsFromVideos(options?: {
       if (v.market && v.market !== 'Unknown') markets.add(v.market);
     }
 
-    // Relation type: derived from videos already in memory
+    // ── Relation type (KOL language, Stage ⑤) ──
+    // Multi-Brand: sponsoring 2+ competitors in this window
+    // New: first cooperation ever (no placements before this window)
+    // Recurring: has placement history before this window
+    // Long-term: history spans >60 days (multiple periods of cooperation)
     const allBrands = new Set<string>();
     sorted.forEach((v: any) => {
       const b = resolveBrand(v);
       if (b && b !== 'unknown') allBrands.add(b);
     });
-    const firstEver = sorted[sorted.length - 1].first_seen_at;
-    const daysSinceFirst = firstEver ? (Date.now() - new Date(firstEver).getTime()) / 86400000 : 999;
+    const history = historyByChannel.get(channelId);
+    const historySpanDays = history ? (Date.now() - history.earliest) / 86400000 : 0;
     const relationType: CreatorRow['relationType'] =
       allBrands.size >= 2 ? 'multi_brand' :
-      daysSinceFirst <= 30 ? 'new' :
-      vids.length >= 3 ? 'loyal' : 'recurring';
+      !history ? 'new' :
+      historySpanDays > 60 ? 'long_term' : 'recurring';
+
+    // ── Vs Baseline: sponsored avg vs creator's own non-sponsored avg ──
+    const sponsoredAvg = sorted.reduce((s: number, v: any) => s + (v.view_count || 0), 0) / Math.max(sorted.length, 1);
+    const bl = baselineByChannel.get(channelId);
+    const baselineAvg = bl && bl.n > 0 ? bl.sum / bl.n : 0;
+    const vsBaselinePct: number | null = baselineAvg > 0
+      ? Math.round((sponsoredAvg - baselineAvg) / baselineAvg * 100) : null;
 
     creators.push({
       channelId,
@@ -302,8 +373,9 @@ export async function getCreatorsFromVideos(options?: {
       brandMentions,
       games: [...games].slice(0, 5),
       markets: [...markets].slice(0, 5),
-      avgViews: Math.round(sorted.reduce((s: number, v: any) => s + (v.view_count || 0), 0) / sorted.length),
-      firstSeenAt: firstEver || sorted[sorted.length - 1].first_seen_at,
+      avgViews: Math.round(sponsoredAvg),
+      vsBaselinePct,
+      firstSeenAt: sorted[sorted.length - 1].first_seen_at,
       lastSeenAt: new Date(Math.max(...timestamps)).toISOString(),
       relationType,
     });
