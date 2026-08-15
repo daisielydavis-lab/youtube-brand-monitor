@@ -199,7 +199,7 @@ app.get('/api/comments/summary', async (_req, res) => {
   if (!competitorVideoIds.length) return res.json({ total: 0, purchaseIntentRate: 0, brandRelatedRate: 0, sentiment: {}, topVideos: [], fallback });
 
   let { data: comments } = await db.from('youtube_comment_insights')
-    .select('has_purchase_intent,is_brand_related,sentiment,video_id,author_name')
+    .select('has_purchase_intent,is_brand_related,sentiment,comment_category,video_id,author_name,comment_text')
     .in('video_id', competitorVideoIds)
     .limit(500);
 
@@ -209,22 +209,42 @@ app.get('/api/comments/summary', async (_req, res) => {
     competitorVideoIds = await fetchCandidateVids();
     if (competitorVideoIds.length) {
       const r2 = await db.from('youtube_comment_insights')
-        .select('has_purchase_intent,is_brand_related,sentiment,video_id,author_name')
+        .select('has_purchase_intent,is_brand_related,sentiment,comment_category,video_id,author_name,comment_text')
         .in('video_id', competitorVideoIds)
         .limit(500);
       comments = r2.data;
     }
   }
-  if (!comments?.length) return res.json({ total: 0, purchaseIntentRate: 0, brandRelatedRate: 0, sentiment: {}, topVideos: [], fallback });
+  if (!comments?.length) return res.json({ total: 0, purchaseIntentRate: 0, brandRelatedRate: 0, sentiment: {}, topVideos: [], signals: [], placementCoverage: 0, placementTotal: competitorVideoIds.length, fallback });
 
   const total = comments.length;
   const purchaseIntent = comments.filter((c: any) => c.has_purchase_intent).length;
   const brandRelated = comments.filter((c: any) => c.is_brand_related).length;
+  const productQuestions = comments.filter((c: any) => c.comment_category === 'question').length;
+  const positiveFeedback = comments.filter((c: any) => c.comment_category === 'praise').length;
+  const negativeConcern = comments.filter((c: any) => c.comment_category === 'complaint').length;
   const sentiment: Record<string, number> = {};
   comments.forEach((c: any) => {
     const s = c.sentiment || 'neutral';
     sentiment[s] = (sentiment[s] || 0) + 1;
   });
+
+  // ── Top Audience Signals (Stage ⑤): the actual comments that show intent ──
+  const signalComments = comments.filter((c: any) => c.is_brand_related || c.has_purchase_intent || c.comment_category === 'question' || c.comment_category === 'complaint');
+  const signalVids = [...new Set(signalComments.map((c: any) => c.video_id))];
+  const { data: sigVids } = await db.from('youtube_competitor_videos').select('video_id,title').in('video_id', signalVids.slice(0, 100));
+  const sigTitleMap = new Map((sigVids || []).map((v: any) => [v.video_id, v.title]));
+  const topSignals = signalComments.slice(0, 8).map((c: any) => ({
+    text: (c.comment_text || '').slice(0, 140),
+    author: c.author_name || '?',
+    videoTitle: sigTitleMap.get(c.video_id) || '?',
+    flags: {
+      brand: !!c.is_brand_related,
+      intent: !!c.has_purchase_intent,
+      question: c.comment_category === 'question',
+      concern: c.comment_category === 'complaint',
+    },
+  }));
 
   // Top discussed videos
   const videoMap = new Map<string, number>();
@@ -243,10 +263,16 @@ app.get('/api/comments/summary', async (_req, res) => {
 
   res.json({
     total,
-    purchaseIntentRate: total > 0 ? Math.round((purchaseIntent / total) * 100) : 0,
-    brandRelatedRate: total > 0 ? Math.round((brandRelated / total) * 100) : 0,
+    brandMentions: brandRelated,
+    productQuestions,
+    purchaseIntent,
+    positiveFeedback,
+    negativeConcern,
     sentiment,
     topVideos,
+    topSignals,
+    placementCoverage: videoMap.size,            // how many placement videos these comments come from
+    placementTotal: competitorVideoIds.length,   // total placement videos in window
     fallback, // Stage ③: true = showing comments from analyzed candidates, not competitor placements
   });
 });
