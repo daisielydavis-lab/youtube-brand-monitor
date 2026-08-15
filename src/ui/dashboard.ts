@@ -93,18 +93,27 @@ export function renderDashboard(
 
   // ── TAB 1: Overview ──
   const kpi = data.kpi as any;
-  const coverageColor = (kpi.coveragePct ?? 0) >= 80 ? '#19A974' : (kpi.coveragePct ?? 0) >= 50 ? '#F59E0B' : '#EF5B5B';
+  // Two separate KPIs (Stage ④ UI 口径): Discovery Coverage = pipeline
+  // throughput; AI Review Progress = final-classification backlog. 100%
+  // discovery coverage does NOT mean all videos were AI-verified.
+  const aiPending = kpi.aiPending ?? 0;
+  const aiReviewed = kpi.aiReviewed ?? (kpi.totalAnalyzed ?? 0) - aiPending;
+  const aiPct = aiReviewed + aiPending > 0 ? Math.round(aiReviewed / (aiReviewed + aiPending) * 100) : 0;
+  const aiColor = aiPct >= 80 ? '#19A974' : aiPct >= 50 ? '#F59E0B' : '#EF5B5B';
+  const pendingStatus = aiPending > 0
+    ? `<div style="font-size:11px;color:#F59E0B;margin-top:2px">AI Review: In Progress — ${aiPending} videos pending</div>`
+    : `<div style="font-size:11px;color:#19A974;margin-top:2px">AI Review: Complete</div>`;
   const overview = `
   <div class="kpi-row" style="grid-template-columns:repeat(5,1fr)">
-    <div class="kpi"><div class="kpi-n">${kpi.confirmedLikely ?? kpi.newAds ?? 0}</div><div class="kpi-l">Confirmed/Likely</div></div>
+    <div class="kpi"><div class="kpi-n">${kpi.competitorPlacements ?? 0}</div><div class="kpi-l">Competitor Placements</div></div>
+    <div class="kpi"><div class="kpi-n">${kpi.unresolvedCandidates ?? 0}</div><div class="kpi-l">Unresolved Candidates</div></div>
     <div class="kpi"><div class="kpi-n">${kpi.activeCreators ?? 0}</div><div class="kpi-l">Active Creators</div></div>
     <div class="kpi"><div class="kpi-n">${kpi.activeCampaigns ?? 0}</div><div class="kpi-l">Active Campaigns</div></div>
-    <div class="kpi hl"><div class="kpi-n" style="color:${coverageColor}">${kpi.coveragePct ?? 0}%</div><div class="kpi-l">Analysis Coverage</div></div>
-    <div class="kpi"><div class="kpi-n">${kpi.newCreatorsThisWeek ?? 0}</div><div class="kpi-l">New Creators</div></div>
+    <div class="kpi hl"><div class="kpi-n" style="color:${aiColor}">${aiReviewed} / ${aiReviewed + aiPending}</div><div class="kpi-l">AI Reviewed</div>${pendingStatus}</div>
   </div>
 
   <div style="font-size:11px;color:#8490A6;margin-bottom:12px;padding:6px 10px;background:#F8FAFD;border-radius:6px;border:1px solid #E3E8F1">
-    Data scope: ${kpi.totalVideos ?? 0} videos · ${kpi.confirmedLikely ?? 0} placements · ${kpi.activeCreators ?? 0} creators · ${kpi.activeCampaigns ?? 0} campaigns
+    Discovery Coverage: ${kpi.totalAnalyzed ?? 0} / ${kpi.totalVideos ?? 0} processed into pipeline · AI Review: ${aiReviewed} reviewed · ${aiPending} pending · ${kpi.competitorPlacements ?? 0} placements · ${kpi.unresolvedCandidates ?? 0} unresolved · ${kpi.newCompetitorCreators ?? 0} new creators
   </div>
   <h2>🚨 Recent Competitive Moves</h2>
   ${campaigns.length ? campaigns.slice(0, 8).map((c: any) => {
@@ -176,7 +185,7 @@ export function renderDashboard(
     </div>`;
   }).join('') : '<p class="mt">No campaigns detected yet. Campaigns are auto-detected when the same brand+game combination has multiple placements within 7 days.</p>';
 
-  // ── TAB 3: Videos with filter + actions ──
+  // ── TAB 3: Videos — 3 views: Competitor Placements / Unresolved / All Discovered ──
   const contentTypeLabel: Record<string,string> = {dedicated:'Dedicated',integrated:'Integration',shorts:'Shorts',live:'Livestream',dedicated_review:'Dedicated',integrated_placement:'Integration',live_replay:'Livestream',comparison:'Comparison',tutorial:'Tutorial',gameplay:'Gameplay'};
   const evidenceIcon = (rc: string[]) => {
     if (!rc?.length) return '⚪';
@@ -184,13 +193,7 @@ export function renderDashboard(
     if (hasStrong) return '🟢';
     return '🟡';
   };
-  const videosTab = `
-  <div class="ctrls">
-    <select onchange="applyFilter('placement',this.value)"><option value="all">All Placements</option><option value="confirmed_paid_placement" ${sel('placement','confirmed_paid_placement')}>Confirmed</option><option value="likely_sponsored" ${sel('placement','likely_sponsored')}>Likely</option><option value="organic_mention" ${sel('placement','organic_mention')}>Organic</option></select>
-    <select onchange="applyFilter('type',this.value)"><option value="all">All Types</option><option value="dedicated" ${sel('type','dedicated')}>Dedicated</option><option value="integrated" ${sel('type','integrated')}>Integrated</option><option value="shorts" ${sel('type','shorts')}>Shorts</option><option value="live" ${sel('type','live')}>Livestream</option></select>
-  </div>
-  <table class="dt vf"><thead><tr><th></th><th>Title</th><th>Channel</th><th>Brand</th><th>Game</th><th>Type</th><th>Views</th><th>Evidence</th><th>Actions</th></tr></thead><tbody>
-  ${data.recentVideos.slice(0,30).map(v=>`<tr data-vid="${esc(v.videoId)}">
+  const videoRows = (vs: any[]) => vs.slice(0, 30).map(v=>`<tr data-vid="${esc(v.videoId)}">
     <td>${v.thumbnailUrl?`<img src="${esc(v.thumbnailUrl)}" width="80" height="45" style="border-radius:4px">`:''}</td>
     <td><a href="https://youtube.com/watch?v=${esc(v.videoId)}" target="_blank">${esc(v.title.slice(0,55))}${v.title.length>55?'…':''}</a></td>
     <td style="white-space:nowrap">${esc(v.channelName)}</td>
@@ -200,12 +203,39 @@ export function renderDashboard(
     <td style="white-space:nowrap">${fmt(v.viewCount)}</td>
     <td><span title="${esc((v.reasonCodes||v.discoveryEvidence||[]).join(', '))}" style="cursor:help">${evidenceIcon(v.reasonCodes||v.discoveryEvidence)} ${badge(v.placementType)}</span></td>
     <td class="acts"><button onclick="va('${v.videoId}','confirm_placement')" class="a a-y" title="Confirm">✓</button><button onclick="va('${v.videoId}','mark_organic')" class="a a-o" title="Organic">O</button><button onclick="va('${v.videoId}','ignore')" class="a a-r" title="Ignore">✕</button></td>
-  </tr>`).join('')}
-  </tbody></table>`;
+  </tr>`).join('');
 
-  // ── TAB 4: Creators (loaded via JS) ──
+  const allVids = data.allRecentVideos || [];
+  const unresolvedVids = data.unresolvedVideos || [];
+  const videosTab = `
+  <div class="ctrls" style="align-items:center;gap:10px;flex-wrap:wrap">
+    <span style="font-size:12px;color:#8490A6;font-weight:600">View:</span>
+    <button onclick="switchVideoView('competitor')" id="vid-btn-competitor" class="btn-scan" style="font-size:11px;padding:4px 10px">Competitor Placements (${data.recentVideos.length})</button>
+    <button onclick="switchVideoView('unresolved')" id="vid-btn-unresolved" style="background:#1e293b;color:#f59e0b;border:1px solid #f59e0b;padding:4px 10px;border-radius:6px;font-size:11px;cursor:pointer">Unresolved Candidates (${unresolvedVids.length})</button>
+    <button onclick="switchVideoView('all')" id="vid-btn-all" style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;padding:4px 10px;border-radius:6px;font-size:11px;cursor:pointer">All Discovered (${allVids.length})</button>
+    <span style="margin-left:12px;color:#334155">|</span>
+    <select onchange="applyFilter('placement',this.value)"><option value="all">All Placements</option><option value="confirmed_paid_placement" ${sel('placement','confirmed_paid_placement')}>Confirmed</option><option value="likely_sponsored" ${sel('placement','likely_sponsored')}>Likely</option><option value="organic_mention" ${sel('placement','organic_mention')}>Organic</option></select>
+    <select onchange="applyFilter('type',this.value)"><option value="all">All Types</option><option value="dedicated" ${sel('type','dedicated')}>Dedicated</option><option value="integrated" ${sel('type','integrated')}>Integrated</option><option value="shorts" ${sel('type','shorts')}>Shorts</option><option value="live" ${sel('type','live')}>Livestream</option></select>
+  </div>
+  <table class="dt vf" id="video-table"><thead><tr><th></th><th>Title</th><th>Channel</th><th>Brand</th><th>Game</th><th>Type</th><th>Views</th><th>Evidence</th><th>Actions</th></tr></thead><tbody id="video-tbody">
+  ${videoRows(data.recentVideos)}
+  </tbody></table>
+  <script>
+  // Pre-cache video data for view switching
+  var competitorVids = ${JSON.stringify(data.recentVideos.map((v:any)=>({videoId:v.videoId,title:v.title,thumbnailUrl:v.thumbnailUrl,channelName:v.channelName,brand:v.brand,game:v.game,viewCount:v.viewCount,placementType:v.placementType,contentCategory:(v as any).contentCategory,reasonCodes:v.reasonCodes,discoveryEvidence:v.discoveryEvidence}))).replace(/</g,'\\u003c')};
+  var unresolvedVids = ${JSON.stringify(unresolvedVids.map((v:any)=>({videoId:v.videoId,title:v.title,thumbnailUrl:v.thumbnailUrl,channelName:v.channelName,brand:v.brand,game:v.game,viewCount:v.viewCount,placementType:v.placementType,contentCategory:(v as any).contentCategory,reasonCodes:v.reasonCodes,discoveryEvidence:v.discoveryEvidence}))).replace(/</g,'\\u003c')};
+  var allVids = ${JSON.stringify(allVids.map((v:any)=>({videoId:v.videoId,title:v.title,thumbnailUrl:v.thumbnailUrl,channelName:v.channelName,brand:v.brand,game:v.game,viewCount:v.viewCount,placementType:v.placementType,contentCategory:(v as any).contentCategory,reasonCodes:v.reasonCodes,discoveryEvidence:v.discoveryEvidence}))).replace(/</g,'\\u003c')};
+  </script>`;
+
+  // ── TAB 4: Creators (loaded via JS, defaults to Active in period) ──
   const relLabels: Record<string,string> = {new:'New',recurring:'Recurring',loyal:'Loyal',multi_brand:'Multi-Brand'};
-  const creatorsTab = `<div id="creators-load"><p class="mt">Loading creators...</p></div>`;
+  const creatorsTab = `
+  <div class="ctrls" style="align-items:center;gap:10px;margin-bottom:12px">
+    <span style="font-size:12px;color:#8490A6;font-weight:600">Show:</span>
+    <button onclick="switchCreatorView('active')" id="cr-btn-active" class="btn-scan" style="font-size:11px;padding:4px 10px">Active in Period</button>
+    <button onclick="switchCreatorView('all')" id="cr-btn-all" style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;padding:4px 10px;border-radius:6px;font-size:11px;cursor:pointer">All Tracked Creators</button>
+  </div>
+  <div id="creators-load"><p class="mt">Loading creators...</p></div>`;
 
   // ── TAB 5: Comments (loaded via JS) ──
   const commentsTab = `<div id="comments-load"><p class="mt">Loading comments...</p></div>`;
@@ -264,12 +294,18 @@ export function renderDashboard(
   <div id="toast" class="toast" style="display:none"></div>
 </div>
 <script>
+var creatorView='active';
 function applyFilter(k,v){const u=new URL(location);v==='all'?u.searchParams.delete(k):u.searchParams.set(k,v);location=u.toString()}
 function switchTab(t){document.querySelectorAll('.tab-content').forEach(e=>e.style.display='none');document.querySelectorAll('.tab').forEach(e=>e.classList.remove('active'));document.getElementById('tab-panel-'+t).style.display='block';document.getElementById('tab-'+t).classList.add('active');if(t==='creators')loadCreators();if(t==='comments')loadComments();if(t==='system')loadSystem();localStorage.setItem('tab',t)}
 async function va(id,a){try{const r=await fetch('/api/videos/'+id+'/action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:a})});const d=await r.json();if(!d.success){showToast('❌ '+d.error);return}showToast('✅ Updated');const row=document.querySelector('tr[data-vid="'+id+'"]');if(!row)return;const badgeCell=row.querySelector('td:nth-child(8)');if(badgeCell){const labels={confirmed_paid_placement:'Confirmed',likely_sponsored:'Likely',organic_mention:'Organic',unknown:'Unknown'};const newType=a==='confirm_placement'?'confirmed_paid_placement':a==='mark_organic'?'organic_mention':'unknown';const icon=newType==='confirmed_paid_placement'?'🟢':newType==='organic_mention'?'🟡':'⚪';badgeCell.innerHTML='<span title="">'+icon+' <span class="b b-'+newType+'">'+(labels[newType]||newType)+'</span></span>'}}catch(e){showToast('❌ Failed')}}
 function showToast(m){const t=document.getElementById('toast');t.textContent=m;t.style.display='block';setTimeout(()=>t.style.display='none',2000)}
-async function loadCreators(){const el=document.getElementById('creators-load');try{const r=await fetch('/api/creators?range=30');const d=await r.json();if(!d||!d.length){el.innerHTML='<p class=mt>No creators match the current filters.</p>';return}el.innerHTML='<table class=dt><thead><tr><th>Creator</th><th>Subs</th><th>Videos</th><th>Avg Views</th><th>Games</th><th>Brand Mentions</th><th>Relation</th></tr></thead><tbody>'+d.slice(0,30).map(c=>'<tr><td>'+escapeHtml(c.channelName||'?')+'</td><td>'+(c.subscriberCount?c.subscriberCount>=1000000?(c.subscriberCount/1000000).toFixed(1)+'M':c.subscriberCount>=1000?(c.subscriberCount/1000).toFixed(1)+'K':String(c.subscriberCount):'-')+'</td><td>'+c.videosInWindow+' ('+c.confirmedCount+'✓ '+c.likelyCount+'~)'+'</td><td>'+ (c.avgViews>=1000?(c.avgViews/1000).toFixed(1)+'K':String(c.avgViews)) +'</td><td>'+escapeHtml((c.games||[]).slice(0,2).join(', '))+'</td><td>'+Object.entries(c.brandMentions||{}).filter(([,n])=>n>0).map(([b,n])=>b+' '+n).join(' ') +'</td><td><span style=font-size:10px;background:#F3F7FF;color:#3B6EF5;padding:1px 6px;border-radius:3px>'+(({new:'New',recurring:'Recurring',loyal:'Loyal',multi_brand:'Multi-Brand'})[c.relationType]||c.relationType)+'</span></td></tr>').join('')+'</tbody></table>'}catch(e){el.innerHTML='<p class=mt>Failed to load creators</p>'}}
-async function loadComments(){const el=document.getElementById('comments-load');try{const[r,raw]=await Promise.all([fetch('/api/comments/summary'),fetch('/api/comments?limit=30')]);const s=await r.json();const d=await raw.json();if(!s.total){el.innerHTML='<p class=mt>No comments analyzed yet</p>';return}const sentimentBars=Object.entries(s.sentiment).map(([k,v])=>{const pct=Math.round(v/s.total*100);return'<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;font-size:12px"><span style=width:60px;text-align:right;color:#8490A6>'+k+'</span><div style="flex:1;height:6px;background:#E9EEF6;border-radius:3px;overflow:hidden"><div style="height:100%;width:'+pct+'%;background:'+(k==='positive'?'#19A974':k==='negative'?'#EF5B5B':'#F59E0B')+';border-radius:3px"></div></div><span style=width:36px;color:#4B5870>'+pct+'%</span></div>'}).join('');el.innerHTML='<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px"><div class=kpi><div class=kpi-n>'+s.total+'</div><div class=kpi-l>Comments Analyzed</div></div><div class=kpi><div class=kpi-n>'+s.purchaseIntentRate+'%</div><div class=kpi-l>Purchase Intent</div></div><div class=kpi><div class=kpi-n>'+s.brandRelatedRate+'%</div><div class=kpi-l>Brand Related</div></div><div class=kpi>'+sentimentBars+'</div></div><h2>Most Discussed</h2><table class=dt><thead><tr><th>Video</th><th>Channel</th><th>Comments</th></tr></thead><tbody>'+s.topVideos.slice(0,10).map(v=>'<tr><td><a href="https://youtube.com/watch?v='+escapeHtml(v.videoId)+'" target=_blank>'+escapeHtml((v.title||'').slice(0,60))+'</a></td><td>'+escapeHtml(v.channelName||'?')+'</td><td>'+v.commentCount+'</td></tr>').join('')+'</tbody></table><h2>Recent</h2>'+d.slice(0,20).map(c=>'<div class=comment><b>'+escapeHtml(c.author_name||'?')+'</b> on '+escapeHtml((c.youtube_competitor_videos||{}).title||'?').slice(0,50)+'<br>'+escapeHtml((c.comment_text||'').slice(0,200))+'<br><span class=bt>'+(c.has_purchase_intent?'💳 Intent':'')+' '+(c.is_brand_related?'🏷 Brand':'')+' '+(c.sentiment||'')+'</span></div>').join('')}catch(e){el.innerHTML='<p class=mt>Failed to load</p>'}}
+// ── Video view switcher ──
+function renderVideoRows(vids){var label={dedicated:'Dedicated',integrated:'Integration',shorts:'Shorts',live:'Livestream',dedicated_review:'Dedicated',integrated_placement:'Integration',live_replay:'Livestream',comparison:'Comparison',tutorial:'Tutorial',gameplay:'Gameplay'};var badge={confirmed_paid_placement:'Confirmed',likely_sponsored:'Likely',organic_mention:'Organic',official_brand_video:'Official',unknown:'Unknown'};function esc(s){return s?s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'):''}function fmt(n){return n>=1000000?(n/1000000).toFixed(1)+'M':n>=1000?(n/1000).toFixed(1)+'K':String(n)}function evi(rc){if(!rc||!rc.length)return'\\u26aa';var hs=rc.some(function(r){return['brand_in_title','promo_code','sponsored_tag','paid_tag','brand_link'].indexOf(r)>=0});return hs?'\\uD83D\\uDFE2':'\\uD83D\\uDFE1'}return vids.slice(0,30).map(function(v){return'<tr data-vid=\"'+esc(v.videoId)+'\"><td>'+(v.thumbnailUrl?'<img src=\"'+esc(v.thumbnailUrl)+'\" width=80 height=45 style=border-radius:4px>':'')+'</td><td><a href=\"https://youtube.com/watch?v='+esc(v.videoId)+'\" target=_blank>'+esc(v.title.slice(0,55))+(v.title.length>55?'\\u2026':'')+'</a></td><td style=white-space:nowrap>'+esc(v.channelName)+'</td><td style=white-space:nowrap>'+esc(v.brand)+'</td><td style=white-space:nowrap>'+esc(v.game)+'</td><td><span class=et>'+esc(label[v.contentCategory]||v.contentCategory||'?')+'</span></td><td style=white-space:nowrap>'+fmt(v.viewCount)+'</td><td><span title=\"'+esc((v.reasonCodes||v.discoveryEvidence||[]).join(', '))+'\" style=cursor:help>'+evi(v.reasonCodes||v.discoveryEvidence)+' <span class=\"b b-'+v.placementType+'\">'+(badge[v.placementType]||v.placementType)+'</span></span></td><td class=acts><button onclick=\"va(\\''+v.videoId+'\\',\\'confirm_placement\\')\" class=\"a a-y\" title=Confirm>\\u2713</button><button onclick=\"va(\\''+v.videoId+'\\',\\'mark_organic\\')\" class=\"a a-o\" title=Organic>O</button><button onclick=\"va(\\''+v.videoId+'\\',\\'ignore\\')\" class=\"a a-r\" title=Ignore>\\u2715</button></td></tr>'}).join('')}
+function switchVideoView(view){var tbody=document.getElementById('video-tbody');var vids=view==='competitor'?competitorVids:view==='unresolved'?unresolvedVids:allVids;tbody.innerHTML=renderVideoRows(vids);document.querySelectorAll('[id^=vid-btn-]').forEach(function(b){b.style.background='#1e293b';b.style.color='#e2e8f0';b.style.border='1px solid #334155'});var btn=document.getElementById('vid-btn-'+view);if(btn){btn.style.background='#3568e8';btn.style.color='#fff';btn.style.border='1px solid #3568e8'}}
+// ── Creator view switcher ──
+function switchCreatorView(view){creatorView=view;document.querySelectorAll('[id^=cr-btn-]').forEach(function(b){b.style.background='#1e293b';b.style.color='#e2e8f0';b.style.border='1px solid #334155'});var btn=document.getElementById('cr-btn-'+view);if(btn){btn.style.background='#3568e8';btn.style.color='#fff';btn.style.border='1px solid #3568e8'};loadCreators()}
+async function loadCreators(){var el=document.getElementById('creators-load');try{var url=creatorView==='all'?'/api/creators?range=30&all=1':'/api/creators?range=30';var r=await fetch(url);var d=await r.json();if(!d||!d.length){el.innerHTML='<p class=mt>No creators found in this period.</p>';return}el.innerHTML='<table class=dt><thead><tr><th>Creator</th><th>Subs</th><th>Placements</th><th>Avg Views</th><th>Games</th><th>Brand Mentions</th><th>Relation</th></tr></thead><tbody>'+d.slice(0,30).map(function(c){return'<tr><td>'+escapeHtml(c.channelName||'?')+'</td><td>'+(c.subscriberCount?c.subscriberCount>=1000000?(c.subscriberCount/1000000).toFixed(1)+'M':c.subscriberCount>=1000?(c.subscriberCount/1000).toFixed(1)+'K':String(c.subscriberCount):'-')+'</td><td>'+c.videosInWindow+' ('+c.confirmedCount+'\\u2713 '+c.likelyCount+'~)'+'</td><td>'+ (c.avgViews>=1000?(c.avgViews/1000).toFixed(1)+'K':String(c.avgViews)) +'</td><td>'+escapeHtml((c.games||[]).slice(0,2).join(', '))+'</td><td>'+Object.entries(c.brandMentions||{}).filter(function(e){return e[1]>0}).map(function(e){return e[0]+' '+e[1]}).join(' ') +'</td><td><span style=font-size:10px;background:#F3F7FF;color:#3B6EF5;padding:1px 6px;border-radius:3px>'+(({new:'New',recurring:'Recurring',loyal:'Loyal',multi_brand:'Multi-Brand'})[c.relationType]||c.relationType)+'</span></td></tr>'}).join('')+'</tbody></table>'}catch(e){el.innerHTML='<p class=mt>Failed to load creators</p>'}}
+async function loadComments(){const el=document.getElementById('comments-load');try{const[r,raw]=await Promise.all([fetch('/api/comments/summary'),fetch('/api/comments?limit=30')]);const s=await r.json();const d=await raw.json();if(!s.total){el.innerHTML='<p class=mt>No comments analyzed yet</p>';return}const fb=s.fallback?'<div style="font-size:11px;color:#8a6d1a;background:#FDF6E3;border:1px solid #E8D9A0;border-radius:6px;padding:6px 10px;margin-bottom:12px">No competitor-specific comments available. Showing comments from analyzed candidate videos.</div>':'';const sentimentBars=Object.entries(s.sentiment).map(([k,v])=>{const pct=Math.round(v/s.total*100);return'<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;font-size:12px"><span style=width:60px;text-align:right;color:#8490A6>'+k+'</span><div style="flex:1;height:6px;background:#E9EEF6;border-radius:3px;overflow:hidden"><div style="height:100%;width:'+pct+'%;background:'+(k==='positive'?'#19A974':k==='negative'?'#EF5B5B':'#F59E0B')+';border-radius:3px"></div></div><span style=width:36px;color:#4B5870>'+pct+'%</span></div>'}).join('');el.innerHTML=fb+'<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px"><div class=kpi><div class=kpi-n>'+s.total+'</div><div class=kpi-l>Comments Analyzed</div></div><div class=kpi><div class=kpi-n>'+s.purchaseIntentRate+'%</div><div class=kpi-l>Purchase Intent</div></div><div class=kpi><div class=kpi-n>'+s.brandRelatedRate+'%</div><div class=kpi-l>Brand Related</div></div><div class=kpi>'+sentimentBars+'</div></div><h2>Most Discussed</h2><table class=dt><thead><tr><th>Video</th><th>Channel</th><th>Comments</th></tr></thead><tbody>'+s.topVideos.slice(0,10).map(v=>'<tr><td><a href="https://youtube.com/watch?v='+escapeHtml(v.videoId)+'" target=_blank>'+escapeHtml((v.title||'').slice(0,60))+'</a></td><td>'+escapeHtml(v.channelName||'?')+'</td><td>'+v.commentCount+'</td></tr>').join('')+'</tbody></table><h2>Recent</h2>'+d.slice(0,20).map(c=>'<div class=comment><b>'+escapeHtml(c.author_name||'?')+'</b> on '+escapeHtml((c.youtube_competitor_videos||{}).title||'?').slice(0,50)+'<br>'+escapeHtml((c.comment_text||'').slice(0,200))+'<br><span class=bt>'+(c.has_purchase_intent?'💳 Intent':'')+' '+(c.is_brand_related?'🏷 Brand':'')+' '+(c.sentiment||'')+'</span></div>').join('')}catch(e){el.innerHTML='<p class=mt>Failed to load</p>'}}
 async function loadSystem(){try{const r=await fetch('/api/system');const d=await r.json();const logs=d.logs||[];document.getElementById('scan-logs').innerHTML=logs.slice(0,15).map(l=>'<tr><td>'+new Date(l.created_at).toLocaleString()+'</td><td>'+l.scan_mode+'</td><td>'+l.queries_attempted+'/'+l.queries_succeeded+'</td><td>'+l.videos_found+'</td><td>'+l.videos_new+'</td><td>'+l.search_quota_used+'S/'+l.general_quota_used+'G</td><td>'+(l.quota_exhausted?'⚠️ Quota':'✅')+'</td></tr>').join('')||'<tr><td colspan="7" class="mt">No logs</td></tr>';document.getElementById('hs-status').textContent=d.config?.hotspot_active?'🔴 Active until '+new Date(d.config.hotspot_active_until).toLocaleString():'⚪ Inactive'}catch(e){}}
 async function startHotspot(){const g=document.getElementById('hs-game').value;const d=parseInt(document.getElementById('hs-days').value)||7;if(!g)return showToast('❌ Enter a game name');try{const r=await fetch('/api/hotspot/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({games:[g],durationDays:d})});const j=await r.json();showToast(j.success?'✅ Hotspot active':'❌ Failed');setTimeout(loadSystem,500)}catch(e){showToast('❌ Failed')}}
 async function stopHotspot(){try{await fetch('/api/hotspot/stop',{method:'POST'});showToast('✅ Hotspot stopped');setTimeout(loadSystem,500)}catch(e){showToast('❌ Failed')}}

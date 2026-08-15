@@ -11,10 +11,10 @@ import { config, validateConfig } from './config';
 import { runDiscoveryPipeline, getMonitorStatus, scanState, retryClassification } from './services/competitor-monitor';
 import { detectCampaigns, getCampaigns } from './services/competitor-monitor/campaign-detector';
 import { generateDailyReport, generateWeeklyReport, generateQuarterlyReport } from './services/competitor-monitor/competitor-report';
-import { getDashboardData } from './services/competitor-monitor/dashboard-data';
-import { getAllCreators } from './services/competitor-monitor/creator-profiler';
+import { getCreatorsFromVideos } from './services/competitor-monitor/creator-profiler';
+import { resolveBrand, resolveGame, resolveMarket, COMPETITOR_BRANDS, filterCompetitorPlacements, filterUnresolvedCandidates, needsAIVerification } from './services/competitor-monitor/data-scope';
 import { getSupabase } from './db/supabase';
-import { renderDashboard, renderDashboardShell } from './ui/dashboard';
+import { renderDashboard } from './ui/dashboard';
 
 const app = express();
 app.use(express.json());
@@ -72,31 +72,150 @@ app.get('/api/campaigns', async (_req, res) => {
   res.json(await getCampaigns(status));
 });
 
-// ── Creators (aggregated from videos, joined with profiles) ──
+// ── Creators (Layer 3 — only creators with competitor placements in window) ──
 app.get('/api/creators', async (req, res) => {
   const rangeDays = parseInt((req.query.range as string) || '7', 10);
-  const { getCreatorsFromVideos } = require('./services/competitor-monitor/creator-profiler');
-  res.json(await getCreatorsFromVideos({ rangeDays, brand: req.query.brand as string }));
+  const showAll = req.query.all === '1';
+  res.json(await getCreatorsFromVideos({ rangeDays, brand: req.query.brand as string, competitorOnly: !showAll }));
 });
 
 // ── Comments ──
+// youtube_comment_insights.video_id has NO foreign key, so PostgREST's
+// `youtube_competitor_videos!inner(...)` join silently returns nothing.
+// Manual join instead: fetch comments, then attach video title/channel.
+async function attachVideoInfo(db: any, comments: any[]): Promise<any[]> {
+  if (!comments?.length) return [];
+  const ids = [...new Set(comments.map(c => c.video_id))];
+  const { data: vids } = await db.from('youtube_competitor_videos').select('video_id,title,channel_name').in('video_id', ids);
+  const map = new Map((vids || []).map((v: any) => [v.video_id, v]));
+  return comments.map(c => ({ ...c, youtube_competitor_videos: map.get(c.video_id) || null }));
+}
+
 app.get('/api/comments', async (req, res) => {
   const db = getSupabase();
-  let q = db.from('youtube_comment_insights').select('*, youtube_competitor_videos!inner(title, channel_name)').order('published_at', { ascending: false }).limit(100);
+
+  // Only show comments from competitor placement videos (Layer 3)
+  const rangeDays = parseInt((req.query.range as string) || '7', 10);
+  const since = new Date(Date.now() - rangeDays * 86400000).toISOString();
+
+  // Get competitor placement video IDs, post-filtered by competitor brand
+  const { data: cpVids } = await db.from('youtube_competitor_videos')
+    .select('video_id, classification_raw')
+    .in('placement_type', ['confirmed_paid_placement', 'likely_sponsored'])
+    .gte('published_at', since)
+    .limit(200);
+  let competitorVideoIds = (cpVids || [])
+    .filter((v: any) => COMPETITOR_BRANDS.includes(resolveBrand(v) as any))
+    .map((v: any) => v.video_id);
+
+  // Stage ③ fallback: no competitor-specific comments this window — show
+  // comments from analyzed candidate videos instead (workflow_status=classified).
+  let fallback = false;
+  const fetchCandidateVids = async () => {
+    const { data: candVids } = await db.from('youtube_competitor_videos')
+      .select('video_id')
+      .eq('workflow_status', 'classified')
+      .gte('published_at', since)
+      .limit(200);
+    return (candVids || []).map((v: any) => v.video_id);
+  };
+
+  if (!competitorVideoIds.length) {
+    fallback = true;
+    competitorVideoIds = await fetchCandidateVids();
+  }
+
+  if (!competitorVideoIds.length) return res.json([]);
+
+  let q = db.from('youtube_comment_insights')
+    .select('*')
+    .in('video_id', competitorVideoIds)
+    .order('published_at', { ascending: false })
+    .limit(100);
   if (req.query.intent) {
     if (req.query.intent === 'purchase') q = q.eq('has_purchase_intent', true);
     else if (req.query.intent === 'brand') q = q.eq('is_brand_related', true);
     else if (req.query.intent === 'negative') q = q.eq('sentiment', 'negative');
   }
-  const { data } = await q;
-  res.json(data || []);
+  let { data } = await q;
+
+  // Placements exist but none of their comments were analyzed — fall back too.
+  if (!data?.length && !fallback) {
+    fallback = true;
+    competitorVideoIds = await fetchCandidateVids();
+    if (competitorVideoIds.length) {
+      let q2 = db.from('youtube_comment_insights')
+        .select('*')
+        .in('video_id', competitorVideoIds)
+        .order('published_at', { ascending: false })
+        .limit(100);
+      if (req.query.intent) {
+        if (req.query.intent === 'purchase') q2 = q2.eq('has_purchase_intent', true);
+        else if (req.query.intent === 'brand') q2 = q2.eq('is_brand_related', true);
+        else if (req.query.intent === 'negative') q2 = q2.eq('sentiment', 'negative');
+      }
+      const r2 = await q2;
+      data = r2.data;
+    }
+  }
+  res.set('X-Comments-Fallback', fallback ? '1' : '0');
+  res.json(await attachVideoInfo(db, data || []));
 });
 
-// ── Comments Summary (aggregated insights) ──
+// ── Comments Summary (Layer 3 — only competitor placement comments) ──
 app.get('/api/comments/summary', async (_req, res) => {
   const db = getSupabase();
-  const { data: comments } = await db.from('youtube_comment_insights').select('has_purchase_intent,is_brand_related,sentiment,video_id,author_name').limit(500);
-  if (!comments?.length) return res.json({ total: 0, purchaseIntentRate: 0, brandRelatedRate: 0, sentiment: {}, topVideos: [] });
+  const since = new Date(Date.now() - 7 * 86400000).toISOString();
+
+  // Get competitor placement video IDs
+  const { data: cpVids } = await db.from('youtube_competitor_videos')
+    .select('video_id, classification_raw')
+    .in('placement_type', ['confirmed_paid_placement', 'likely_sponsored'])
+    .gte('published_at', since)
+    .limit(200);
+  let competitorVideoIds = (cpVids || [])
+    .filter((v: any) => COMPETITOR_BRANDS.includes(resolveBrand(v) as any))
+    .map((v: any) => v.video_id);
+
+  // Stage ③ fallback: if there are no competitor placement videos OR they
+  // have no analyzed comments, show comments from analyzed candidate videos
+  // (workflow_status=classified) and flag fallback=true so the UI can say so.
+  let fallback = false;
+  const fetchCandidateVids = async () => {
+    const { data: candVids } = await db.from('youtube_competitor_videos')
+      .select('video_id')
+      .eq('workflow_status', 'classified')
+      .gte('published_at', since)
+      .limit(200);
+    return (candVids || []).map((v: any) => v.video_id);
+  };
+
+  if (!competitorVideoIds.length) {
+    fallback = true;
+    competitorVideoIds = await fetchCandidateVids();
+  }
+
+  // NOTE: build `empty` lazily — fallback may flip true later and the object is const.
+  if (!competitorVideoIds.length) return res.json({ total: 0, purchaseIntentRate: 0, brandRelatedRate: 0, sentiment: {}, topVideos: [], fallback });
+
+  let { data: comments } = await db.from('youtube_comment_insights')
+    .select('has_purchase_intent,is_brand_related,sentiment,video_id,author_name')
+    .in('video_id', competitorVideoIds)
+    .limit(500);
+
+  // Placements exist but none of their comments were analyzed — fall back too.
+  if (!comments?.length && !fallback) {
+    fallback = true;
+    competitorVideoIds = await fetchCandidateVids();
+    if (competitorVideoIds.length) {
+      const r2 = await db.from('youtube_comment_insights')
+        .select('has_purchase_intent,is_brand_related,sentiment,video_id,author_name')
+        .in('video_id', competitorVideoIds)
+        .limit(500);
+      comments = r2.data;
+    }
+  }
+  if (!comments?.length) return res.json({ total: 0, purchaseIntentRate: 0, brandRelatedRate: 0, sentiment: {}, topVideos: [], fallback });
 
   const total = comments.length;
   const purchaseIntent = comments.filter((c: any) => c.has_purchase_intent).length;
@@ -128,6 +247,7 @@ app.get('/api/comments/summary', async (_req, res) => {
     brandRelatedRate: total > 0 ? Math.round((brandRelated / total) * 100) : 0,
     sentiment,
     topVideos,
+    fallback, // Stage ③: true = showing comments from analyzed candidates, not competitor placements
   });
 });
 
@@ -190,99 +310,161 @@ app.post('/api/videos/:id/action', async (req, res) => {
 });
 
 // ── Shared dashboard query (used by both / and /api/dashboard) ──
+// 3-layer data model: all analytics derived from Layer 3 (Competitor Placements)
 async function queryDashboardData(rangeDays: number) {
   const since = new Date(Date.now() - rangeDays * 86400000).toISOString();
   const db = getSupabase();
 
-  const { data: videos, error: vidErr } = await Promise.race([
-    db.from('youtube_competitor_videos')
-      .select('video_id,title,channel_id,channel_name,published_at,is_short,thumbnail_url,game_name,content_type,placement_type,sponsor_confidence,topic_category,promo_code,view_count,like_count,comment_count,classification_raw,workflow_status,first_seen_at,market,language')
+  // ── Layer 1: Fetch ALL discovered videos in time window (paged — REST caps at 1000/query) ──
+  const videos: any[] = [];
+  let vidErr: Error | null = null;
+  const cols = 'video_id,title,channel_id,channel_name,published_at,is_short,thumbnail_url,game_name,content_type,placement_type,sponsor_confidence,topic_category,promo_code,view_count,like_count,comment_count,classification_raw,workflow_status,first_seen_at,market,language';
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await db.from('youtube_competitor_videos')
+      .select(cols)
       .gte('published_at', since)
       .order('published_at', { ascending: false })
-      .limit(500),
-    new Promise<never>((_, reject) => setTimeout(() => reject(new Error('TIMEOUT')), 5000)),
-  ]);
+      .range(from, from + 999);
+    if (error) { vidErr = error as any; break; }
+    if (!data?.length) break;
+    videos.push(...data);
+    if (data.length < 1000) break;
+  }
 
   console.log(`[Dashboard] rangeDays=${rangeDays} since=${since} videos=${videos?.length || 0} err=${vidErr?.message || 'none'}`);
 
   if (vidErr) {
-    console.error(`[Dashboard] Query error: code=${vidErr.code} msg=${vidErr.message} details=${vidErr.details}`);
+    console.error(`[Dashboard] Query error: code=${(vidErr as any).code} msg=${vidErr.message} details=${(vidErr as any).details}`);
   }
 
   if (!videos || !videos.length) {
     return { hasData: false as const, kpis: {} as any, brands: [], games: [], themes: [], creators: [], recentVideos: [], scanStatus: {} as any };
   }
 
-  // Coverage metrics — time-filtered to current window, with workflow status breakdown
+  // ── Layer 1 counts ──
   const { count: totalVideosInRange } = await db.from('youtube_competitor_videos').select('id', { count: 'exact', head: true }).gte('published_at', since);
+  const totalInRange = totalVideosInRange ?? 0;
+
+  // ── Layer 2: Classified coverage ──
   const { count: classifiedInRange } = await db.from('youtube_competitor_videos').select('id', { count: 'exact', head: true }).gte('published_at', since).or('workflow_status.eq.rule_classified,workflow_status.eq.classified');
   const totalAnalyzed = classifiedInRange ?? 0;
-  const totalInRange = totalVideosInRange ?? 0;
   const coveragePct = totalInRange > 0 ? Math.round((totalAnalyzed / totalInRange) * 100) : 0;
-  // Global total for reference only
-  const { count: totalAll } = await db.from('youtube_competitor_videos').select('id', { count: 'exact', head: true });
-  const weekAgo = new Date(Date.now() - 7 * 86400000).toISOString();
-  const { data: newCreatorsThisWeek } = await db.from('youtube_competitor_videos').select('channel_id').gte('first_seen_at', weekAgo);
-  const newCreatorIds = new Set((newCreatorsThisWeek || []).map((v: any) => v.channel_id));
 
-  const brandMap = new Map<string, { count: number; creators: Set<string>; markets: Map<string, number> }>();
-  const gameMap = new Map<string, number>();
-  const themeMap = new Map<string, number>();
-  let confirmedLikely = 0;
-  const allCreators = new Set<string>();
-  const activeCreators = new Set<string>(); // only confirmed/likely placements
+  // ── Layer 3: Competitor Placements (brand ∈ valid AND placement ∈ confirmed/likely) ──
+  const competitorPlacements = filterCompetitorPlacements(videos);
+  const unresolvedCandidates = filterUnresolvedCandidates(videos);
 
-  // Resolve market: rule.market → ai.market → db.market column → 'Unknown'
-  const resolveMarket = (v: any) => v.classification_raw?.rule?.market || v.classification_raw?.ai?.market || v.market || 'Unknown';
-  // Resolve brand: final → rule → ai → unknown
-  const resolveBrand = (v: any) => v.classification_raw?.final?.brand || v.classification_raw?.rule?.brand || v.classification_raw?.ai?.brand || 'unknown';
+  // All discovered unique creators in window
+  const allCreators = new Set(videos.map(v => v.channel_id));
 
-  for (const v of videos) {
-    const brand = resolveBrand(v);
-    if (!brandMap.has(brand)) brandMap.set(brand, { count: 0, creators: new Set(), markets: new Map() });
-    const b = brandMap.get(brand)!; b.count++; b.creators.add(v.channel_id);
-    const mkt = resolveMarket(v);
-    b.markets.set(mkt, (b.markets.get(mkt) || 0) + 1);
-    const game = v.game_name || v.classification_raw?.rule?.game || v.classification_raw?.ai?.game || 'uncategorized';
-    gameMap.set(game, (gameMap.get(game) || 0) + 1);
-    const theme = v.topic_category || 'uncategorized';
-    themeMap.set(theme, (themeMap.get(theme) || 0) + 1);
-    if (v.placement_type === 'confirmed_paid_placement' || v.placement_type === 'likely_sponsored') {
-      confirmedLikely++;
-      activeCreators.add(v.channel_id);
-    }
-    allCreators.add(v.channel_id);
+  // ── Active Competitor Creators (Layer 3 only) ──
+  const activeCreators = new Set(competitorPlacements.map(v => v.channel_id));
+
+  // ── New Competitor Creators: first_seen_at within 7 days AND is a competitor placement ──
+  // Use same time window + Layer 3 eligibility
+  const newCreatorIds = new Set(
+    competitorPlacements
+      .filter(v => v.first_seen_at && new Date(v.first_seen_at).getTime() > Date.now() - 7 * 86400000)
+      .map(v => v.channel_id)
+  );
+
+  // ── Brand Breakdown: only from Layer 3 placements ──
+  const brandMap = new Map<string, { count: number; creators: Set<string>; markets: Map<string, number>; totalViews: number }>();
+  for (const name of COMPETITOR_BRANDS) {
+    brandMap.set(name, { count: 0, creators: new Set(), markets: new Map(), totalViews: 0 });
   }
 
-  const kpis = { confirmedLikely, activeCreators: activeCreators.size, allCreatorsInWindow: allCreators.size, activeCampaigns: 0, coveragePct, newCreatorsThisWeek: newCreatorIds.size, totalVideos: totalInRange, totalAnalyzed,
-  };
+  for (const v of competitorPlacements) {
+    const brand = resolveBrand(v);
+    if (!brandMap.has(brand)) continue; // skip non-competitor
+    const b = brandMap.get(brand)!;
+    b.count++;
+    b.creators.add(v.channel_id);
+    b.totalViews += v.view_count || 0;
+    const mkt = resolveMarket(v);
+    b.markets.set(mkt, (b.markets.get(mkt) || 0) + 1);
+  }
 
   const brandComparison = [...brandMap.entries()].map(([name, d]) => ({
     brandName: name, newVideos: d.count, creators: d.creators.size,
     topGame: '', topMarket: [...d.markets.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || 'Unknown',
-    median7dViews: 0,
+    median7dViews: d.count > 0 ? Math.round(d.totalViews / d.count) : 0,
   }));
 
-  const topGames = [...gameMap.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10).map(([game, count]) => ({
-    game, videoCount: count, estimatedReach: 0, brands: {} as Record<string, number>,
-  }));
+  // ── Top Games: only from Layer 3 placements ──
+  const gameMap = new Map<string, { count: number; brands: Map<string, number> }>();
+  for (const v of competitorPlacements) {
+    const game = resolveGame(v);
+    if (!gameMap.has(game)) gameMap.set(game, { count: 0, brands: new Map() });
+    const g = gameMap.get(game)!;
+    g.count++;
+    const b = resolveBrand(v);
+    g.brands.set(b, (g.brands.get(b) || 0) + 1);
+  }
 
-  const topThemes = [...themeMap.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10).map(([topic, count]) => ({
-    topic, videoCount: count, brands: {} as Record<string, number>,
-  }));
+  const topGames = [...gameMap.entries()]
+    .sort((a, b) => b[1].count - a[1].count)
+    .slice(0, 10)
+    .map(([game, d]) => ({ game, videoCount: d.count, estimatedReach: 0, brands: Object.fromEntries(d.brands) }));
 
-  const recentVideos = videos.slice(0, 20).map(v => ({
+  // ── Content Angles: only from Layer 3 placements ──
+  const themeMap = new Map<string, { count: number; brands: Map<string, number> }>();
+  for (const v of competitorPlacements) {
+    const topic = v.topic_category || 'uncategorized';
+    if (!themeMap.has(topic)) themeMap.set(topic, { count: 0, brands: new Map() });
+    const t = themeMap.get(topic)!;
+    t.count++;
+    const b = resolveBrand(v);
+    t.brands.set(b, (t.brands.get(b) || 0) + 1);
+  }
+
+  const topThemes = [...themeMap.entries()]
+    .sort((a, b) => b[1].count - a[1].count)
+    .slice(0, 10)
+    .map(([topic, d]) => ({ topic, videoCount: d.count, brands: Object.fromEntries(d.brands) }));
+
+  // ── KPIs ──
+  // UI 口径 (Stage ④): "Classified" ≠ "AI reviewed". A video can be
+  // classified by rules and still await AI verification (needsAI). Discovery
+  // Coverage measures pipeline throughput; AI Review Progress measures the
+  // backlog. Displayed separately so 100% never implies "all placements found".
+  const aiPending = videos.filter(needsAIVerification).length;
+  const kpis = {
+    competitorPlacements: competitorPlacements.length,
+    unresolvedCandidates: unresolvedCandidates.length,
+    activeCreators: activeCreators.size,
+    activeCampaigns: 0 as number, // filled later from campaigns table
+    discoveryCoveragePct: coveragePct, // 100% = all videos have a processing status
+    aiPending,                          // awaiting AI verification
+    aiReviewed: Math.max(totalAnalyzed - aiPending, 0), // final classification done
+    totalVideos: totalInRange,
+    totalAnalyzed,
+    newCompetitorCreators: newCreatorIds.size,
+  };
+
+  // ── Map DB video rows to dashboard VideoRow shape ──
+  const toVideoRow = (v: any) => ({
     videoId: v.video_id, title: v.title, thumbnailUrl: v.thumbnail_url, channelName: v.channel_name,
-    brand: v.classification_raw?.final?.brand || v.classification_raw?.rule?.brand || v.classification_raw?.ai?.brand || 'unknown', game: v.game_name || 'unknown',
+    brand: resolveBrand(v), game: resolveGame(v),
     publishedAt: v.published_at, viewCount: v.view_count || 0,
     placementType: v.placement_type || 'unknown', sponsorConfidence: v.sponsor_confidence || 0,
-    discoveryEvidence: [] as string[], promoCode: v.promo_code || null,
+    contentCategory: v.content_type || null,
+    discoveryEvidence: v.promo_code ? [`Promo code: ${v.promo_code}`] : [],
+    promoCode: v.promo_code || null,
     growth24h: null, growth72h: null,
-  }));
+  });
 
   return {
-    hasData: true as const, kpis, brandComparison, topGames, topThemes, topCreators: [] as any[],
-    recentVideos, scanStatus: { lastScanAt: null, nextScanAt: 'Tomorrow 06:00 UTC', totalVideos: videos.length, totalCreators: activeCreators.size, queriesActive: 6 },
+    hasData: true as const,
+    kpis,
+    brandComparison,
+    topGames,
+    topThemes,
+    topCreators: [] as any[],
+    recentVideos: competitorPlacements.slice(0, 20).map(toVideoRow), // default: competitor placements
+    allRecentVideos: videos.slice(0, 30).map(toVideoRow),            // "All Discovered" toggle
+    unresolvedVideos: unresolvedCandidates.slice(0, 20).map(toVideoRow), // "Unresolved Candidates" toggle
+    scanStatus: { lastScanAt: null, nextScanAt: 'Tomorrow 06:00 UTC', totalVideos: totalInRange, totalCreators: activeCreators.size, queriesActive: 6 },
   };
 }
 
@@ -335,8 +517,10 @@ app.get('/', async (_req, res) => {
       topThemes: data.topThemes || [],
       topCreators: data.topCreators || [],
       recentVideos: data.recentVideos || [],
+      allRecentVideos: ('allRecentVideos' in data ? data.allRecentVideos : []) || [],
+      unresolvedVideos: ('unresolvedVideos' in data ? data.unresolvedVideos : []) || [],
       anomalies: [],
-    }, {}, campaigns, { ...status, creatorProfiles: [] });
+    } as any, {}, campaigns, { ...status, creatorProfiles: [] });
 
     console.log(`[Dashboard:${requestId}] Done: ${data.recentVideos.length} videos, HTML=${html.length}chars, totalMs: ${Date.now() - startedAt}`);
     res.type('html').send(html);
@@ -368,7 +552,7 @@ app.get('/api/dashboard', async (req, res) => {
       return res.json({ ok: true, hasData: false, kpis: {}, brands: [], games: [], themes: [], creators: [], recentVideos: [], scanStatus: {} });
     }
 
-    console.log(`[Dashboard:${requestId}] Done: ${data.recentVideos.length} videos, ${data.scanStatus.totalCreators} creators, ${data.kpis.confirmedLikely} active, totalMs: ${Date.now() - startedAt}`);
+    console.log(`[Dashboard:${requestId}] Done: ${data.recentVideos.length} competitor placements, discovery ${data.kpis.totalAnalyzed}/${data.kpis.totalVideos}, aiReview ${data.kpis.aiReviewed} done / ${data.kpis.aiPending} pending, totalMs: ${Date.now() - startedAt}`);
 
     return res.json({ ok: true, ...data, totalMs: Date.now() - startedAt });
   } catch (err) {
@@ -449,14 +633,16 @@ cron.schedule('0 8 2 1,4,7,10 *', async () => {
   catch (err) { console.error('[Cron] Quarterly failed:', (err as Error).message); }
 });
 
-// ── Cron: AI backlog processing daily at 10:00 UTC (20 items/day, low cost) ──
+// ── Cron: AI backlog processing daily at 10:00 UTC ──
+// Stage ②: drains the FULL classification queue until empty (batches of 10).
+// Set AI_BACKLOG_DAILY_LIMIT=<n> in env to cap per-run cost instead.
 cron.schedule('0 10 * * *', async () => {
-  const backlogLimit = parseInt(process.env.AI_BACKLOG_DAILY_LIMIT || '20', 10);
-  if (backlogLimit <= 0) { console.log('[Cron] AI backlog skipped (limit=0)'); return; }
-  console.log(`[Cron] AI backlog processing — limit=${backlogLimit}`);
+  const backlogLimit = parseInt(process.env.AI_BACKLOG_DAILY_LIMIT || '0', 10);
+  if (backlogLimit < 0) { console.log('[Cron] AI backlog skipped (limit<0)'); return; }
+  console.log(`[Cron] AI backlog processing — limit=${backlogLimit === 0 ? 'unlimited' : backlogLimit}`);
   try {
     const result = await retryClassification(backlogLimit);
-    console.log(`[Cron] AI backlog done — ${result.classified} classified`);
+    console.log(`[Cron] AI backlog done — ${result.classified} classified, ${result.remaining} remaining`);
   } catch (err) { console.error('[Cron] AI backlog failed:', (err as Error).message); }
 });
 

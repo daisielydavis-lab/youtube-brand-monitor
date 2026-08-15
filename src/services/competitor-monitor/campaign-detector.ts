@@ -14,6 +14,7 @@
  */
 
 import { getSupabase } from '../../db/supabase';
+import { resolveBrand, resolveGame as resolveGameFromScope, COMPETITOR_BRANDS } from './data-scope';
 
 export interface Campaign {
   id: string;
@@ -37,13 +38,7 @@ export interface Campaign {
   detected_at: string;
 }
 
-function resolveBrand(v: any): string {
-  return v.classification_raw?.final?.brand || v.classification_raw?.rule?.brand || v.classification_raw?.ai?.brand || 'unknown';
-}
-
-function resolveGame(v: any): string {
-  return v.game_name || v.classification_raw?.final?.game || v.classification_raw?.rule?.game || v.classification_raw?.ai?.game || 'unknown';
-}
+// Uses shared resolveBrand / resolveGame from data-scope.ts
 
 const THEME_LABELS: Record<string, string> = {
   reduce_ping: 'Reduce Ping', promo_code: 'Promo Code', game_review: 'Game Review',
@@ -83,7 +78,7 @@ export async function detectCampaigns(): Promise<number> {
   for (const v of videos as any[]) {
     const b = resolveBrand(v);
     if (b === 'unknown') continue;
-    const g = resolveGame(v);
+    const g = resolveGameFromScope(v);
     if (g === 'unknown') continue;
     const pub = new Date(v.published_at).getTime();
 
@@ -118,7 +113,7 @@ export async function detectCampaigns(): Promise<number> {
     const b = resolveBrand(gv[0]);
     if (!brandMap.has(b)) brandMap.set(b, { games: new Set(), markets: new Set(), creators: new Set(), vids: [] });
     const bd = brandMap.get(b)!;
-    bd.games.add(resolveGame(gv[0]));
+    bd.games.add(resolveGameFromScope(gv[0]));
     gv.forEach((v: any) => { bd.markets.add(v.market || 'Unknown'); bd.creators.add(v.channel_id); });
     bd.vids.push(...gv);
   }
@@ -132,13 +127,12 @@ export async function detectCampaigns(): Promise<number> {
   }
 
   let created = 0;
-  const VALID_BRANDS = ['ExitLag', 'GearUP', 'LagZapper'];
 
   for (const [, gv] of groups) {
     if (gv.length < 2) continue;
     const brand = resolveBrand(gv[0]);
-    if (!VALID_BRANDS.includes(brand)) continue;
-    const game = resolveGame(gv[0]);
+    if (!COMPETITOR_BRANDS.includes(brand as any)) continue;
+    const game = resolveGameFromScope(gv[0]);
     const creators = new Set(gv.map((v: any) => v.channel_id));
     const timestamps = gv.map((v: any) => new Date(v.published_at).getTime());
     const lastPlacementAt = new Date(Math.max(...timestamps)).toISOString();
@@ -194,8 +188,12 @@ export async function detectCampaigns(): Promise<number> {
 
 export async function getCampaigns(statusFilter?: string): Promise<Campaign[]> {
   const db = getSupabase();
+  // Stage ④ 口径: campaigns table holds historical metadata (detected at a
+  // snapshot, mostly 'ended'). The API must match the dashboard KPI — only
+  // return non-ended campaigns by default. Pass status=ended to audit history.
   let q = db.from('campaigns').select('*').order('detected_at', { ascending: false });
   if (statusFilter) q = q.eq('status', statusFilter);
+  else q = q.neq('status', 'ended');
   const { data } = await q;
   return (data || []).map(c => ({
     ...c,

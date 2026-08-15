@@ -7,6 +7,7 @@ import { getSupabase } from '../../db/supabase';
 import { getChannelById, type YouTubeChannelResult } from './youtube-discovery';
 import type { TopicResult } from './topic-classifier';
 import type { SponsorshipResult } from './sponsorship-detector';
+import { resolveBrand, isCompetitorPlacement } from './data-scope';
 
 export interface CreatorProfile {
   channelId: string;
@@ -226,6 +227,7 @@ export interface CreatorRow {
 export async function getCreatorsFromVideos(options?: {
   rangeDays?: number;
   brand?: string;
+  competitorOnly?: boolean; // default false — when true, only show creators with competitor placements
 }): Promise<CreatorRow[]> {
   const db = getSupabase();
   const days = options?.rangeDays || 30;
@@ -249,7 +251,9 @@ export async function getCreatorsFromVideos(options?: {
   // Group by channel_id
   const channelMap = new Map<string, any[]>();
   for (const v of videos) {
-    const brand = v.classification_raw?.final?.brand || v.classification_raw?.rule?.brand || v.classification_raw?.ai?.brand;
+    const brand = resolveBrand(v);
+    // Layer 3 filter: competitor placements only (brand ∈ valid AND placement ∈ confirmed/likely)
+    if (options?.competitorOnly && !isCompetitorPlacement(v)) continue;
     if (options?.brand && brand !== options.brand) continue;
     if (!channelMap.has(v.channel_id)) channelMap.set(v.channel_id, []);
     channelMap.get(v.channel_id)!.push(v);
@@ -266,7 +270,7 @@ export async function getCreatorsFromVideos(options?: {
     const games = new Set<string>();
     const markets = new Set<string>();
     for (const v of sorted) {
-      const b = v.classification_raw?.final?.brand || v.classification_raw?.rule?.brand || v.classification_raw?.ai?.brand;
+      const b = resolveBrand(v);
       if (b && brandMentions.hasOwnProperty(b)) brandMentions[b]++;
       if (v.game_name && v.game_name !== 'unknown') games.add(v.game_name);
       if (v.market && v.market !== 'Unknown') markets.add(v.market);
@@ -275,7 +279,7 @@ export async function getCreatorsFromVideos(options?: {
     // Relation type: derived from videos already in memory
     const allBrands = new Set<string>();
     sorted.forEach((v: any) => {
-      const b = v.classification_raw?.final?.brand || v.classification_raw?.rule?.brand || v.classification_raw?.ai?.brand;
+      const b = resolveBrand(v);
       if (b && b !== 'unknown') allBrands.add(b);
     });
     const firstEver = sorted[sorted.length - 1].first_seen_at;

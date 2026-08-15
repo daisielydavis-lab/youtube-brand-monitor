@@ -15,6 +15,7 @@ import { getOrCreateCreatorProfile } from './creator-profiler';
 import { saveSnapshot } from './performance-snapshot';
 import { chatJSON } from '../ai/deepseek-client';
 import { batchClassify as ruleClassify, type RuleClassification } from './rule-classifier';
+import { evaluateIndustryGate } from './industry-gate';
 
 // ── Types ──
 export interface ScanState {
@@ -49,6 +50,11 @@ function resetState(mode: string) {
 
 // ── Priority scoring (rule-based, no LLM) ──
 function scorePriority(v: YouTubeVideoResult, knownIds: Set<string>, hotspotGames: string[]): number {
+  // Stage ① industry gate: non-gaming content (food/beauty/finance/...) is
+  // never a placement — drop it to the bottom of the queue so AI quota is
+  // not wasted on affiliate-link spam.
+  const gate = evaluateIndustryGate({ title: v.title, description: v.description, channelName: v.channelTitle, tags: v.tags });
+  if (!gate.passed && gate.category !== 'gaming') return -100;
   let s = 0; const t = v.title.toLowerCase(), d = v.description.toLowerCase();
   for (const b of BRANDS) { for (const kw of b.brandKeywords) { if (t.includes(kw)) { s += 30; break; } } }
   if (/exitlag\.com|gearupbooster\.com|lagzapper\.com/i.test(d)) s += 25;
@@ -77,6 +83,7 @@ async function batchClassifyVideos(
 
     const items = batch.map(v => ({
       videoId: v.videoId, title: v.title, descSnippet: v.description.slice(0, 300),
+      description: v.description, // full text for server-side industry gate verification (not sent to AI)
       channelName: v.channelName, publishedAt: v.publishedAt, hasPaidTag: v.hasPaidPlacementTag,
       matchedBrand: BRANDS.find(b => b.brandKeywords.some(kw => v.title.toLowerCase().includes(kw) || v.description.toLowerCase().includes(kw)))?.brandName || null,
     }));
@@ -94,7 +101,13 @@ Each video object:
 
 Rules: confirmed=explicit #ad/sponsored/paid tag. likely=promo code+brand link+product focus. organic=casual mention. irrelevant=no brand signal.
 
-Videos: ${JSON.stringify(items)}`;
+INDUSTRY GATE (MANDATORY — non-gaming content can NEVER be a game booster placement):
+Game boosters (GearUP/ExitLag/LagZapper) are ONLY advertised in gaming / esports / game-hardware / game-network content.
+- If the video title, channel, or content is clearly NOT gaming (e.g. food cooking/eating, mukbang, beauty, fashion, finance/trading, lifestyle/vlog, music, news, pranks, random shorts), classify it "irrelevant" with brand=null — EVEN IF its description contains a brand affiliate link, promo code, or "sponsored by" text. Affiliate links in irrelevant niches are spam, not placements.
+- Only classify "confirmed"/"likely" when the content is gaming-related AND brand evidence exists (title mentions brand, promo code + brand link in a gaming video, paid tag, etc.).
+- When in doubt between "likely" and "organic" for gaming content, prefer the more conservative option.
+
+Videos: ${JSON.stringify(items.map(({ description, ...aiItem }) => aiItem))}`;
 
     const result = await chatJSON<{ videos: any[] }>(
       [{ role: 'user', content: prompt }],
@@ -106,15 +119,37 @@ Videos: ${JSON.stringify(items)}`;
         const vid = batch.find(v => v.videoId === item.videoId);
         if (!vid) continue;
         const m: Record<string, string> = { confirmed: 'confirmed_paid_placement', likely: 'likely_sponsored', organic: 'organic_mention', official: 'official_brand_video', irrelevant: 'unknown' };
-        const pt = m[item.placementType] || 'unknown';
+        let pt = m[item.placementType] || 'unknown';
+
+        // ── Industry gate verification (Stage ①) — NEVER trust AI on this ──
+        // AI can't see the full context and has proven to call food videos
+        // "likely_sponsored" off a stray affiliate link. Hard-block non-gaming.
+        const gate = evaluateIndustryGate({
+          title: vid.title, description: vid.description,
+          channelName: vid.channelName, tags: vid.tags,
+        });
+        const industryBlocked = !gate.passed && gate.category !== 'gaming';
+        let aiBrand = item.brand || null;
+        if (industryBlocked) {
+          if (pt === 'confirmed_paid_placement' && !vid.hasPaidPlacementTag) pt = 'organic_mention';
+          else if (pt === 'confirmed_paid_placement' && vid.hasPaidPlacementTag) { /* keep — explicit disclosure */ }
+          else pt = 'organic_mention';
+          aiBrand = null;
+        }
+        const finalBrand = aiBrand;
         if (pt === 'confirmed_paid_placement' || pt === 'likely_sponsored') likely++;
 
         await getSupabase().from('youtube_competitor_videos').update({
           placement_type: pt, sponsor_confidence: (item.confidence || 50) / 100,
-          game_name: item.game || null, topic_category: item.theme || 'game_integration',
+          game_name: industryBlocked ? null : (item.game || null),
+          topic_category: industryBlocked ? 'game_integration' : (item.theme || 'game_integration'),
           content_type: item.format || 'integrated_placement',
           workflow_status: 'classified',
-          classification_raw: { ai: item, batchNum, classifiedAt: new Date().toISOString() },
+          classification_raw: {
+            ai: industryBlocked ? { ...item, brand: null, placementType: 'organic_mention' } : item,
+            industryGate: { blocked: industryBlocked, category: gate.category, blockedBy: gate.blockedBy, gamingSignals: gate.gamingSignals, nonGamingSignals: gate.nonGamingSignals },
+            batchNum, classifiedAt: new Date().toISOString(),
+          },
           last_updated_at: new Date().toISOString(),
         }).eq('video_id', item.videoId);
         classified++;
@@ -126,8 +161,15 @@ Videos: ${JSON.stringify(items)}`;
       errors.push(err);
       console.error(`[AI] ${err}`, result.diagnostic.contentPreview?.slice(0, 200));
       for (const v of batch) {
+        // Stage ②: stay in the AI queue (classified + needsAI) — do NOT
+        // reset to discovered. Resetting caused a deadlock: every run fetched
+        // the same videos, AI failed, they went back to discovered, forever.
+        // NOTE: DB CHECK constraint forbids 'rule_classified' — 'classified'
+        // is the only valid "processed" state; the queue is driven by the
+        // classification_raw.rule.needsAI flag, not workflow_status.
         await getSupabase().from('youtube_competitor_videos').update({
-          workflow_status: 'discovered', classification_raw: { error: result.error, queuedAt: new Date().toISOString() },
+          workflow_status: 'classified',
+          classification_raw: { rule: { needsAI: true }, aiError: result.error, queuedAt: new Date().toISOString() },
         }).eq('video_id', v.videoId);
         scanState.failed++;
       }
@@ -278,14 +320,17 @@ export async function runDiscoveryPipeline(options?: {
   let ruleClassified = 0;
   for (const r of ruleDone) {
     await db.from('youtube_competitor_videos').update({
-      placement_type: r.placementType !== 'unknown' ? r.placementType : null,
+      placement_type: r.placementType !== 'unknown' ? r.placementType : 'unknown',
       sponsor_confidence: r.brandConfidence,
       game_name: r.game || null,
       topic_category: r.topicCategory,
       content_type: r.contentCategory,
       language: r.language,
       market: r.market,
-      workflow_status: 'rule_classified',
+      // 'rule_classified' is rejected by the DB CHECK constraint — use
+      // 'classified' (Layer 2 rule pass counts as classified; the needsAI
+      // flag in classification_raw drives the AI queue, not workflow_status).
+      workflow_status: 'classified',
       classification_raw: {
         rule: {
           brand: r.brand, brandConfidence: r.brandConfidence, brandEvidence: r.brandEvidence,
@@ -293,6 +338,7 @@ export async function runDiscoveryPipeline(options?: {
           placementType: r.placementType, sponsorSignals: r.sponsorSignals,
           contentCategory: r.contentCategory, topicCategory: r.topicCategory,
           language: r.language, market: r.market,
+          needsAI: false,
         },
         classifiedAt: new Date().toISOString(),
       },
@@ -303,13 +349,15 @@ export async function runDiscoveryPipeline(options?: {
   console.log(`[Monitor] Rule classified: ${ruleClassified} videos (${Math.round(ruleClassified/actualCount*100)}%)`);
 
   // ── Phase 5: AI Queue (Layer 3) — only videos rules couldn't classify ──
+  // Stage ②: NO cap — the full queue is processed this scan, batched 10 at a
+  // time inside batchClassifyVideos, until completion. If the scan is
+  // interrupted, leftovers keep the needsAI flag and the backlog cron drains them.
   const aiCandidates = aiQueue.filter(r => r.needsAI).sort((a, b) => b.aiPriority - a.aiPriority);
-  const aiLimit = options?.skipAI ? 0 : MAX_AI_PER_SCAN;
-  const aiBatch = aiCandidates.slice(0, aiLimit);
-  const aiDeferred = aiCandidates.slice(aiLimit);
+  const aiBatch = options?.skipAI ? [] : aiCandidates;
+  const aiDeferred: RuleClassification[] = [];
 
   scanState.selectedForAI = aiBatch.length;
-  scanState.queued = aiDeferred.length + ruleDone.filter(r => r.placementType === 'unknown').length;
+  scanState.queued = 0;
   scanState.classified = ruleClassified;
   scanState.likelyPlacements = ruleDone.filter(r =>
     r.placementType === 'confirmed_paid_placement' || r.placementType === 'likely_sponsored'
@@ -345,7 +393,7 @@ export async function runDiscoveryPipeline(options?: {
   // Mark deferred videos in DB with priority
   for (const r of aiDeferred) {
     await db.from('youtube_competitor_videos').update({
-      workflow_status: 'rule_classified',
+      workflow_status: 'classified',
       classification_raw: {
         rule: { brand: r.brand, game: r.game, needsAI: true, aiPriority: r.aiPriority, aiReason: r.aiReason },
         queuedAt: new Date().toISOString(),
@@ -370,54 +418,99 @@ export async function runDiscoveryPipeline(options?: {
   return { videosDiscovered: scanState.discoveredCount, videosClassified: scanState.classified };
 }
 
-// ── Retry classification (Rules-first, then AI for priority queue) ──
-export async function retryClassification(limit: number = MAX_AI_PER_SCAN): Promise<{ classified: number }> {
+// ── Retry classification (Rules-first, then AI for the FULL queue — batched until empty) ──
+// Stage ②: the queue is drained in 200-video rounds; AI runs inside
+// batchClassifyVideos at 10/batch. limit=0 (default) drains everything.
+// Interrupted runs resume naturally: processed items lose the needsAI flag,
+// unprocessed ones keep it.
+export async function retryClassification(limit: number = 0): Promise<{ classified: number; remaining: number }> {
   const db = getSupabase();
-  // Find videos that need classification: discovered (never processed) OR rule_classified with needsAI flag
-  const { data: pending } = await db.from('youtube_competitor_videos')
-    .select('*')
-    .or('workflow_status.eq.discovered,and(workflow_status.eq.rule_classified,placement_type.is.null)')
-    .order('first_seen_at', { ascending: false })
-    .limit(limit);
-  if (!pending?.length) return { classified: 0 };
-
   resetState('retry');
-  scanState.discoveredCount = pending.length;
 
-  // Step 1: Run rule classifier first
-  const { classified: ruleDone, aiQueue } = ruleClassify((pending as any[]).map(v => ({
-    videoId: v.video_id, title: v.title, description: v.description || '',
-    tags: v.tags || [], channelName: v.channel_name || '', isShort: v.is_short || false,
-    viewCount: v.view_count || 0, publishedAt: v.published_at || '', hasPaidPlacementTag: v.has_paid_placement_tag || false,
-  })));
+  // Queue = discovered (never processed) + classified flagged needsAI.
+  // Two queries — PostgREST's or() can't nest jsonb paths (42703), so merge here.
+  const fetchQueued = async (take: number): Promise<any[]> => {
+    const [r1, r2] = await Promise.all([
+      db.from('youtube_competitor_videos').select('*')
+        .eq('workflow_status', 'discovered')
+        .order('first_seen_at', { ascending: false })
+        .limit(take),
+      db.from('youtube_competitor_videos').select('*')
+        .eq('workflow_status', 'classified')
+        .filter('classification_raw->rule->>needsAI', 'eq', 'true')
+        .order('first_seen_at', { ascending: false })
+        .limit(take),
+    ]);
+    // Deduplicate (a video can't be both, but be safe) and prefer discovered (older backlog first)
+    const seen = new Set<string>();
+    return [...(r1.data || []), ...(r2.data || [])].filter(v => { if (seen.has(v.video_id)) return false; seen.add(v.video_id); return true; });
+  };
+  const countQueued = async () => {
+    const [c1, c2] = await Promise.all([
+      db.from('youtube_competitor_videos').select('id', { count: 'exact', head: true }).eq('workflow_status', 'discovered'),
+      db.from('youtube_competitor_videos').select('id', { count: 'exact', head: true }).eq('workflow_status', 'classified').filter('classification_raw->rule->>needsAI', 'eq', 'true'),
+    ]);
+    return (c1.count ?? 0) + (c2.count ?? 0);
+  };
 
-  // Update DB with rule classifications
-  for (const r of ruleDone) {
-    await db.from('youtube_competitor_videos').update({
-      placement_type: r.placementType !== 'unknown' ? r.placementType : null,
-      sponsor_confidence: r.brandConfidence,
-      game_name: r.game || null, topic_category: r.topicCategory,
-      content_type: r.contentCategory, language: r.language, market: r.market,
-      workflow_status: 'rule_classified',
-      classification_raw: { rule: { brand: r.brand, game: r.game, placementType: r.placementType, aiPriority: r.aiPriority, aiReason: r.aiReason }, classifiedAt: new Date().toISOString() },
-      last_updated_at: new Date().toISOString(),
-    }).eq('video_id', r.videoId);
+  let totalClassified = 0;
+  let rounds = 0;
+
+  for (;;) {
+    const pending = await fetchQueued(200);
+    if (!pending.length) break;
+    rounds++;
+    const take = limit > 0 ? Math.max(1, Math.min(limit - totalClassified, 200)) : 200;
+    const batch = (pending as any[]).slice(0, take);
+
+    scanState.discoveredCount = batch.length;
+
+    // Step 1: Run rule classifier first
+    const { classified: ruleDone, aiQueue } = ruleClassify(batch.map(v => ({
+      videoId: v.video_id, title: v.title, description: v.description || '',
+      tags: v.tags || [], channelName: v.channel_name || '', isShort: v.is_short || false,
+      viewCount: v.view_count || 0, publishedAt: v.published_at || '', hasPaidPlacementTag: v.has_paid_placement_tag || false,
+    })));
+
+    // Update DB with rule classifications — INCLUDING needsAI videos. Writing
+    // them out with workflow_status=classified + needsAI=true moves them
+    // out of the discovered pool (no deadlock at the queue head) and into the
+    // needsAI pool where the AI step below (or a later run) picks them up.
+    // ('rule_classified' is rejected by the DB CHECK constraint.)
+    const ruleResults = ruleDone.concat(aiQueue);
+    for (const r of ruleResults) {
+      await db.from('youtube_competitor_videos').update({
+        placement_type: r.placementType !== 'unknown' ? r.placementType : 'unknown',
+        sponsor_confidence: r.brandConfidence,
+        game_name: r.game || null, topic_category: r.topicCategory,
+        content_type: r.contentCategory, language: r.language, market: r.market,
+        workflow_status: 'classified',
+        classification_raw: { rule: { brand: r.brand, game: r.game, placementType: r.placementType, needsAI: r.needsAI, aiPriority: r.aiPriority, aiReason: r.aiReason }, classifiedAt: new Date().toISOString() },
+        last_updated_at: new Date().toISOString(),
+      }).eq('video_id', r.videoId);
+    }
+
+    // Step 2: AI for the whole round's queue (batchClassifyVideos batches at 10 internally)
+    const result = aiQueue.length > 0
+      ? await batchClassifyVideos(aiQueue.map(r => {
+          const orig = batch.find((v: any) => v.video_id === r.videoId);
+          return { videoId: r.videoId, title: orig?.title || '', description: orig?.description || '', channelName: orig?.channel_name || '', publishedAt: orig?.published_at || '', tags: orig?.tags || [], hasPaidPlacementTag: orig?.has_paid_placement_tag || false };
+        }))
+      : { classified: 0, likely: 0, errors: [] as string[] };
+
+    totalClassified += ruleDone.length + result.classified;
+    scanState.classified = ruleDone.length + result.classified;
+    scanState.likelyPlacements = ruleDone.filter(r => r.placementType === 'confirmed_paid_placement' || r.placementType === 'likely_sponsored').length + result.likely;
+    console.log(`[Retry] Round ${rounds}: rule=${ruleDone.length} ai=${result.classified} cumulative=${totalClassified}`);
+
+    if (limit > 0 && totalClassified >= limit) break;
+    if (batch.length < 200) break; // queue drained
   }
 
-  // Step 2: AI for priority queue (top priority first)
-  const aiBatch = aiQueue.slice(0, MAX_AI_PER_SCAN);
-  const result = aiBatch.length > 0
-    ? await batchClassifyVideos(aiBatch.map(r => {
-        const orig = (pending as any[]).find((v: any) => v.video_id === r.videoId);
-        return { videoId: r.videoId, title: orig?.title || '', description: orig?.description || '', channelName: orig?.channel_name || '', publishedAt: orig?.published_at || '', tags: orig?.tags || [], hasPaidPlacementTag: orig?.has_paid_placement_tag || false };
-      }))
-    : { classified: 0, likely: 0, errors: [] as string[] };
-
-  scanState.classified = ruleDone.length + result.classified;
-  scanState.likelyPlacements = ruleDone.filter(r => r.placementType === 'confirmed_paid_placement' || r.placementType === 'likely_sponsored').length + result.likely;
+  const remaining = await countQueued();
   scanState.done = true; scanState.running = false; scanState.phase = 'completed';
-  console.log(`[Retry] Rule: ${ruleDone.length} + AI: ${result.classified} = ${scanState.classified} total`);
-  return { classified: scanState.classified };
+  console.log(`[Retry] Done: ${totalClassified} classified in ${rounds} round(s), ${remaining} remaining in queue`);
+  return { classified: totalClassified, remaining };
 }
 
 export async function getMonitorStatus() {

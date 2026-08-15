@@ -8,6 +8,8 @@
  * Design: Never false-positive on brand. When in doubt, leave for AI.
  */
 
+import { evaluateIndustryGate } from './industry-gate';
+
 // ── Brand detection ──
 
 interface BrandRule {
@@ -197,6 +199,7 @@ export interface RuleClassification {
   needsAI: boolean;              // true if rules couldn't confidently classify → escalate to AI
   aiPriority: number;            // 0-10, higher = more urgent for AI
   aiReason: string;              // why it needs AI (or empty if rules were sufficient)
+  industryGate?: { passed: boolean; category: string; blockedBy: string | null; gamingSignals: string[]; nonGamingSignals: string[] };
 }
 
 /**
@@ -294,6 +297,10 @@ export function classifyVideo(input: {
     gameConfidence = Math.min(gameConfidence + 0.1, 1.0);
   }
 
+  // ── 2.5 Industry gate (Stage ①) — non-gaming content can't be a placement ──
+  const industryGate = evaluateIndustryGate(input);
+  const industryBlocked = !industryGate.passed && industryGate.category !== 'gaming';
+
   // ── 3. Sponsor detection ──
   const sponsorSignals: string[] = [];
   let placementType = 'unknown';
@@ -328,6 +335,16 @@ export function classifyVideo(input: {
     placementType = 'organic_mention';
   }
 
+  // ── 3.5 Industry gate enforcement — non-gaming content defaults to organic/unknown ──
+  // Affiliate links in a food video's description are NOT a placement.
+  // YouTube paid tag is kept (creator explicitly disclosed), but brand is voided.
+  if (industryBlocked) {
+    const wasConfirmed = placementType === 'confirmed_paid_placement';
+    placementType = wasConfirmed ? 'confirmed_paid_placement' : 'organic_mention';
+    if (!wasConfirmed) brand = null;
+    brandConfidence = 0;
+  }
+
   // ── 4. Content type ──
   const contentCategory = detectContentType(input.title, input.tags, input.isShort);
 
@@ -341,6 +358,14 @@ export function classifyVideo(input: {
   let needsAI = false;
   let aiPriority = 0;
   let aiReason = '';
+
+  // Industry-blocked videos never escalate to AI — the gate is the final word.
+  // (AI would only repeat the same affiliate-link false positive and burn tokens.)
+  if (industryBlocked) {
+    needsAI = false;
+    aiPriority = 0;
+    aiReason = 'industry-blocked (' + industryGate.category + ') — not a candidate placement';
+  }
 
   const hoursAgo = (Date.now() - new Date(input.publishedAt).getTime()) / 3600000;
   const isRecent = hoursAgo < 72;
@@ -373,6 +398,17 @@ export function classifyVideo(input: {
     aiReason += (aiReason ? '; ' : '') + 'sponsor signals ambiguous';
   }
 
+  // Stage ④: rule-flagged placements MUST pass AI verification before entering
+  // Layer 3. A title containing "exitlag" is brand evidence, not proof of a
+  // paid placement — rule classification is a candidate filter, AI confirms.
+  // The only exception is YouTube's official paid-placement tag (explicit disclosure).
+  const isRulePlacement = placementType === 'confirmed_paid_placement' || placementType === 'likely_sponsored';
+  if (isRulePlacement && !input.hasPaidPlacementTag) {
+    needsAI = true;
+    aiPriority += 3;
+    aiReason += (aiReason ? '; ' : '') + 'rule-flagged placement — AI verification required';
+  }
+
   // Boost priority for time-sensitive content
   if (isRecent && isHighViews && brand) {
     aiPriority += 3;
@@ -401,6 +437,10 @@ export function classifyVideo(input: {
     needsAI,
     aiPriority: Math.min(aiPriority, 10),
     aiReason,
+    industryGate: {
+      passed: industryGate.passed, category: industryGate.category, blockedBy: industryGate.blockedBy,
+      gamingSignals: industryGate.gamingSignals, nonGamingSignals: industryGate.nonGamingSignals,
+    },
   };
 }
 

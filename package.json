@@ -12,6 +12,8 @@
     "start": "node dist/app.js",
     "discover": "ts-node src/cli-discover.ts",
     "report": "ts-node src/cli-report.ts",
+    "reclassify": "ts-node src/cli-reclassify.ts",
+    "consistency": "ts-node src/cli-consistency.ts",
     "test:ai": "ts-node src/services/ai/deepseek-test.ts"
   },
   "dependencies": {

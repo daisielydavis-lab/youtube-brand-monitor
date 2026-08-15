@@ -23,21 +23,7 @@
 
 import { getSupabase } from '../../db/supabase';
 import { detectCreatorAnomalies } from './creator-profiler';
-
-// Brand resolution chain: final → rule → ai → unknown
-function resolveBrand(v: any): string {
-  return v.classification_raw?.final?.brand || v.classification_raw?.rule?.brand || v.classification_raw?.ai?.brand || 'unknown';
-}
-
-// Simple public performance score from visible metrics (0-100)
-function computeScore(v: any): number {
-  const views = v.view_count || 0;
-  const likes = v.like_count || 0;
-  const comments = v.comment_count || 0;
-  const viewsScore = Math.min(views / 1000, 50); // up to 50 points for views
-  const engagementScore = Math.min((likes + comments * 2) / 100, 50); // up to 50 for engagement
-  return Math.round(viewsScore + engagementScore);
-}
+import { resolveBrand, resolveGame, resolveMarket, computeScore, COMPETITOR_BRANDS, filterCompetitorPlacements } from './data-scope';
 
 export interface DailyReport {
   reportDate: string;
@@ -507,8 +493,7 @@ export async function generateQuarterlyReport(): Promise<QuarterlyReport> {
   const lastVids = (lastQVideos || []) as any[];
 
   // ── Brand Analysis ──
-  const VALID_BRANDS = ['ExitLag', 'GearUP', 'LagZapper'];
-  const brandAnalysis = VALID_BRANDS.map(brand => {
+  const brandAnalysis = COMPETITOR_BRANDS.map(brand => {
     const tq = thisVids.filter(v => resolveBrand(v) === brand);
     const lq = lastVids.filter(v => resolveBrand(v) === brand);
 

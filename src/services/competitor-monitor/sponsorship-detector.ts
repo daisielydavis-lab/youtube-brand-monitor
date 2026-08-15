@@ -12,6 +12,7 @@
 import axios from 'axios';
 import { config } from '../../config';
 import { BRANDS, type BrandConfig } from './brand-config';
+import { evaluateIndustryGate } from './industry-gate';
 
 interface SponsorshipInput {
   title: string;
@@ -139,6 +140,11 @@ CLASSIFICATION DEFINITIONS:
 - organic_mention: Brand is mentioned casually or in passing. No promo code, no structured CTA, no brand-centric narrative. Could be a genuine user review or comparison list.
 - official_brand_video: The video comes from the brand's own official YouTube channel (channel name matches brand name closely).
 - unknown: Cannot determine from available data. Insufficient signals.
+
+INDUSTRY GATE (MANDATORY — highest priority rule):
+Game boosters (GearUP/ExitLag/LagZapper) are ONLY advertised in gaming / esports / game-hardware / game-network content.
+- If the video title, channel, or content is clearly NOT gaming (food cooking/eating, mukbang, beauty, fashion, finance/trading, lifestyle/vlog, music, news, pranks, random shorts), classify it "organic_mention" with detectedBrand = null — EVEN IF its description contains a brand affiliate link, promo code, or "sponsored by" text. Affiliate links in irrelevant niches are spam, not placements.
+- The ONLY exception: the title itself clearly promotes the product (e.g. "ExitLag review", "best game booster for [game]").
 
 RULES:
 - Promo codes are the strongest signal after explicit disclosure.
@@ -308,6 +314,28 @@ function fallbackResult(preFilter: ReturnType<typeof regexPreFilter>): Sponsorsh
 
 /** Main entry point: classify a video's sponsorship status */
 export async function detectSponsorship(input: SponsorshipInput): Promise<SponsorshipResult> {
+  // ── Stage ① industry gate — hard-block non-gaming content ──
+  // A food/beauty/finance video with an affiliate link in its description is
+  // NOT a placement, no matter what regex or AI says. Only bypass if the
+  // gate explicitly passed (gaming signals or obvious brand promotion).
+  const gate = evaluateIndustryGate({
+    title: input.title, description: input.description,
+    channelName: input.channelName, tags: input.tags,
+  });
+  if (!gate.passed && gate.category !== 'gaming') {
+    return {
+      placementType: 'organic_mention',
+      sponsorConfidence: 0.1,
+      detectedBrand: null,
+      brandMentionPositions: [],
+      promoCode: null,
+      landingDomain: null,
+      ctaType: null,
+      sellingPoints: [],
+      reasoning: `Industry gate blocked (${gate.category}: ${gate.blockedBy}) — affiliate links in non-gaming content are not placements`,
+    };
+  }
+
   const preFilter = regexPreFilter(input);
 
   // If no brand detected at all, skip AI
