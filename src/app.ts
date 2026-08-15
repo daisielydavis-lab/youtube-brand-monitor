@@ -12,6 +12,7 @@ import { runDiscoveryPipeline, getMonitorStatus, scanState, retryClassification 
 import { detectCampaigns, getCampaigns } from './services/competitor-monitor/campaign-detector';
 import { generateDailyReport, generateWeeklyReport, generateQuarterlyReport } from './services/competitor-monitor/competitor-report';
 import { getCreatorsFromVideos } from './services/competitor-monitor/creator-profiler';
+import { analyzePendingComments } from './services/competitor-monitor/topic-classifier';
 import { resolveBrand, resolveGame, resolveMarket, COMPETITOR_BRANDS, filterCompetitorPlacements, filterUnresolvedCandidates, needsAIVerification } from './services/competitor-monitor/data-scope';
 import { getSupabase } from './db/supabase';
 import { renderDashboard } from './ui/dashboard';
@@ -304,6 +305,16 @@ app.all('/api/monitor/process-ai-queue', async (req, res) => {
   const limit = parseInt((req.query?.limit as string) || (req.body?.limit) || '50', 10);
   res.json({ success: true, message: `AI queue processing started (limit=${limit})` });
   try { await retryClassification(limit); } catch (err) { console.error('[Queue] Failed:', (err as Error).message); }
+});
+
+// ── Analyze pending comments (Audience Signals) ──
+// GET /api/comments/analyze?limit=N — classify comment_category/brand/intent
+// for comments missing AI labels. One flash call per video (≤20 comments).
+app.all('/api/comments/analyze', async (req, res) => {
+  if (scanState.running) return res.json({ success: false, error: 'Scan already running' });
+  const limit = parseInt((req.query?.limit as string) || (req.body?.limit) || '10', 10);
+  res.json({ success: true, message: `Comment analysis started (limit=${limit})` });
+  try { await analyzePendingComments(limit); } catch (err) { console.error('[Comments] Analyze failed:', (err as Error).message); }
 });
 
 // ── Retry AI Classification (no search, no channel scan) ──
@@ -672,6 +683,10 @@ cron.schedule('0 10 * * *', async () => {
   try {
     const result = await retryClassification(backlogLimit);
     console.log(`[Cron] AI backlog done — ${result.classified} classified, ${result.remaining} remaining`);
+    // Audience Signals: classify comments of up to 10 videos per run (~10
+    // extra flash calls) so the Comments page fills in incrementally.
+    try { await analyzePendingComments(10); }
+    catch (err) { console.error('[Cron] Comment analysis failed:', (err as Error).message); }
   } catch (err) { console.error('[Cron] AI backlog failed:', (err as Error).message); }
 });
 

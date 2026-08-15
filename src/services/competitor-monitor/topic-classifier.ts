@@ -381,3 +381,48 @@ export async function classifyAndUpdateComments(
   console.log(`[TopicClassifier] Updated ${updated}/${classifications.length} comments for ${videoId}`);
   return updated;
 }
+
+/**
+ * Analyze comments that lack AI labels (comment_category IS NULL), video by
+ * video. Wired into the daily AI backlog cron so the Audience Signals page
+ * fills in over time. Returns number of videos processed.
+ */
+export async function analyzePendingComments(limit = 10): Promise<number> {
+  const { getSupabase } = require('../../db/supabase');
+  const db = getSupabase();
+  const { resolveBrand } = require('./data-scope');
+
+  const { data: rows } = await db
+    .from('youtube_comment_insights')
+    .select('video_id')
+    .is('comment_category', null)
+    .limit(500);
+  if (!rows?.length) return 0;
+
+  const vids: string[] = [...new Set<string>(rows.map((r: any) => String(r.video_id)))].slice(0, limit);
+  let processed = 0;
+  for (const vid of vids) {
+    const { data: comments } = await db
+      .from('youtube_comment_insights')
+      .select('comment_id,comment_text')
+      .eq('video_id', vid)
+      .not('comment_text', 'is', null)
+      .limit(20);
+    if (!comments?.length) continue;
+
+    const { data: video } = await db
+      .from('youtube_competitor_videos')
+      .select('*')
+      .eq('video_id', vid)
+      .single();
+    const brand = video ? resolveBrand(video) : 'unknown';
+    const updated = await classifyAndUpdateComments(
+      vid,
+      comments.map((c: any) => ({ commentId: c.comment_id, text: c.comment_text })),
+      brand === 'unknown' ? 'the product' : brand,
+    );
+    if (updated > 0) processed++;
+  }
+  console.log(`[TopicClassifier] analyzePendingComments done — ${processed}/${vids.length} videos analyzed`);
+  return processed;
+}
