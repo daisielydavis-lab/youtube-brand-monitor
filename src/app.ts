@@ -13,7 +13,7 @@ import { detectCampaigns, getCampaigns } from './services/competitor-monitor/cam
 import { generateDailyReport, generateWeeklyReport, generateQuarterlyReport } from './services/competitor-monitor/competitor-report';
 import { getCreatorsFromVideos } from './services/competitor-monitor/creator-profiler';
 import { analyzePendingComments } from './services/competitor-monitor/topic-classifier';
-import { resolveBrand, resolveGame, resolveMarket, COMPETITOR_BRANDS, filterCompetitorPlacements, filterUnresolvedCandidates, needsAIVerification } from './services/competitor-monitor/data-scope';
+import { resolveBrand, resolveGame, resolveMarket, COMPETITOR_BRANDS, filterCompetitorPlacements, filterUnresolvedCandidates, needsAIVerification, isCompetitorPlacement } from './services/competitor-monitor/data-scope';
 import { getSupabase } from './db/supabase';
 import { renderDashboard } from './ui/dashboard';
 
@@ -174,8 +174,12 @@ app.get('/api/comments/summary', async (_req, res) => {
     .in('placement_type', ['confirmed_paid_placement', 'likely_sponsored'])
     .gte('published_at', since)
     .limit(200);
+  // Stage ⑥ 口径统一: Comments 母集必须严格 = Layer 3 (isCompetitorPlacement
+  // 完整门槛: brand + placement_type + AI 已验证且不在 needsAI) — 与 Overview
+  // 的 161 条一致, 不能用裸 placement_type+brand 过滤 (会把未过 AI 复核的
+  // 候选也算进来, 导致 placementTotal ≠ Overview 数字)。
   let competitorVideoIds = (cpVids || [])
-    .filter((v: any) => COMPETITOR_BRANDS.includes(resolveBrand(v) as any))
+    .filter(isCompetitorPlacement)
     .map((v: any) => v.video_id);
 
   // Stage ③ fallback: if there are no competitor placement videos OR they
