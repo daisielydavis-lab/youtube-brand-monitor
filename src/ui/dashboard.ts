@@ -103,6 +103,13 @@ export function renderDashboard(
   const pendingStatus = aiPending > 0
     ? `<div style="font-size:11px;color:#F59E0B;margin-top:2px">${aiReviewed} reviewed · ${aiPending} pending</div>`
     : `<div style="font-size:11px;color:#19A974;margin-top:2px">${aiReviewed} reviewed · complete</div>`;
+  // Data scope 日期友好格式: "2026-08-08" → "Aug 8, 2026"
+  const fmtScopeDate = (s: string): string => {
+    if (!s) return '';
+    const [y, mo, d] = s.split('-');
+    const mn = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][Math.max(0, Math.min(11, (+mo || 1) - 1))];
+    return `${mn} ${+d || 1}, ${y}`;
+  };
   const overview = `
   <div class="kpi-row" style="grid-template-columns:repeat(5,1fr)">
     <div class="kpi"><div class="kpi-n">${kpi.competitorPlacements ?? 0}</div><div class="kpi-l">Competitor Placements</div></div>
@@ -113,7 +120,7 @@ export function renderDashboard(
   </div>
 
   <div style="font-size:11px;color:#8490A6;margin-bottom:4px;padding:6px 10px;background:#F8FAFD;border-radius:6px;border:1px solid #E3E8F1">
-    Data scope: <b>${(kpi.totalPlacements ?? kpi.competitorPlacements ?? 0).toLocaleString()} competitor placements</b> · ${(kpi.uniqueCreators ?? 0).toLocaleString()} unique creators · ${kpi.totalGames ?? 0} games · ${kpi.windowStart ?? ''} → ${kpi.windowEnd ?? ''}
+    Data scope: <b>${(kpi.totalPlacements ?? kpi.competitorPlacements ?? 0).toLocaleString()} competitor placements</b> · ${(kpi.uniqueCreators ?? 0).toLocaleString()} unique creators · ${kpi.totalGames ?? 0} games · ${fmtScopeDate(kpi.windowStart ?? '')} → ${fmtScopeDate(kpi.windowEnd ?? '')}
     <div style="margin-top:2px;color:#A3ADC2">Discovery ${(kpi.totalVideos ?? 0).toLocaleString()} videos · AI Review ${aiPct}% (${aiReviewed.toLocaleString()} reviewed · ${aiPending.toLocaleString()} pending) · ${(kpi.unresolvedCandidates ?? 0)} unresolved · ${kpi.newCompetitorCreators ?? 0} new creators</div>
   </div>
 
