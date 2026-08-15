@@ -680,7 +680,7 @@ async function queryDashboardData(rangeDays: number, brandFilter?: string, marke
   // ── Map DB video rows to dashboard VideoRow shape ──
   const toVideoRow = (v: any) => ({
     videoId: v.video_id, title: v.title, thumbnailUrl: v.thumbnail_url, channelName: v.channel_name,
-    brand: resolveBrand(v), game: resolveGame(v),
+    brand: resolveBrand(v), game: resolveGame(v), market: v.market || '',
     publishedAt: v.published_at, viewCount: v.view_count || 0,
     placementType: v.placement_type || 'unknown', sponsorConfidence: v.sponsor_confidence || 0,
     contentCategory: v.content_type || null,
