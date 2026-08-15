@@ -9,7 +9,7 @@ import express from 'express';
 import cron from 'node-cron';
 import { config, validateConfig } from './config';
 import { runDiscoveryPipeline, getMonitorStatus, scanState, retryClassification } from './services/competitor-monitor';
-import { detectCampaigns, getCampaigns } from './services/competitor-monitor/campaign-detector';
+import { detectCampaigns } from './services/competitor-monitor/campaign-detector';
 import { generateDailyReport, generateWeeklyReport, generateQuarterlyReport } from './services/competitor-monitor/competitor-report';
 import { getCreatorsFromVideos } from './services/competitor-monitor/creator-profiler';
 import { analyzePendingComments } from './services/competitor-monitor/topic-classifier';
@@ -67,17 +67,23 @@ app.post('/run', async (req, res) => {
 // ── Status ──
 app.get('/status', async (_req, res) => { res.json(await getMonitorStatus()); });
 
-// ── Campaigns ──
-app.get('/api/campaigns', async (_req, res) => {
-  const status = _req.query.status as string | undefined;
-  res.json(await getCampaigns(status));
+// ── Campaigns (Stage ⑧: 运行时聚合 — Scope 内 placements 分簇, 不读历史表) ──
+app.get('/api/campaigns', async (req, res) => {
+  const rangeDays = parseInt((req.query.range as string) || '7', 10);
+  const data = await queryDashboardData(rangeDays, req.query.brand as string, req.query.market as string);
+  res.json(data.hasData ? ((data as any).campaignClusters || []) : []);
 });
 
-// ── Creators (Layer 3 — only creators with competitor placements in window) ──
+// ── Creators (Layer 3 — Scope 内 competitor placements GROUP BY creator) ──
 app.get('/api/creators', async (req, res) => {
   const rangeDays = parseInt((req.query.range as string) || '7', 10);
   const showAll = req.query.all === '1';
-  res.json(await getCreatorsFromVideos({ rangeDays, brand: req.query.brand as string, competitorOnly: !showAll }));
+  res.json(await getCreatorsFromVideos({
+    rangeDays,
+    brand: req.query.brand as string,
+    market: req.query.market as string,
+    competitorOnly: !showAll,
+  }));
 });
 
 // ── Comments ──
@@ -92,33 +98,64 @@ async function attachVideoInfo(db: any, comments: any[]): Promise<any[]> {
   return comments.map(c => ({ ...c, youtube_competitor_videos: map.get(c.video_id) || null }));
 }
 
+// PostgREST in() 数组会拼成超长 URL (310 个 video_id ≈ 6.5KB) — Railway 代理
+// 会拒绝, 查询静默返回 null → 误触发 fallback。必须分批查询 (每批 ≤100 个 ID)。
+async function fetchCommentsInChunks(db: any, ids: string[], cols: string, limitPerQuery = 500, applyFilter?: (q: any) => any): Promise<any[]> {
+  const out: any[] = [];
+  for (let i = 0; i < ids.length; i += 100) {
+    const chunk = ids.slice(i, i + 100);
+    let q = db.from('youtube_comment_insights').select(cols).in('video_id', chunk).limit(limitPerQuery);
+    if (applyFilter) q = applyFilter(q);
+    const { data } = await q;
+    if (data) out.push(...data);
+  }
+  return out;
+}
+
 app.get('/api/comments', async (req, res) => {
   const db = getSupabase();
 
-  // Only show comments from competitor placement videos (Layer 3)
+  // Stage ⑧: Comments 母集 = Current Scope 内 competitor placement videos
+  // (range + brand + market), 与 Overview/Videos 同一事实表口径。
   const rangeDays = parseInt((req.query.range as string) || '7', 10);
+  const brandFilter = req.query.brand as string | undefined;
+  const marketFilter = req.query.market as string | undefined;
   const since = new Date(Date.now() - rangeDays * 86400000).toISOString();
 
-  // Get competitor placement video IDs, post-filtered by competitor brand
-  const { data: cpVids } = await db.from('youtube_competitor_videos')
-    .select('video_id, classification_raw')
-    .in('placement_type', ['confirmed_paid_placement', 'likely_sponsored'])
-    .gte('published_at', since)
-    .limit(200);
+  // Get competitor placement video IDs (paged — 90d 窗口可超 1000 条),
+  // post-filtered by Scope (isCompetitorPlacement + brand + market)
+  const cpVids: any[] = [];
+  for (let from = 0; from < 5000; from += 999) {
+    const { data } = await db.from('youtube_competitor_videos')
+      // 必须含 isCompetitorPlacement 依赖的全部字段 (placement_type/has_paid_placement_tag)
+      .select('video_id, classification_raw, market, placement_type, has_paid_placement_tag')
+      .in('placement_type', ['confirmed_paid_placement', 'likely_sponsored'])
+      .gte('published_at', since)
+      .order('video_id', { ascending: true })
+      .range(from, from + 999);
+    if (!data?.length) break;
+    cpVids.push(...data);
+    if (data.length < 1000) break;
+  }
   let competitorVideoIds = (cpVids || [])
-    .filter((v: any) => COMPETITOR_BRANDS.includes(resolveBrand(v) as any))
+    .filter((v: any) => isCompetitorPlacement(v))
+    .filter((v: any) => !brandFilter || brandFilter === 'all' || resolveBrand(v) === brandFilter)
+    .filter((v: any) => !marketFilter || marketFilter === 'all' || (v.market || '') === marketFilter)
     .map((v: any) => v.video_id);
 
   // Stage ③ fallback: no competitor-specific comments this window — show
   // comments from analyzed candidate videos instead (workflow_status=classified).
+  // 候选视频评论不计入正式竞品统计, UI 必须明确标记。
   let fallback = false;
   const fetchCandidateVids = async () => {
     const { data: candVids } = await db.from('youtube_competitor_videos')
-      .select('video_id')
+      .select('video_id, market')
       .eq('workflow_status', 'classified')
       .gte('published_at', since)
       .limit(200);
-    return (candVids || []).map((v: any) => v.video_id);
+    return (candVids || [])
+      .filter((v: any) => !marketFilter || marketFilter === 'all' || (v.market || '') === marketFilter)
+      .map((v: any) => v.video_id);
   };
 
   if (!competitorVideoIds.length) {
@@ -128,35 +165,25 @@ app.get('/api/comments', async (req, res) => {
 
   if (!competitorVideoIds.length) return res.json([]);
 
-  let q = db.from('youtube_comment_insights')
-    .select('*')
-    .in('video_id', competitorVideoIds)
-    .order('published_at', { ascending: false })
-    .limit(100);
-  if (req.query.intent) {
-    if (req.query.intent === 'purchase') q = q.eq('has_purchase_intent', true);
-    else if (req.query.intent === 'brand') q = q.eq('is_brand_related', true);
-    else if (req.query.intent === 'negative') q = q.eq('sentiment', 'negative');
-  }
-  let { data } = await q;
+  const intentFilter = (q: any) => {
+    if (req.query.intent === 'purchase') return q.eq('has_purchase_intent', true);
+    if (req.query.intent === 'brand') return q.eq('is_brand_related', true);
+    if (req.query.intent === 'negative') return q.eq('sentiment', 'negative');
+    return q;
+  };
+  // 分批 in() 查询 + 排序合并 (最近在前)
+  let data = (await fetchCommentsInChunks(db, competitorVideoIds, '*', 100, intentFilter))
+    .sort((a: any, b: any) => new Date(b.published_at || 0).getTime() - new Date(a.published_at || 0).getTime())
+    .slice(0, 100);
 
   // Placements exist but none of their comments were analyzed — fall back too.
   if (!data?.length && !fallback) {
     fallback = true;
     competitorVideoIds = await fetchCandidateVids();
     if (competitorVideoIds.length) {
-      let q2 = db.from('youtube_comment_insights')
-        .select('*')
-        .in('video_id', competitorVideoIds)
-        .order('published_at', { ascending: false })
-        .limit(100);
-      if (req.query.intent) {
-        if (req.query.intent === 'purchase') q2 = q2.eq('has_purchase_intent', true);
-        else if (req.query.intent === 'brand') q2 = q2.eq('is_brand_related', true);
-        else if (req.query.intent === 'negative') q2 = q2.eq('sentiment', 'negative');
-      }
-      const r2 = await q2;
-      data = r2.data;
+      data = (await fetchCommentsInChunks(db, competitorVideoIds, '*', 100, intentFilter))
+        .sort((a: any, b: any) => new Date(b.published_at || 0).getTime() - new Date(a.published_at || 0).getTime())
+        .slice(0, 100);
     }
   }
   res.set('X-Comments-Fallback', fallback ? '1' : '0');
@@ -164,23 +191,39 @@ app.get('/api/comments', async (req, res) => {
 });
 
 // ── Comments Summary (Layer 3 — only competitor placement comments) ──
-app.get('/api/comments/summary', async (_req, res) => {
+app.get('/api/comments/summary', async (req, res) => {
   const db = getSupabase();
-  const since = new Date(Date.now() - 7 * 86400000).toISOString();
+  // Stage ⑧: 与 /api/comments 同一 Scope — 顶部 range/brand/market 控制。
+  // 之前硬编码 7 天 + 裸 placement 过滤, 与 Overview 窗口不一致。
+  const rangeDays = parseInt((req.query.range as string) || '7', 10);
+  const brandFilter = req.query.brand as string | undefined;
+  const marketFilter = req.query.market as string | undefined;
+  const since = new Date(Date.now() - rangeDays * 86400000).toISOString();
 
-  // Get competitor placement video IDs
-  const { data: cpVids } = await db.from('youtube_competitor_videos')
-    .select('video_id, classification_raw')
-    .in('placement_type', ['confirmed_paid_placement', 'likely_sponsored'])
-    .gte('published_at', since)
-    .limit(200);
-  // Stage ⑥ 口径统一: Comments 母集必须严格 = Layer 3 (isCompetitorPlacement
-  // 完整门槛: brand + placement_type + AI 已验证且不在 needsAI) — 与 Overview
-  // 的 161 条一致, 不能用裸 placement_type+brand 过滤 (会把未过 AI 复核的
-  // 候选也算进来, 导致 placementTotal ≠ Overview 数字)。
+  // Get competitor placement video IDs (paged), post-filtered by Scope.
+  // 母集严格 = isCompetitorPlacement (brand + placement_type + AI 已验证),
+  // 与 Overview 的 competitorPlacements 同源, placementTotal 必然对账。
+  const cpVids: any[] = [];
+  for (let from = 0; from < 5000; from += 999) {
+    const { data } = await db.from('youtube_competitor_videos')
+      // 必须含 isCompetitorPlacement 依赖的全部字段 (placement_type/has_paid_placement_tag)
+      .select('video_id, classification_raw, market, placement_type, has_paid_placement_tag')
+      .in('placement_type', ['confirmed_paid_placement', 'likely_sponsored'])
+      .gte('published_at', since)
+      .order('video_id', { ascending: true })
+      .range(from, from + 999);
+    if (!data?.length) break;
+    cpVids.push(...data);
+    if (data.length < 1000) break;
+  }
   let competitorVideoIds = (cpVids || [])
     .filter(isCompetitorPlacement)
+    .filter((v: any) => !brandFilter || brandFilter === 'all' || resolveBrand(v) === brandFilter)
+    .filter((v: any) => !marketFilter || marketFilter === 'all' || (v.market || '') === marketFilter)
     .map((v: any) => v.video_id);
+  // Stage ⑧: placementTotal 始终 = Current Scope 内投放视频数。
+  // fallback 只换评论数据来源 (候选视频), 绝不覆盖口径数字。
+  const scopePlacementTotal = competitorVideoIds.length;
 
   // Stage ③ fallback: if there are no competitor placement videos OR they
   // have no analyzed comments, show comments from analyzed candidate videos
@@ -188,11 +231,13 @@ app.get('/api/comments/summary', async (_req, res) => {
   let fallback = false;
   const fetchCandidateVids = async () => {
     const { data: candVids } = await db.from('youtube_competitor_videos')
-      .select('video_id')
+      .select('video_id, market')
       .eq('workflow_status', 'classified')
       .gte('published_at', since)
       .limit(200);
-    return (candVids || []).map((v: any) => v.video_id);
+    return (candVids || [])
+      .filter((v: any) => !marketFilter || marketFilter === 'all' || (v.market || '') === marketFilter)
+      .map((v: any) => v.video_id);
   };
 
   if (!competitorVideoIds.length) {
@@ -201,26 +246,18 @@ app.get('/api/comments/summary', async (_req, res) => {
   }
 
   // NOTE: build `empty` lazily — fallback may flip true later and the object is const.
-  if (!competitorVideoIds.length) return res.json({ total: 0, purchaseIntentRate: 0, brandRelatedRate: 0, sentiment: {}, topVideos: [], fallback });
+  if (!competitorVideoIds.length) return res.json({ total: 0, purchaseIntentRate: 0, brandRelatedRate: 0, sentiment: {}, topVideos: [], fallback, placementTotal: scopePlacementTotal });
 
-  let { data: comments } = await db.from('youtube_comment_insights')
-    .select('has_purchase_intent,is_brand_related,sentiment,comment_category,video_id,author_name,comment_text')
-    .in('video_id', competitorVideoIds)
-    .limit(500);
+  const cols = 'has_purchase_intent,is_brand_related,sentiment,comment_category,video_id,author_name,comment_text';
+  let comments = await fetchCommentsInChunks(db, competitorVideoIds, cols, 500);
 
   // Placements exist but none of their comments were analyzed — fall back too.
   if (!comments?.length && !fallback) {
     fallback = true;
     competitorVideoIds = await fetchCandidateVids();
-    if (competitorVideoIds.length) {
-      const r2 = await db.from('youtube_comment_insights')
-        .select('has_purchase_intent,is_brand_related,sentiment,comment_category,video_id,author_name,comment_text')
-        .in('video_id', competitorVideoIds)
-        .limit(500);
-      comments = r2.data;
-    }
+    if (competitorVideoIds.length) comments = await fetchCommentsInChunks(db, competitorVideoIds, cols, 500);
   }
-  if (!comments?.length) return res.json({ total: 0, purchaseIntentRate: 0, brandRelatedRate: 0, sentiment: {}, topVideos: [], signals: [], placementCoverage: 0, placementTotal: competitorVideoIds.length, fallback });
+  if (!comments?.length) return res.json({ total: 0, purchaseIntentRate: 0, brandRelatedRate: 0, sentiment: {}, topVideos: [], signals: [], placementCoverage: 0, placementTotal: scopePlacementTotal, fallback });
 
   const total = comments.length;
   const purchaseIntent = comments.filter((c: any) => c.has_purchase_intent).length;
@@ -277,7 +314,7 @@ app.get('/api/comments/summary', async (_req, res) => {
     topVideos,
     topSignals,
     placementCoverage: videoMap.size,            // how many placement videos these comments come from
-    placementTotal: competitorVideoIds.length,   // total placement videos in window
+    placementTotal: scopePlacementTotal,         // Scope 内投放视频数 (fallback 不覆盖)
     fallback, // Stage ③: true = showing comments from analyzed candidates, not competitor placements
   });
 });
@@ -349,6 +386,91 @@ app.post('/api/videos/:id/action', async (req, res) => {
   if (error) return res.status(500).json({ error: error.message });
   res.json({ success: true });
 });
+
+// ── Scope Resolver (Stage ⑧ 口径收口) ──
+// 顶部 [竞品] + [市场] + [时间范围] 形成唯一 Current Scope。
+// 所有业务页(总览/投放项目/投放视频/投放博主/观众信号)只允许从 Scope 内
+// competitorPlacements 往下聚合 —— Campaigns 由 Scope 内 placements 运行时
+// 聚合(brand+game 7 天滚动分簇), 不再读历史 campaigns 表。System 页除外。
+// 硬性等式(全站对账):
+//   campaignPlacements + standalonePlacements = competitorPlacements
+//   activeCampaigns = Campaign 页返回的项目数
+export interface ScopeCampaign {
+  id: string;
+  brand: string;
+  game: string;
+  cluster_type: string;
+  video_count: number;
+  creator_count: number;
+  primary_selling_point: string;
+  primary_market: string;
+  total_estimated_views: number;
+  status: 'active' | 'cooling' | 'ended';
+  active_from: string;
+  active_to: string;
+  last_placement_at: string;
+  moveScore: number;
+}
+
+function topOf(arr: any[], key: (x: any) => string): string {
+  const m = new Map<string, number>();
+  for (const x of arr) m.set(key(x), (m.get(key(x)) || 0) + 1);
+  let best = '', bestN = 0;
+  for (const [k, n] of m) if (n > bestN) { bestN = n; best = k; }
+  return best;
+}
+
+function clusterScopeCampaigns(placements: any[], rangeDays: number): { campaigns: ScopeCampaign[]; campaignPlacements: number; standalonePlacements: number } {
+  const now = Date.now();
+  // 1. 按 brand+game 分簇, 7 天滚动窗口 (与 detectCampaigns 聚类一致)
+  const groups: { brand: string; game: string; vids: any[] }[] = [];
+  for (const v of placements) {
+    const b = resolveBrand(v);
+    const g = resolveGame(v);
+    let matched = false;
+    for (const grp of groups) {
+      if (grp.brand !== b || grp.game !== g) continue;
+      const head = new Date(grp.vids[0].published_at).getTime();
+      if (Math.abs(new Date(v.published_at).getTime() - head) < 7 * 86400000) { grp.vids.push(v); matched = true; break; }
+    }
+    if (!matched) groups.push({ brand: b, game: g, vids: [v] });
+  }
+  // 2. ≥2 条 → 项目; 单条 → 独立投放。分簇是 placements 的划分,
+  //    所以 campaignPlacements + standalonePlacements 恒等于 placements 总数
+  const clusters = groups.filter(g => g.vids.length >= 2);
+  const standalonePlacements = placements.length - clusters.reduce((s, g) => s + g.vids.length, 0);
+  const campaignPlacements = placements.length - standalonePlacements;
+  // 3. 项目卡片字段 + Move Score (新近 × 博主数 × 视频数 × 播放 × 多创作者加权)
+  const campaigns: ScopeCampaign[] = clusters.map(g => {
+    const ts = g.vids.map(v => new Date(v.published_at).getTime());
+    const last = new Date(Math.max(...ts)).toISOString();
+    const creators = new Set(g.vids.map(v => v.channel_id));
+    const hours = (now - new Date(last).getTime()) / 3600000;
+    const status: ScopeCampaign['status'] = hours <= 72 ? 'active' : hours <= 168 ? 'cooling' : 'ended';
+    const creatorsN = creators.size;
+    const videosN = g.vids.length;
+    const views = g.vids.reduce((s, v) => s + (v.view_count || 0), 0);
+    const recency = Math.max(0, 1 - (now - new Date(last).getTime()) / 86400000 / Math.max(rangeDays, 7));
+    const moveScore = Math.round(recency * (0.5 + creatorsN) * (0.5 + videosN) * Math.log10(10 + views) * (creatorsN >= 2 ? 1.5 : 1) * 100) / 100;
+    return {
+      id: `scope-${g.brand}-${g.game}-${new Date(Math.min(...ts)).toISOString().slice(0, 10)}`,
+      brand: g.brand,
+      game: g.game,
+      cluster_type: creatorsN >= 2 ? 'multi_creator_campaign' : 'creator_series',
+      video_count: videosN,
+      creator_count: creatorsN,
+      primary_selling_point: topOf(g.vids, (v: any) => v.topic_category || 'other'),
+      primary_market: topOf(g.vids, (v: any) => resolveMarket(v) || 'Unknown'),
+      total_estimated_views: views,
+      status,
+      active_from: new Date(Math.min(...ts)).toISOString().slice(0, 10),
+      active_to: new Date(Math.max(...ts)).toISOString().slice(0, 10),
+      last_placement_at: last,
+      moveScore,
+    };
+  }).sort((a, b) => b.moveScore - a.moveScore);
+  return { campaigns, campaignPlacements, standalonePlacements };
+}
 
 // ── Shared dashboard query (used by both / and /api/dashboard) ──
 // 3-layer data model: all analytics derived from Layer 3 (Competitor Placements)
@@ -477,22 +599,25 @@ async function queryDashboardData(rangeDays: number, brandFilter?: string, marke
   // Coverage measures pipeline throughput; AI Review Progress measures the
   // backlog. Displayed separately so 100% never implies "all placements found".
   const aiPending = videos.filter(needsAIVerification).length;
+  // Stage ⑧ 口径收口: Campaigns = Scope 内 placements 运行时聚合 (不查
+  // campaigns 表)。等式: campaignPlacements + standalonePlacements 恒等于
+  // competitorPlacements; activeCampaigns 恒等于 Campaign 页项目数。
+  const scopeClusters = clusterScopeCampaigns(competitorPlacements, rangeDays);
   const kpis = {
     competitorPlacements: competitorPlacements.length,
     unresolvedCandidates: unresolvedCandidates.length,
     activeCreators: activeCreators.size,
-    activeCampaigns: 0 as number, // filled later from campaigns table
+    activeCampaigns: scopeClusters.campaigns.length,
     discoveryCoveragePct: coveragePct, // 100% = all videos have a processing status
     aiPending,                          // awaiting AI verification
     aiReviewed: Math.max(totalAnalyzed - aiPending, 0), // final classification done
     totalVideos: totalInRange,
     totalAnalyzed,
     newCompetitorCreators: newCreatorIds.size,
-    // Stage ⑥ 口径统一: 161 placements 分两层 — 进了 campaign 聚类 vs 独立投放
-    campaignPlacements: competitorPlacements.filter(v => v.campaign_id).length,
-    standalonePlacements: competitorPlacements.filter(v => !v.campaign_id).length,
-    uniqueCreators: activeCreators.size,          // 161 条投放涉及的去重频道数
-    totalGames: gameMap.size,                     // 161 条投放覆盖的游戏数
+    campaignPlacements: scopeClusters.campaignPlacements,
+    standalonePlacements: scopeClusters.standalonePlacements,
+    uniqueCreators: activeCreators.size,          // 投放涉及的去重频道数
+    totalGames: gameMap.size,                     // 投放覆盖的游戏数
     windowStart: since.slice(0, 10),              // Data scope 行: 窗口起止
     windowEnd: new Date().toISOString().slice(0, 10),
     totalPlacements: competitorPlacements.length,
@@ -517,6 +642,7 @@ async function queryDashboardData(rangeDays: number, brandFilter?: string, marke
     topGames,
     topThemes,
     topCreators: [] as any[],
+    campaignClusters: scopeClusters.campaigns, // Scope 内运行时聚合的项目 (Overview + Campaigns 页共用)
     recentVideos: competitorPlacements.slice(0, 20).map(toVideoRow), // default: competitor placements
     allRecentVideos: videos.slice(0, 30).map(toVideoRow),            // "All Discovered" toggle
     unresolvedVideos: unresolvedCandidates.slice(0, 20).map(toVideoRow), // "Unresolved Candidates" toggle
@@ -532,45 +658,19 @@ app.get('/', async (_req, res) => {
 
   try {
     // Step 1: Query video data (critical)
-    // Stage ⑦: range/brand/market = Analytics 层筛选, 全部只查 DB 重新聚合
+    // Stage ⑦⑧: range/brand/market = Analytics 层筛选, 全部只查 DB 重新聚合。
+    // Current Scope = 顶部三筛选器; 所有业务页从 Scope 内 placements 往下算。
     const range = parseInt((_req.query.range as string) || '7', 10);
     const brandFilter = _req.query.brand as string | undefined;
     const marketFilter = _req.query.market as string | undefined;
     const data = await queryDashboardData(range, brandFilter, marketFilter);
     console.log(`[Dashboard:${requestId}] Step1 videos done: hasData=${data.hasData}`);
 
-    // Step 2: Campaigns — ONE source of truth, no per-page re-computation.
-    // Stage ⑥ 口径统一: Campaigns 页 = 7 天窗口内产生过 placement 的所有
-    // campaign（ended 只是状态标签，不改变用户选择的窗口）。Overview 的
-    // Recent Campaign Signals = 同一批 campaign 按 Move Score 排 Top 8。
-    // Move Score = 新近程度 × KOL 数 × 视频数 × 播放量 × 多创作者加权。
-    const campaignSince = new Date(Date.now() - range * 86400000).toISOString();
-    let campaigns: any[] = [];
-    try {
-      const { data: c } = await getSupabase().from('campaigns').select('*').order('detected_at', { ascending: false }).limit(100);
-      const all = (c || []).map((x: any) => ({
-        ...x,
-        cluster_type: x.landing_domain || 'multi_creator_campaign',
-        primary_selling_point: (x.primary_selling_point || '').replace(/^[^:]*::/, ''),
-      }));
-      // 窗口口径: 只保留窗口内产生过 placement 的 campaign
-      const inWindow = all.filter((x: any) =>
-        x.last_placement_at >= campaignSince || x.active_to >= campaignSince.slice(0, 10));
-      // Move Score 排序（Over 两个页面共用）
-      const scoreOf = (x: any): number => {
-        const daysSince = (Date.now() - new Date(x.last_placement_at || x.active_to || x.detected_at).getTime()) / 86400000;
-        const recency = Math.max(0, 1 - daysSince / Math.max(range, 7)); // 新近程度 0-1
-        const creators = x.creator_count || 1;
-        const videos = x.video_count || 1;
-        const views = x.total_estimated_views || 0;
-        const multi = creators >= 2 ? 1.5 : 1; // 多创作者加权
-        return recency * (0.5 + creators) * (0.5 + videos) * Math.log10(10 + views) * multi;
-      };
-      inWindow.forEach((x: any) => { x.moveScore = Math.round(scoreOf(x) * 100) / 100; });
-      campaigns = inWindow.sort((a: any, b: any) => b.moveScore - a.moveScore);
-      // KPI: 窗口内 campaign 总数（口径统一后不再只数 active）
-      (data.kpis as any).activeCampaigns = campaigns.length;
-    } catch (e) { console.warn(`[Dashboard:${requestId}] Campaigns query skipped: ${(e as Error).message}`); }
+    // Step 2: Campaigns — 运行时聚合 (queryDashboardData 内完成), 不读历史
+    // campaigns 表。Overview「重点投放项目」与 Campaigns 页共用同一数组,
+    // Move Score 排序已在聚合时完成。等式天然自洽:
+    // campaignPlacements + standalonePlacements = competitorPlacements。
+    const campaigns: any[] = (data as any).campaignClusters || [];
 
     // Step 3: Status (non-critical, safe-fail)
     let status: any = {};
@@ -580,6 +680,15 @@ app.get('/', async (_req, res) => {
 
     console.log(`[Dashboard:${requestId}] Rendering HTML...`);
 
+    // Stage ⑧ P0: filter 必须把 URL 三参数原样回传 UI — select 选中态、
+    // chip 文案、rangeLabel 全部由它决定。之前传 {} 导致顶部永远显示
+    // "过去7天"而数据按 URL range 计算 (截图"过去7天 · Jul 16 → Aug 15")。
+    const rawRange = String(_req.query.range || '7d');
+    const filter = {
+      range: /^\d+$/.test(rawRange) ? rawRange + 'd' : rawRange,
+      brand: brandFilter || 'all',
+      market: marketFilter || 'all',
+    };
     const html = renderDashboard({
       hasData: data.hasData,
       scanStatus: data.scanStatus,
@@ -592,7 +701,7 @@ app.get('/', async (_req, res) => {
       allRecentVideos: ('allRecentVideos' in data ? data.allRecentVideos : []) || [],
       unresolvedVideos: ('unresolvedVideos' in data ? data.unresolvedVideos : []) || [],
       anomalies: [],
-    } as any, {}, campaigns, { ...status, creatorProfiles: [] });
+    } as any, filter, campaigns, { ...status, creatorProfiles: [] });
 
     console.log(`[Dashboard:${requestId}] Done: ${data.recentVideos.length} videos, HTML=${html.length}chars, totalMs: ${Date.now() - startedAt}`);
     res.type('html').send(html);

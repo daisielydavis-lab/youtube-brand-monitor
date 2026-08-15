@@ -212,7 +212,8 @@ export interface CreatorRow {
   subscriberCount: number | null;
   country: string | null;
   primaryLanguage: string;
-  videosInWindow: number;
+  videosInWindow: number;   // = Current Scope 内该 creator 的竞品投放数 (Sponsored Videos)
+  lifetimeCount: number;    // 全历史累计投放数 (独立展示, 不混入当前周期)
   confirmedCount: number;
   likelyCount: number;
   brandMentions: Record<string, number>;
@@ -228,6 +229,7 @@ export interface CreatorRow {
 export async function getCreatorsFromVideos(options?: {
   rangeDays?: number;
   brand?: string;
+  market?: string;
   competitorOnly?: boolean; // default false — when true, only show creators with competitor placements
 }): Promise<CreatorRow[]> {
   const db = getSupabase();
@@ -280,7 +282,9 @@ export async function getCreatorsFromVideos(options?: {
   // Videos published BEFORE the window: if this channel already has a
   // placement with the same brand, today's appearance is Recurring (or
   // Long-term if that history spans >60 days). New = first time ever.
+  // lifetimeCount = 同一批历史数据按 channel 累计 (历史累计列, 与周期分离)
   const historyByChannel = new Map<string, { brands: Set<string>; earliest: number }>();
+  const lifetimeByChannel = new Map<string, number>();
   {
     const historyRows: any[] = [];
     for (let from = 0; ; from += 1000) {
@@ -296,6 +300,7 @@ export async function getCreatorsFromVideos(options?: {
     for (const v of historyRows) {
       const b = resolveBrand(v);
       if (!COMPETITOR_BRANDS.includes(b as any) || b === 'unknown') continue;
+      lifetimeByChannel.set(v.channel_id, (lifetimeByChannel.get(v.channel_id) || 0) + 1);
       const e = historyByChannel.get(v.channel_id) || { brands: new Set<string>(), earliest: Date.now() };
       e.brands.add(b);
       const t = new Date(v.published_at).getTime();
@@ -309,12 +314,15 @@ export async function getCreatorsFromVideos(options?: {
   const profileMap = new Map((profiles || []).map((p: any) => [p.channel_id, p]));
 
   // Group by channel_id
+  // Stage ⑧ 口径收口: Sponsored Videos 必须 = Current Scope (range+brand+market)
+  // 内该 creator 的竞品投放数 — 不得混入全历史或其他窗口。
   const channelMap = new Map<string, any[]>();
   for (const v of videos) {
     const brand = resolveBrand(v);
     // Layer 3 filter: competitor placements only (brand ∈ valid AND placement ∈ confirmed/likely)
     if (options?.competitorOnly && !isCompetitorPlacement(v)) continue;
-    if (options?.brand && brand !== options.brand) continue;
+    if (options?.brand && options.brand !== 'all' && brand !== options.brand) continue;
+    if (options?.market && options.market !== 'all' && (v.market || '') !== options.market) continue;
     if (!channelMap.has(v.channel_id)) channelMap.set(v.channel_id, []);
     channelMap.get(v.channel_id)!.push(v);
   }
@@ -368,6 +376,7 @@ export async function getCreatorsFromVideos(options?: {
       country: profile?.country || null,
       primaryLanguage: profile?.primary_language || sorted[0].language || 'en',
       videosInWindow: vids.length,
+      lifetimeCount: (lifetimeByChannel.get(channelId) || 0) + vids.length,
       confirmedCount: sorted.filter((v: any) => v.placement_type === 'confirmed_paid_placement').length,
       likelyCount: sorted.filter((v: any) => v.placement_type === 'likely_sponsored').length,
       brandMentions,

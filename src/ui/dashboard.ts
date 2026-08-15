@@ -78,7 +78,7 @@ export function renderDashboard(
   const sel = (k: string, v: string) => filter[k]===v?'selected':'';
   const bc = (b: string) => ({GearUP:'#f59e0b',ExitLag:'#3b82f6',LagZapper:'#22c55e'} as any)[b]||'#94a3b8';
   const badge = (t: string) => {
-    const m: Record<string,string> = {confirmed_paid_placement:'Confirmed',likely_sponsored:'Likely',organic_mention:'Organic',official_brand_video:'Official',unknown:'Unknown'};
+    const m: Record<string,string> = {confirmed_paid_placement:'已确认',likely_sponsored:'疑似投放',organic_mention:'自然提及',official_brand_video:'官方视频',unknown:'未知'};
     return `<span class="b b-${t}">${m[t]||t}</span>`;
   };
   const timeAgo = (iso: string) => {
@@ -115,34 +115,46 @@ export function renderDashboard(
     return `${mn} ${+d || 1}, ${y}`;
   };
   // Stage ⑦ 产品化: 采集与分析解耦。KPI 行 = 业务数字; 口径条 = 数据范围+AI 进度状态
+  // Stage ⑧ 口径收口: 口径条压缩成一行式 — 当前范围 直接回显顶部三筛选器
   const rangeDaysNow = parseInt((filter.range || '7').replace(/[^0-9]/g, '') || '7', 10);
   const rangeLabel = ({1:'过去24小时',7:'过去7天',30:'过去30天',90:'过去90天'} as any)[rangeDaysNow] || `过去${rangeDaysNow}天`;
+  const MKT_ZH: Record<string, string> = { US: '美国', RU: '俄罗斯', BR: '巴西', Unknown: '地区未知' };
+  const fmtScopeDateZh = (s: string): string => {
+    if (!s) return '';
+    const [, mo, d] = s.split('-');
+    return `${+mo || 1}月${+d || 1}日`;
+  };
+  const scopeBrandZh = filter.brand && filter.brand !== 'all' ? filter.brand : '全部竞品';
+  const scopeMarketZh = filter.market && filter.market !== 'all' ? (MKT_ZH[filter.market] || filter.market) : '全球';
+  const totalPlacementsN = kpi.totalPlacements ?? kpi.competitorPlacements ?? 0;
+  // % = AI 已复核 / 共发现 (与用户示例口径一致: 2,248/2,838 = 79%)
+  const aiPctAll = (kpi.totalVideos ?? 0) > 0 ? Math.round(aiReviewed / (kpi.totalVideos ?? 1) * 100) : 0;
   const overview = `
   <div class="kpi-row" style="grid-template-columns:repeat(5,1fr)">
-    <div class="kpi hl"><div class="kpi-n">${kpi.competitorPlacements ?? 0}</div><div class="kpi-l">竞品投放</div></div>
+    <div class="kpi hl"><div class="kpi-n">${totalPlacementsN}</div><div class="kpi-l">竞品投放</div></div>
     <div class="kpi"><div class="kpi-n">${kpi.uniqueCreators ?? 0}</div><div class="kpi-l">投放博主</div></div>
     <div class="kpi"><div class="kpi-n">${kpi.totalGames ?? 0}</div><div class="kpi-l">覆盖游戏</div></div>
     <div class="kpi"><div class="kpi-n">${kpi.activeCampaigns ?? 0}</div><div class="kpi-l">集中投放项目</div></div>
     <div class="kpi"><div class="kpi-n" style="color:${aiColor}">${aiPct}%</div><div class="kpi-l">AI分析完成</div>${pendingStatus}</div>
   </div>
 
-  <div style="background:#F8FAFD;border:1px solid #E3E8F1;border-radius:8px;padding:12px 14px;margin-bottom:12px">
-    <div style="font-size:13px;color:#4B5870;font-weight:600">当前统计范围：${rangeLabel} · ${fmtScopeDate(kpi.windowStart ?? '')} → ${fmtScopeDate(kpi.windowEnd ?? '')}</div>
-    <div style="font-size:15px;margin:6px 0;color:#172033"><b style="font-size:17px">${(kpi.totalPlacements ?? kpi.competitorPlacements ?? 0).toLocaleString()}</b> 条竞品投放　<b style="font-size:17px">${(kpi.uniqueCreators ?? 0).toLocaleString()}</b> 位投放博主　<b style="font-size:17px">${kpi.totalGames ?? 0}</b> 款游戏　<b style="font-size:17px">${kpi.activeCampaigns ?? 0}</b> 个集中投放项目</div>
-    <div style="font-size:12.5px;color:#8490A6">共发现 ${(kpi.totalVideos ?? 0).toLocaleString()} 条视频 · 已完成 AI 分析 ${aiReviewed.toLocaleString()} 条（${aiPct}%）· 待分析 ${aiPending.toLocaleString()} 条 · 待确认 ${kpi.unresolvedCandidates ?? 0} 条 · 新增博主 ${kpi.newCompetitorCreators ?? 0}</div>
-    <div style="font-size:12.5px;${aiPending > 0 ? 'color:#C2570B' : 'color:#19A974'};margin-top:3px">${aiPending > 0 ? `🟠 仍有 ${aiPending.toLocaleString()} 条视频待分析，最终投放数量可能继续增加` : '🟢 AI 分析完成 100%，当前窗口数据已完整'}</div>
+  <div style="background:#F8FAFD;border:1px solid #E3E8F1;border-radius:8px;padding:10px 14px;margin-bottom:12px">
+    <div style="font-size:12.5px;color:#4B5870;font-weight:600">当前范围：${scopeBrandZh} · ${scopeMarketZh} · ${rangeLabel}（${fmtScopeDateZh(kpi.windowStart ?? '')}–${fmtScopeDateZh(kpi.windowEnd ?? '')}）</div>
+    <div style="font-size:14px;margin:5px 0;color:#172033"><b style="font-size:16px">${totalPlacementsN.toLocaleString()}</b> 条投放　<b style="font-size:16px">${(kpi.uniqueCreators ?? 0).toLocaleString()}</b> 位博主　<b style="font-size:16px">${kpi.totalGames ?? 0}</b> 款游戏　<b style="font-size:16px">${kpi.activeCampaigns ?? 0}</b> 个项目</div>
+    <div style="font-size:12.5px;color:#8490A6">共发现 ${(kpi.totalVideos ?? 0).toLocaleString()} 条视频 · AI 已分析 ${aiReviewed.toLocaleString()} 条（${aiPctAll}%）· 待分析 ${aiPending.toLocaleString()} 条</div>
+    <div style="font-size:12.5px;${aiPending > 0 ? 'color:#C2570B' : 'color:#19A974'};margin-top:2px">${aiPending > 0 ? `🟠 数据仍在补充，最终投放数量可能增加` : '🟢 AI 分析完成 100%，当前窗口数据已完整'}</div>
   </div>
 
   ${(kpi.campaignPlacements ?? 0) + (kpi.standalonePlacements ?? 0) > 0 ? `
   <div style="display:flex;align-items:center;gap:10px;font-size:12px;margin-bottom:12px;padding:8px 12px;background:#F3F7FF;border:1px solid #DCE5F7;border-radius:8px;color:#4B5870">
-    <span style="font-weight:700;color:#172033">${(kpi.totalPlacements ?? kpi.competitorPlacements ?? 0).toLocaleString()} 条竞品投放视频</span>
+    <span style="font-weight:700;color:#172033">${totalPlacementsN.toLocaleString()} 条竞品投放视频</span>
     <span style="color:#A3ADC2">→</span>
-    <span>🟦 <b style="color:#3B6EF5">${(kpi.campaignPlacements ?? 0).toLocaleString()}</b> 条集中投放 · <b>${kpi.activeCampaigns ?? 0}</b> 个项目</span>
+    <span>🟦 <b style="color:#3B6EF5">${(kpi.campaignPlacements ?? 0).toLocaleString()}</b> 条属于集中投放项目 · 共 <b>${kpi.activeCampaigns ?? 0}</b> 个项目</span>
     <span style="color:#A3ADC2">|</span>
     <span>⬜ <b style="color:#8490A6">${(kpi.standalonePlacements ?? 0).toLocaleString()}</b> 条独立投放</span>
   </div>` : ''}
 
-  <h2>🚨 近期投放动态</h2>
+  <h2>🚨 重点投放项目</h2>
   ${campaigns.length ? campaigns.slice(0, 8).map((c: any) => {
     const brandColor = ({GearUP:'#f59e0b',ExitLag:'#3b82f6',LagZapper:'#22c55e'} as any)[c.brand]||'#94a3b8';
     const statusColor = c.status === 'active' ? '#19A974' : c.status === 'cooling' ? '#F59E0B' : '#8490A6';
@@ -162,10 +174,10 @@ export function renderDashboard(
         <span>🎬 <b>${c.video_count}</b> 条投放</span>
         <span>👁 <b>${fmt(c.total_estimated_views||0)}</b> 播放</span>
         <span>🌍 ${esc(market)}</span>
-        ${angle ? `<span style="background:#F3F7FF;color:#3B6EF5;padding:1px 8px;border-radius:4px">${esc(ANGLE_ZH[angle]||angle)}</span>` : ''}
+        ${angle ? `<span style="background:#F3F7FF;color:#3B6EF5;padding:1px 8px;border-radius:4px">${esc(fmtTopic(angle)||ANGLE_ZH[angle]||angle)}</span>` : ''}
       </div>
     </div>`;
-  }).join('') : '<p class="mt">本窗口暂无集中投放项目。运行扫描以发现竞品投放动态。</p>'}
+  }).join('') : '<p class="mt">当前范围内暂无集中投放项目。</p>'}
 
   <h2>🔍 竞品投放分布</h2>
   <div class="brand-grid">
@@ -186,12 +198,12 @@ export function renderDashboard(
     </div>
   </div>`;
 
-  // ── TAB 2: Campaigns ──
+  // ── TAB 2: Campaigns (Stage ⑧: 运行时聚合 — 与 Overview 同一批项目) ──
   const campCoveragePct = (kpi.totalPlacements ?? kpi.competitorPlacements ?? 0) > 0
     ? Math.round((kpi.campaignPlacements ?? 0) / (kpi.totalPlacements ?? 1) * 100) : 0;
   const campaignsTab = (`
   <div style="font-size:11px;color:#8490A6;margin-bottom:12px;padding:6px 10px;background:#F8FAFD;border-radius:6px;border:1px solid #E3E8F1">
-    范围: <b>${kpi.activeCampaigns ?? 0} 个集中投放项目</b> · ${(kpi.campaignPlacements ?? 0).toLocaleString()} 条集中投放 · ${(kpi.uniqueCreators ?? 0).toLocaleString()} 位博主 · 覆盖 ${(kpi.totalPlacements ?? kpi.competitorPlacements ?? 0).toLocaleString()} 条竞品投放视频的 ${campCoveragePct}%
+    范围: <b>${kpi.activeCampaigns ?? 0} 个集中投放项目</b> · ${(kpi.campaignPlacements ?? 0).toLocaleString()} 条集中投放 · ${(kpi.uniqueCreators ?? 0).toLocaleString()} 位博主 · 覆盖 ${(kpi.totalPlacements ?? kpi.competitorPlacements ?? 0).toLocaleString()} 条竞品投放视频的 ${campCoveragePct}%（${scopeBrandZh} · ${scopeMarketZh} · ${rangeLabel}）
   </div>` + (campaigns.length ? campaigns.map((c:any)=>{
     const brandColor = ({GearUP:'#f59e0b',ExitLag:'#3b82f6',LagZapper:'#22c55e'} as any)[c.brand]||'#94a3b8';
     const statusColor = c.status === 'active' ? '#19A974' : c.status === 'cooling' ? '#F59E0B' : '#8490A6';
@@ -213,13 +225,13 @@ export function renderDashboard(
         <div><span style="font-size:11px;color:#8490A6;display:block">市场</span><span style="font-size:13px;font-weight:600;color:#172033">${esc(fmtMarket(c.primary_market||c.primaryMarket||''))}</span></div>
       </div>
       <div style="font-size:12px;color:#4B5870">
-        <span style="background:#F3F7FF;color:#3B6EF5;padding:2px 8px;border-radius:4px;margin-right:6px">${esc(ANGLE_ZH[campAngle]||campAngle||'常规植入')}</span>
+        <span style="background:#F3F7FF;color:#3B6EF5;padding:2px 8px;border-radius:4px;margin-right:6px">${esc(fmtTopic(campAngle)||ANGLE_ZH[campAngle]||campAngle||'常规植入')}</span>
       </div>
     </div>`;
-  }).join('') : '<p class="mt">暂无集中投放项目。同一品牌 × 同一游戏在 7 天内出现多条投放时会自动识别。</p>'));
+  }).join('') : '<p class="mt">当前范围内暂无集中投放项目。</p>'));
 
   // ── TAB 3: Videos — 3 views: Competitor Placements / Unresolved / All Discovered ──
-  const contentTypeLabel: Record<string,string> = {dedicated:'Dedicated',integrated:'Integration',shorts:'Shorts',live:'Livestream',dedicated_review:'Dedicated',integrated_placement:'Integration',live_replay:'Livestream',comparison:'Comparison',tutorial:'Tutorial',gameplay:'Gameplay'};
+  const contentTypeLabel: Record<string,string> = {dedicated:'独立评测',integrated:'场景植入',shorts:'短视频',live:'直播',dedicated_review:'独立评测',integrated_placement:'场景植入',live_replay:'直播回放',comparison:'对比评测',tutorial:'教程攻略',gameplay:'实机演示'};
   const evidenceIcon = (rc: string[]) => {
     if (!rc?.length) return '⚪';
     const hasStrong = rc.some(r => ['brand_in_title','promo_code','sponsored_tag','paid_tag','brand_link'].includes(r));
@@ -235,7 +247,7 @@ export function renderDashboard(
     <td><span class="et">${esc(contentTypeLabel[(v as any).contentCategory]||(v as any).contentCategory||'?')}</span></td>
     <td style="white-space:nowrap">${fmt(v.viewCount)}</td>
     <td><span title="${esc((v.reasonCodes||v.discoveryEvidence||[]).join(', '))}" style="cursor:help">${evidenceIcon(v.reasonCodes||v.discoveryEvidence)} ${badge(v.placementType)}</span></td>
-    <td class="acts"><button onclick="va('${v.videoId}','confirm_placement')" class="a a-y" title="Confirm">✓</button><button onclick="va('${v.videoId}','mark_organic')" class="a a-o" title="Organic">O</button><button onclick="va('${v.videoId}','ignore')" class="a a-r" title="Ignore">✕</button></td>
+    <td class="acts"><button onclick="va('${v.videoId}','confirm_placement')" class="a a-y" title="确认投放">✓</button><button onclick="va('${v.videoId}','mark_organic')" class="a a-o" title="标记自然提及">O</button><button onclick="va('${v.videoId}','ignore')" class="a a-r" title="忽略">✕</button></td>
   </tr>`).join('');
 
   const allVids = data.allRecentVideos || [];
@@ -247,15 +259,12 @@ export function renderDashboard(
   const discTotal = (kpi.totalVideos ?? 0).toLocaleString();
   const videosTab = `
   <div class="ctrls" style="align-items:center;gap:10px;flex-wrap:wrap">
-    <span style="font-size:12px;color:#8490A6;font-weight:600">View:</span>
-    <button onclick="switchVideoView('competitor')" id="vid-btn-competitor" class="btn-scan" style="font-size:11px;padding:4px 10px">竞品投放视频 ${cpTotal} · Showing 1–${Math.min(data.recentVideos.length, kpi.competitorPlacements ?? 0).toLocaleString()} of ${cpTotal}</button>
-    <button onclick="switchVideoView('unresolved')" id="vid-btn-unresolved" style="background:#1e293b;color:#f59e0b;border:1px solid #f59e0b;padding:4px 10px;border-radius:6px;font-size:11px;cursor:pointer">待确认视频 ${unTotal} · Showing ${Math.min(unresolvedVids.length, kpi.unresolvedCandidates ?? 0).toLocaleString()}</button>
-    <button onclick="switchVideoView('all')" id="vid-btn-all" style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;padding:4px 10px;border-radius:6px;font-size:11px;cursor:pointer">全部抓取 ${discTotal} · Showing latest ${allVids.length}</button>
-    <span style="margin-left:12px;color:#334155">|</span>
-    <select onchange="applyFilter('placement',this.value)"><option value="all">All Placements</option><option value="confirmed_paid_placement" ${sel('placement','confirmed_paid_placement')}>Confirmed</option><option value="likely_sponsored" ${sel('placement','likely_sponsored')}>Likely</option><option value="organic_mention" ${sel('placement','organic_mention')}>Organic</option></select>
-    <select onchange="applyFilter('type',this.value)"><option value="all">All Types</option><option value="dedicated" ${sel('type','dedicated')}>Dedicated</option><option value="integrated" ${sel('type','integrated')}>Integrated</option><option value="shorts" ${sel('type','shorts')}>Shorts</option><option value="live" ${sel('type','live')}>Livestream</option></select>
+    <span style="font-size:12px;color:#8490A6;font-weight:600">视图：</span>
+    <button onclick="switchVideoView('competitor')" id="vid-btn-competitor" class="btn-scan" style="font-size:11px;padding:4px 10px">竞品投放视频 ${cpTotal} · 显示 1–${Math.min(data.recentVideos.length, kpi.competitorPlacements ?? 0).toLocaleString()} / 共 ${cpTotal}</button>
+    <button onclick="switchVideoView('unresolved')" id="vid-btn-unresolved" style="background:#1e293b;color:#f59e0b;border:1px solid #f59e0b;padding:4px 10px;border-radius:6px;font-size:11px;cursor:pointer">待确认视频 ${unTotal} · 显示 ${Math.min(unresolvedVids.length, kpi.unresolvedCandidates ?? 0).toLocaleString()}</button>
+    <button onclick="switchVideoView('all')" id="vid-btn-all" style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;padding:4px 10px;border-radius:6px;font-size:11px;cursor:pointer">全部抓取 ${discTotal} · 显示最近 ${allVids.length} 条</button>
   </div>
-  <table class="dt vf" id="video-table"><thead><tr><th></th><th>Title</th><th>Channel</th><th>Brand</th><th>Game</th><th>Type</th><th>Views</th><th>Evidence</th><th>Actions</th></tr></thead><tbody id="video-tbody">
+  <table class="dt vf" id="video-table"><thead><tr><th></th><th>标题</th><th>频道</th><th>品牌</th><th>游戏</th><th>类型</th><th>播放</th><th>证据</th><th>操作</th></tr></thead><tbody id="video-tbody">
   ${videoRows(data.recentVideos)}
   </tbody></table>
   <script>
@@ -266,14 +275,15 @@ export function renderDashboard(
   </script>`;
 
   // ── TAB 4: Creators (loaded via JS, defaults to Active in period) ──
-  const relLabels: Record<string,string> = {new:'New',recurring:'Recurring',loyal:'Loyal',multi_brand:'Multi-Brand'};
+  const relLabels: Record<string,string> = {new:'首次合作',recurring:'再次合作',loyal:'长期合作',multi_brand:'多品牌投放'};
   const creatorsTab = `
   <div class="ctrls" style="align-items:center;gap:10px;margin-bottom:12px">
-    <span style="font-size:12px;color:#8490A6;font-weight:600">Show:</span>
-    <button onclick="switchCreatorView('active')" id="cr-btn-active" class="btn-scan" style="font-size:11px;padding:4px 10px">Active in Period</button>
-    <button onclick="switchCreatorView('all')" id="cr-btn-all" style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;padding:4px 10px;border-radius:6px;font-size:11px;cursor:pointer">All Tracked Creators</button>
+    <span style="font-size:12px;color:#8490A6;font-weight:600">显示：</span>
+    <button onclick="switchCreatorView('active')" id="cr-btn-active" class="btn-scan" style="font-size:11px;padding:4px 10px">本周期活跃</button>
+    <button onclick="switchCreatorView('all')" id="cr-btn-all" style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;padding:4px 10px;border-radius:6px;font-size:11px;cursor:pointer">全部跟踪博主</button>
+    <span style="font-size:11px;color:#8490A6;margin-left:6px">本周期投放 = 当前顶部筛选范围内的竞品投放数，历史累计单独展示</span>
   </div>
-  <div id="creators-load"><p class="mt">Loading creators...</p></div>`;
+  <div id="creators-load"><p class="mt">加载中...</p></div>`;
 
   // ── TAB 5: Comments (loaded via JS) ──
   const commentsTab = `<div id="comments-load"><p class="mt">Loading comments...</p></div>`;
@@ -335,18 +345,22 @@ export function renderDashboard(
   <div id="toast" class="toast" style="display:none"></div>
 </div>
 <script>
+// Stage ⑧: 顶部三筛选器注入 JS — Creator/Comments 页必须用同一 Current Scope
+var curRange=${JSON.stringify(filter.range || '7d')};
+var curBrand=${JSON.stringify(filter.brand || 'all')};
+var curMarket=${JSON.stringify(filter.market || 'all')};
 var creatorView='active';
 function applyFilter(k,v){const u=new URL(location);v==='all'?u.searchParams.delete(k):u.searchParams.set(k,v);location=u.toString()}
 function switchTab(t){document.querySelectorAll('.tab-content').forEach(e=>e.style.display='none');document.querySelectorAll('.tab').forEach(e=>e.classList.remove('active'));document.getElementById('tab-panel-'+t).style.display='block';document.getElementById('tab-'+t).classList.add('active');if(t==='creators')loadCreators();if(t==='comments')loadComments();if(t==='system')loadSystem();localStorage.setItem('tab',t)}
-async function va(id,a){try{const r=await fetch('/api/videos/'+id+'/action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:a})});const d=await r.json();if(!d.success){showToast('❌ '+d.error);return}showToast('✅ Updated');const row=document.querySelector('tr[data-vid="'+id+'"]');if(!row)return;const badgeCell=row.querySelector('td:nth-child(8)');if(badgeCell){const labels={confirmed_paid_placement:'Confirmed',likely_sponsored:'Likely',organic_mention:'Organic',unknown:'Unknown'};const newType=a==='confirm_placement'?'confirmed_paid_placement':a==='mark_organic'?'organic_mention':'unknown';const icon=newType==='confirmed_paid_placement'?'🟢':newType==='organic_mention'?'🟡':'⚪';badgeCell.innerHTML='<span title="">'+icon+' <span class="b b-'+newType+'">'+(labels[newType]||newType)+'</span></span>'}}catch(e){showToast('❌ Failed')}}
+async function va(id,a){try{const r=await fetch('/api/videos/'+id+'/action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:a})});const d=await r.json();if(!d.success){showToast('❌ '+d.error);return}showToast('✅ 已更新');const row=document.querySelector('tr[data-vid="'+id+'"]');if(!row)return;const badgeCell=row.querySelector('td:nth-child(8)');if(badgeCell){const labels={confirmed_paid_placement:'已确认',likely_sponsored:'疑似投放',organic_mention:'自然提及',unknown:'未知'};const newType=a==='confirm_placement'?'confirmed_paid_placement':a==='mark_organic'?'organic_mention':'unknown';const icon=newType==='confirmed_paid_placement'?'🟢':newType==='organic_mention'?'🟡':'⚪';badgeCell.innerHTML='<span title="">'+icon+' <span class="b b-'+newType+'">'+(labels[newType]||newType)+'</span></span>'}}catch(e){showToast('❌ 操作失败')}}
 function showToast(m){const t=document.getElementById('toast');t.textContent=m;t.style.display='block';setTimeout(()=>t.style.display='none',2000)}
 // ── Video view switcher ──
-function renderVideoRows(vids){var label={dedicated:'Dedicated',integrated:'Integration',shorts:'Shorts',live:'Livestream',dedicated_review:'Dedicated',integrated_placement:'Integration',live_replay:'Livestream',comparison:'Comparison',tutorial:'Tutorial',gameplay:'Gameplay'};var badge={confirmed_paid_placement:'Confirmed',likely_sponsored:'Likely',organic_mention:'Organic',official_brand_video:'Official',unknown:'Unknown'};function esc(s){return s?s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'):''}function fmt(n){return n>=1000000?(n/1000000).toFixed(1)+'M':n>=1000?(n/1000).toFixed(1)+'K':String(n)}function evi(rc){if(!rc||!rc.length)return'\\u26aa';var hs=rc.some(function(r){return['brand_in_title','promo_code','sponsored_tag','paid_tag','brand_link'].indexOf(r)>=0});return hs?'\\uD83D\\uDFE2':'\\uD83D\\uDFE1'}return vids.slice(0,30).map(function(v){return'<tr data-vid=\"'+esc(v.videoId)+'\"><td>'+(v.thumbnailUrl?'<img src=\"'+esc(v.thumbnailUrl)+'\" width=80 height=45 style=border-radius:4px>':'')+'</td><td><a href=\"https://youtube.com/watch?v='+esc(v.videoId)+'\" target=_blank>'+esc(v.title.slice(0,55))+(v.title.length>55?'\\u2026':'')+'</a></td><td style=white-space:nowrap>'+esc(v.channelName)+'</td><td style=white-space:nowrap>'+esc(v.brand)+'</td><td style=white-space:nowrap>'+esc(v.game)+'</td><td><span class=et>'+esc(label[v.contentCategory]||v.contentCategory||'?')+'</span></td><td style=white-space:nowrap>'+fmt(v.viewCount)+'</td><td><span title=\"'+esc((v.reasonCodes||v.discoveryEvidence||[]).join(', '))+'\" style=cursor:help>'+evi(v.reasonCodes||v.discoveryEvidence)+' <span class=\"b b-'+v.placementType+'\">'+(badge[v.placementType]||v.placementType)+'</span></span></td><td class=acts><button onclick=\"va(\\''+v.videoId+'\\',\\'confirm_placement\\')\" class=\"a a-y\" title=Confirm>\\u2713</button><button onclick=\"va(\\''+v.videoId+'\\',\\'mark_organic\\')\" class=\"a a-o\" title=Organic>O</button><button onclick=\"va(\\''+v.videoId+'\\',\\'ignore\\')\" class=\"a a-r\" title=Ignore>\\u2715</button></td></tr>'}).join('')}
+function renderVideoRows(vids){var label={dedicated:'独立评测',integrated:'场景植入',shorts:'短视频',live:'直播',dedicated_review:'独立评测',integrated_placement:'场景植入',live_replay:'直播回放',comparison:'对比评测',tutorial:'教程攻略',gameplay:'实机演示'};var badge={confirmed_paid_placement:'已确认',likely_sponsored:'疑似投放',organic_mention:'自然提及',official_brand_video:'官方视频',unknown:'未知'};function esc(s){return s?s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'):''}function fmt(n){return n>=1000000?(n/1000000).toFixed(1)+'M':n>=1000?(n/1000).toFixed(1)+'K':String(n)}function evi(rc){if(!rc||!rc.length)return'\\u26aa';var hs=rc.some(function(r){return['brand_in_title','promo_code','sponsored_tag','paid_tag','brand_link'].indexOf(r)>=0});return hs?'\\uD83D\\uDFE2':'\\uD83D\\uDFE1'}return vids.slice(0,30).map(function(v){return'<tr data-vid=\"'+esc(v.videoId)+'\"><td>'+(v.thumbnailUrl?'<img src=\"'+esc(v.thumbnailUrl)+'\" width=80 height=45 style=border-radius:4px>':'')+'</td><td><a href=\"https://youtube.com/watch?v='+esc(v.videoId)+'\" target=_blank>'+esc(v.title.slice(0,55))+(v.title.length>55?'\\u2026':'')+'</a></td><td style=white-space:nowrap>'+esc(v.channelName)+'</td><td style=white-space:nowrap>'+esc(v.brand)+'</td><td style=white-space:nowrap>'+esc(v.game)+'</td><td><span class=et>'+esc(label[v.contentCategory]||v.contentCategory||'?')+'</span></td><td style=white-space:nowrap>'+fmt(v.viewCount)+'</td><td><span title=\"'+esc((v.reasonCodes||v.discoveryEvidence||[]).join(', '))+'\" style=cursor:help>'+evi(v.reasonCodes||v.discoveryEvidence)+' <span class=\"b b-'+v.placementType+'\">'+(badge[v.placementType]||v.placementType)+'</span></span></td><td class=acts><button onclick=\"va(\\''+v.videoId+'\\',\\'confirm_placement\\')\" class=\"a a-y\" title=确认投放>\\u2713</button><button onclick=\"va(\\''+v.videoId+'\\',\\'mark_organic\\')\" class=\"a a-o\" title=标记自然提及>O</button><button onclick=\"va(\\''+v.videoId+'\\',\\'ignore\\')\" class=\"a a-r\" title=忽略>\\u2715</button></td></tr>'}).join('')}
 function switchVideoView(view){var tbody=document.getElementById('video-tbody');var vids=view==='competitor'?competitorVids:view==='unresolved'?unresolvedVids:allVids;tbody.innerHTML=renderVideoRows(vids);document.querySelectorAll('[id^=vid-btn-]').forEach(function(b){b.style.background='#1e293b';b.style.color='#e2e8f0';b.style.border='1px solid #334155'});var btn=document.getElementById('vid-btn-'+view);if(btn){btn.style.background='#3568e8';btn.style.color='#fff';btn.style.border='1px solid #3568e8'}}
 // ── Creator view switcher ──
 function switchCreatorView(view){creatorView=view;document.querySelectorAll('[id^=cr-btn-]').forEach(function(b){b.style.background='#1e293b';b.style.color='#e2e8f0';b.style.border='1px solid #334155'});var btn=document.getElementById('cr-btn-'+view);if(btn){btn.style.background='#3568e8';btn.style.color='#fff';btn.style.border='1px solid #3568e8'};loadCreators()}
-async function loadCreators(){var el=document.getElementById('creators-load');try{var url=creatorView==='all'?'/api/creators?range=30&all=1':'/api/creators?range=30';var r=await fetch(url);var d=await r.json();if(!d||!d.length){el.innerHTML='<p class=mt>No creators found in this period.</p>';return}function fmtN(n){return n>=1000000?(n/1000000).toFixed(1)+'M':n>=1000?(n/1000).toFixed(1)+'K':String(n)}function relTag(r){var m={new:['New','#3B6EF5','#F3F7FF'],recurring:['Recurring','#6B7280','#F3F4F6'],long_term:['Long-term','#7C3AED','#F5F3FF'],multi_brand:['Multi-Brand','#D97706','#FFFBEB']};var x=m[r]||[r,'#3B6EF5','#F3F7FF'];return'<span style="font-size:10px;background:'+x[2]+';color:'+x[1]+';padding:1px 6px;border-radius:3px">'+x[0]+'</span>'}el.innerHTML='<table class=dt><thead><tr><th>Creator</th><th>Subs</th><th>Sponsored Videos</th><th>Brand</th><th>Games</th><th>Avg Views</th><th>Vs Baseline</th><th>Relation</th></tr></thead><tbody>'+d.slice(0,30).map(function(c){var conf='<span style=color:#19A974;font-weight:600>'+c.confirmedCount+' Confirmed</span>';var lik='<span style=color:#D97706;font-weight:600>'+c.likelyCount+' Likely</span>';var brandCol=Object.entries(c.brandMentions||{}).filter(function(e){return e[1]>0}).sort(function(a,b){return b[1]-a[1]}).map(function(e){var col={GearUP:'#f59e0b',ExitLag:'#3b82f6',LagZapper:'#22c55e'}[e[0]]||'#94a3b8';return'<span style="font-size:11px;color:'+col+';font-weight:600">'+e[0]+'</span>'}).join(' ');var vs=c.vsBaselinePct===null||c.vsBaselinePct===undefined?'-':(c.vsBaselinePct>=0?'<span style="color:#19A974;font-weight:600">+'+(c.vsBaselinePct)+'%</span>':'<span style="color:#EF5B5B;font-weight:600">'+(c.vsBaselinePct)+'%</span>');return'<tr><td style="white-space:nowrap">'+escapeHtml(c.channelName||'?')+'</td><td>'+(c.subscriberCount?fmtN(c.subscriberCount):'-')+'</td><td><span style="font-size:14px;font-weight:700">'+c.videosInWindow+'</span><br><span style="font-size:11px">'+conf+' · '+lik+'</span></td><td>'+brandCol+'</td><td>'+escapeHtml((c.games||[]).slice(0,2).join(', '))+'</td><td>'+fmtN(c.avgViews||0)+'</td><td>'+vs+'</td><td>'+relTag(c.relationType)+'</td></tr>'}).join('')+'</tbody></table>'}catch(e){el.innerHTML='<p class=mt>Failed to load creators</p>'}}
-async function loadComments(){const el=document.getElementById('comments-load');try{const[r,raw]=await Promise.all([fetch('/api/comments/summary'),fetch('/api/comments?limit=30')]);const s=await r.json();const d=await raw.json();if(!s.total){el.innerHTML='<p class=mt>No comments analyzed yet</p>';return}const fb=s.fallback?'<div style="font-size:11px;color:#8a6d1a;background:#FDF6E3;border:1px solid #E8D9A0;border-radius:6px;padding:6px 10px;margin-bottom:12px">No competitor-specific comments available. Showing comments from analyzed candidate videos.</div>':'';const flags=c=>'<span class=bt>'+(c.brand?'🏷 Brand':'')+(c.intent?' 💳 Intent':'')+(c.question?' ❓ Question':'')+(c.concern?' ⚠️ Concern':'')+'</span>';const cov=s.placementTotal?'<div style="font-size:11px;color:#8490A6;margin:4px 0 12px">'+s.total+' comments from '+s.placementCoverage+' / '+s.placementTotal+' placement videos</div>':'';el.innerHTML=fb+'<div style="display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-bottom:16px"><div class=kpi><div class=kpi-n>'+s.total+'</div><div class=kpi-l>Comments Analyzed</div></div><div class=kpi><div class=kpi-n style=color:#3b82f6>'+s.brandMentions+'</div><div class=kpi-l>Brand Mentions</div></div><div class=kpi><div class=kpi-n style=color:#F59E0B>'+s.productQuestions+'</div><div class=kpi-l>Product Questions</div></div><div class=kpi><div class=kpi-n style=color:#19A974>'+s.purchaseIntent+'</div><div class=kpi-l>Purchase / Trial Intent</div></div><div class=kpi><div class=kpi-n style=color:#19A974>'+s.positiveFeedback+'</div><div class=kpi-l>Positive Feedback</div></div><div class=kpi><div class=kpi-n style=color:#EF5B5B>'+s.negativeConcern+'</div><div class=kpi-l>Negative / Concern</div></div></div>'+cov+'<h2>Top Audience Signals</h2>'+((s.topSignals||[]).length?'': '<p class=mt>No strong signals yet</p>')+ (s.topSignals||[]).slice(0,8).map(x=>'<div class=comment><b>'+escapeHtml(x.author)+'</b> on '+escapeHtml((x.videoTitle||'').slice(0,50))+'<br>“'+escapeHtml(x.text)+'”<br>'+flags(x.flags)+'</div>').join('')+'<h2>Most Discussed</h2><table class=dt><thead><tr><th>Video</th><th>Channel</th><th>Comments</th></tr></thead><tbody>'+s.topVideos.slice(0,10).map(v=>'<tr><td><a href="https://youtube.com/watch?v='+escapeHtml(v.videoId)+'" target=_blank>'+escapeHtml((v.title||'').slice(0,60))+'</a></td><td>'+escapeHtml(v.channelName||'?')+'</td><td>'+v.commentCount+'</td></tr>').join('')+'</tbody></table><h2>Recent</h2>'+d.slice(0,20).map(c=>'<div class=comment><b>'+escapeHtml(c.author_name||'?')+'</b> on '+escapeHtml((c.youtube_competitor_videos||{}).title||'?').slice(0,50)+'<br>'+escapeHtml((c.comment_text||'').slice(0,200))+'<br><span class=bt>'+(c.has_purchase_intent?'💳 Intent':'')+' '+(c.is_brand_related?'🏷 Brand':'')+' '+(c.sentiment||'')+'</span></div>').join('')}catch(e){el.innerHTML='<p class=mt>Failed to load</p>'}}
+async function loadCreators(){var el=document.getElementById('creators-load');try{var url='/api/creators?range='+curRange+'&brand='+curBrand+'&market='+curMarket+(creatorView==='all'?'&all=1':'');var r=await fetch(url);var d=await r.json();if(!d||!d.length){el.innerHTML='<p class=mt>当前范围内暂无投放博主。</p>';return}function fmtN(n){return n>=1000000?(n/1000000).toFixed(1)+'M':n>=1000?(n/1000).toFixed(1)+'K':String(n)}function relTag(r){var m={new:['首次合作','#3B6EF5','#F3F7FF'],recurring:['再次合作','#6B7280','#F3F4F6'],long_term:['长期合作','#7C3AED','#F5F3FF'],multi_brand:['多品牌','#D97706','#FFFBEB']};var x=m[r]||[r,'#3B6EF5','#F3F7FF'];return'<span style="font-size:10px;background:'+x[2]+';color:'+x[1]+';padding:1px 6px;border-radius:3px">'+x[0]+'</span>'}el.innerHTML='<table class=dt><thead><tr><th>博主</th><th>粉丝</th><th>本周期投放</th><th>历史累计</th><th>品牌</th><th>游戏</th><th>平均播放</th><th>对比基线</th><th>合作类型</th></tr></thead><tbody>'+d.slice(0,30).map(function(c){var conf='<span style=color:#19A974;font-weight:600>'+c.confirmedCount+' 确认</span>';var lik='<span style=color:#D97706;font-weight:600>'+c.likelyCount+' 疑似</span>';var brandCol=Object.entries(c.brandMentions||{}).filter(function(e){return e[1]>0}).sort(function(a,b){return b[1]-a[1]}).map(function(e){var col={GearUP:'#f59e0b',ExitLag:'#3b82f6',LagZapper:'#22c55e'}[e[0]]||'#94a3b8';return'<span style="font-size:11px;color:'+col+';font-weight:600">'+e[0]+'</span>'}).join(' ');var vs=c.vsBaselinePct===null||c.vsBaselinePct===undefined?'-':(c.vsBaselinePct>=0?'<span style="color:#19A974;font-weight:600">+'+(c.vsBaselinePct)+'%</span>':'<span style="color:#EF5B5B;font-weight:600">'+(c.vsBaselinePct)+'%</span>');return'<tr><td style="white-space:nowrap">'+escapeHtml(c.channelName||'?')+'</td><td>'+(c.subscriberCount?fmtN(c.subscriberCount):'-')+'</td><td><span style="font-size:14px;font-weight:700">'+c.videosInWindow+'</span><br><span style="font-size:11px">'+conf+' · '+lik+'</span></td><td><span style="font-size:12px;color:#8490A6">'+((c.lifetimeCount||0)-c.videosInWindow)+'</span></td><td>'+brandCol+'</td><td>'+escapeHtml((c.games||[]).slice(0,2).join(', '))+'</td><td>'+fmtN(c.avgViews||0)+'</td><td>'+vs+'</td><td>'+relTag(c.relationType)+'</td></tr>'}).join('')+'</tbody></table>'}catch(e){el.innerHTML='<p class=mt>加载失败，请重试</p>'}}
+async function loadComments(){const el=document.getElementById('comments-load');try{const scope='range='+curRange+'&brand='+curBrand+'&market='+curMarket;const[r,raw]=await Promise.all([fetch('/api/comments/summary?'+scope),fetch('/api/comments?limit=30&'+scope)]);const s=await r.json();const d=await raw.json();if(!s.total){el.innerHTML='<p class=mt>当前范围内暂无已分析评论</p>';return}const fb=s.fallback?'<div style="font-size:11px;color:#8a6d1a;background:#FDF6E3;border:1px solid #E8D9A0;border-radius:6px;padding:6px 10px;margin-bottom:12px">当前范围内暂无已确认竞品投放评论，以下展示已分析候选视频中的观众评论，仅供参考。</div>':'';const flags=c=>'<span class=bt>'+(c.brand?'🏷 品牌':'')+(c.intent?' 💳 意向':'')+(c.question?' ❓ 咨询':'')+(c.concern?' ⚠️ 顾虑':'')+'</span>';const cov=s.placementTotal?'<div style="font-size:11px;color:#8490A6;margin:4px 0 12px">'+s.total+' 条评论来自 '+s.placementCoverage+' / '+s.placementTotal+' 条投放视频</div>':'';el.innerHTML=fb+'<div style="display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-bottom:16px"><div class=kpi><div class=kpi-n>'+s.total+'</div><div class=kpi-l>已分析评论</div></div><div class=kpi><div class=kpi-n style=color:#3b82f6>'+s.brandMentions+'</div><div class=kpi-l>品牌提及</div></div><div class=kpi><div class=kpi-n style=color:#F59E0B>'+s.productQuestions+'</div><div class=kpi-l>产品咨询</div></div><div class=kpi><div class=kpi-n style=color:#19A974>'+s.purchaseIntent+'</div><div class=kpi-l>购买·试用意向</div></div><div class=kpi><div class=kpi-n style=color:#19A974>'+s.positiveFeedback+'</div><div class=kpi-l>正向反馈</div></div><div class=kpi><div class=kpi-n style=color:#EF5B5B>'+s.negativeConcern+'</div><div class=kpi-l>负向反馈·顾虑</div></div></div>'+cov+'<h2>重点观众信号</h2>'+((s.topSignals||[]).length?'': '<p class=mt>暂无强信号</p>')+ (s.topSignals||[]).slice(0,8).map(x=>'<div class=comment><b>'+escapeHtml(x.author)+'</b> 评论于 '+escapeHtml((x.videoTitle||'').slice(0,50))+'<br>“'+escapeHtml(x.text)+'”<br>'+flags(x.flags)+'</div>').join('')+'<h2>讨论最多</h2><table class=dt><thead><tr><th>视频</th><th>频道</th><th>评论数</th></tr></thead><tbody>'+s.topVideos.slice(0,10).map(v=>'<tr><td><a href="https://youtube.com/watch?v='+escapeHtml(v.videoId)+'" target=_blank>'+escapeHtml((v.title||'').slice(0,60))+'</a></td><td>'+escapeHtml(v.channelName||'?')+'</td><td>'+v.commentCount+'</td></tr>').join('')+'</tbody></table><h2>最近评论</h2>'+d.slice(0,20).map(c=>'<div class=comment><b>'+escapeHtml(c.author_name||'?')+'</b> 评论于 '+escapeHtml((c.youtube_competitor_videos||{}).title||'?').slice(0,50)+'<br>'+escapeHtml((c.comment_text||'').slice(0,200))+'<br><span class=bt>'+(c.has_purchase_intent?'💳 意向':'')+' '+(c.is_brand_related?'🏷 品牌':'')+' '+(c.sentiment||'')+'</span></div>').join('')}catch(e){el.innerHTML='<p class=mt>加载失败，请重试</p>'}}
 async function loadSystem(){try{const r=await fetch('/api/system');const d=await r.json();const logs=d.logs||[];document.getElementById('scan-logs').innerHTML=logs.slice(0,15).map(l=>'<tr><td>'+new Date(l.created_at).toLocaleString()+'</td><td>'+l.scan_mode+'</td><td>'+l.queries_attempted+'/'+l.queries_succeeded+'</td><td>'+l.videos_found+'</td><td>'+l.videos_new+'</td><td>'+l.search_quota_used+'S/'+l.general_quota_used+'G</td><td>'+(l.quota_exhausted?'⚠️ Quota':'✅')+'</td></tr>').join('')||'<tr><td colspan="7" class="mt">No logs</td></tr>';document.getElementById('hs-status').textContent=d.config?.hotspot_active?'🔴 Active until '+new Date(d.config.hotspot_active_until).toLocaleString():'⚪ Inactive'}catch(e){}}
 async function startHotspot(){const g=document.getElementById('hs-game').value;const d=parseInt(document.getElementById('hs-days').value)||7;if(!g)return showToast('❌ Enter a game name');try{const r=await fetch('/api/hotspot/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({games:[g],durationDays:d})});const j=await r.json();showToast(j.success?'✅ Hotspot active':'❌ Failed');setTimeout(loadSystem,500)}catch(e){showToast('❌ Failed')}}
 async function stopHotspot(){try{await fetch('/api/hotspot/stop',{method:'POST'});showToast('✅ Hotspot stopped');setTimeout(loadSystem,500)}catch(e){showToast('❌ Failed')}}
