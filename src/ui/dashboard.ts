@@ -154,7 +154,8 @@ export function renderDashboard(
     <span>🟦 <b style="color:#3B6EF5">${(kpi.campaignPlacements ?? 0).toLocaleString()}</b> 条属于集中投放项目 · 共 <b>${kpi.activeCampaigns ?? 0}</b> 个项目</span>
     <span style="color:#A3ADC2">|</span>
     <span>⬜ <b style="color:#8490A6">${(kpi.standalonePlacements ?? 0).toLocaleString()}</b> 条独立投放</span>
-  </div>` : ''}
+  </div>
+  <div style="font-size:11px;color:#8490A6;line-height:1.7;margin:-6px 0 12px 2px">💡 <b>集中投放项目</b>：同一品牌 + 同一游戏，7 天内 ≥2 条视频组成的一轮投放（规模投放）；<b>独立投放</b>：未构成项目的零散单条。两者相加 = 全部竞品投放视频（🟦 + ⬜）。</div>` : ''}
 
   <h2>🚨 重点投放项目</h2>
   ${campaigns.length ? campaigns.slice(0, 8).map((c: any) => {
