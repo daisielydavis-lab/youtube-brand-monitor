@@ -635,9 +635,12 @@ cron.schedule('0 8 2 1,4,7,10 *', async () => {
 
 // ── Cron: AI backlog processing daily at 10:00 UTC ──
 // Stage ②: drains the FULL classification queue until empty (batches of 10).
-// Set AI_BACKLOG_DAILY_LIMIT=<n> in env to cap per-run cost instead.
+// AI_BACKLOG_DAILY_LIMIT env: <0 = disabled, 0 = unlimited, >0 = cap per run.
+// DEFAULT 100/run — unlimited is dangerous (705-video backlog × batch of 10
+// = 71 DeepSeek calls in one cron tick). 100/day drains the current backlog
+// in ~a week, then tracks weekly increments naturally.
 cron.schedule('0 10 * * *', async () => {
-  const backlogLimit = parseInt(process.env.AI_BACKLOG_DAILY_LIMIT || '0', 10);
+  const backlogLimit = parseInt(process.env.AI_BACKLOG_DAILY_LIMIT || '100', 10);
   if (backlogLimit < 0) { console.log('[Cron] AI backlog skipped (limit<0)'); return; }
   console.log(`[Cron] AI backlog processing — limit=${backlogLimit === 0 ? 'unlimited' : backlogLimit}`);
   try {
