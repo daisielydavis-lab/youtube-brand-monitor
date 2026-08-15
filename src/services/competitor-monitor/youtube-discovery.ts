@@ -391,3 +391,53 @@ export async function getChannelsRecentVideos(
   }
   return results;
 }
+
+
+// ── Performance Refresh: batch stats for known video IDs (T+3/T+7) ──
+// 只刷新已入库 video_id 的公开统计，绝不使用 search.list，绝不调 AI。
+// 优先 videos.batchGetStats（独立配额池，1 unit/批），失败 fallback
+// videos.list part=statistics（general 池，1 unit/视频）。
+let statsBatchQuotaUsed = 0;
+export function getStatsBatchQuotaUsed() { return statsBatchQuotaUsed; }
+
+export async function fetchStatsBatch(
+  videoIds: string[],
+): Promise<Record<string, { viewCount: number | null; likeCount: number | null; commentCount: number | null }>> {
+  const out: Record<string, { viewCount: number | null; likeCount: number | null; commentCount: number | null }> = {};
+  if (!API_KEY || !videoIds.length) return out;
+  for (let i = 0; i < videoIds.length; i += 50) {
+    const batch = videoIds.slice(i, i + 50);
+    let items: any[] | null = null;
+    try {
+      const { data } = await axios.get(`${YT_BASE}/videos/batchGetStats`, {
+        params: { ids: batch.join(','), key: API_KEY },
+        timeout: 20000,
+      });
+      items = data?.items || null;
+      if (items) statsBatchQuotaUsed += 1;
+    } catch { items = null; }
+    if (!items) {
+      try {
+        const { data } = await axios.get(`${YT_BASE}/videos`, {
+          params: { part: 'statistics', id: batch.join(','), key: API_KEY },
+          timeout: 20000,
+        });
+        items = data?.items || [];
+        statsBatchQuotaUsed += batch.length;
+      } catch (err) {
+        console.error(`[YouTube] fetchStatsBatch failed batch:`, (err as Error).message);
+        continue;
+      }
+    }
+    if (!items) continue;
+    for (const v of items) {
+      const s = v.statistics || {};
+      out[v.id] = {
+        viewCount: s.viewCount != null ? parseInt(s.viewCount, 10) : null,
+        likeCount: s.likeCount != null ? parseInt(s.likeCount, 10) : null,
+        commentCount: s.commentCount != null ? parseInt(s.commentCount, 10) : null,
+      };
+    }
+  }
+  return out;
+}

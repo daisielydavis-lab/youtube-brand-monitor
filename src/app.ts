@@ -8,7 +8,7 @@
 import express from 'express';
 import cron from 'node-cron';
 import { config, validateConfig } from './config';
-import { runDiscoveryPipeline, getMonitorStatus, scanState, retryClassification } from './services/competitor-monitor';
+import { runDiscoveryPipeline, getMonitorStatus, scanState, retryClassification, refreshPerformanceData } from './services/competitor-monitor';
 import { detectCampaigns } from './services/competitor-monitor/campaign-detector';
 import { generateDailyReport, generateWeeklyReport, generateQuarterlyReport } from './services/competitor-monitor/competitor-report';
 import { getCreatorsFromVideos } from './services/competitor-monitor/creator-profiler';
@@ -329,6 +329,35 @@ app.get('/api/system', async (_req, res) => {
 });
 
 // ── Hotspot ──
+// ── Admin: PIN 验证（无登录系统，轻量门禁）──
+const ADMIN_PIN = process.env.ADMIN_PIN || 'ytadmin2026';
+app.post('/api/admin/verify', async (req, res) => {
+  const { pin } = req.body || {};
+  if (pin === ADMIN_PIN) { res.json({ ok: true }); return; }
+  res.status(401).json({ ok: false });
+});
+
+// ── Admin: 立即消化 AI Review Queue（limit<=0 = 全量）──
+app.post('/api/admin/ai-retry', async (req, res) => {
+  const { pin, limit } = req.body || {};
+  if (pin !== ADMIN_PIN) { res.status(401).json({ ok: false, error: '未授权' }); return; }
+  try {
+    const n = parseInt(String(limit ?? 0), 10) || 0;
+    const r = await retryClassification(n <= 0 ? 0 : n);
+    res.json({ ok: true, classified: r.classified, remaining: r.remaining });
+  } catch (err) { res.status(500).json({ ok: false, error: (err as Error).message }); }
+});
+
+// ── Admin: 立即执行 Performance Refresh（T+3/T+7）──
+app.post('/api/admin/perf-refresh', async (req, res) => {
+  const { pin } = req.body || {};
+  if (pin !== ADMIN_PIN) { res.status(401).json({ ok: false, error: '未授权' }); return; }
+  try {
+    const r = await refreshPerformanceData();
+    res.json({ ok: true, ...r });
+  } catch (err) { res.status(500).json({ ok: false, error: (err as Error).message }); }
+});
+
 app.post('/api/hotspot/start', async (req, res) => {
   const { games, brands, durationDays } = req.body || {};
   const db = getSupabase();
@@ -834,4 +863,12 @@ cron.schedule('0 10 * * *', async () => {
   } catch (err) { console.error('[Cron] AI backlog failed:', (err as Error).message); }
 });
 
+
+// ── Cron: Performance Refresh (T+3/T+7) daily at 11:00 UTC ──
+// 独立于 AI Review：只刷新已入库 video_id 的统计，不 search 不 AI。
+cron.schedule('0 11 * * *', async () => {
+  console.log('[Cron] Performance refresh (T+3/T+7)');
+  try { await refreshPerformanceData(); }
+  catch (err) { console.error('[Cron] Perf refresh failed:', (err as Error).message); }
+});
 export default app;

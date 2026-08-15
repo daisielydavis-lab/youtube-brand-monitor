@@ -9,7 +9,7 @@
 import { config, validateConfig } from '../../config';
 import { getSupabase } from '../../db/supabase';
 import { getActiveQueries, buildHotspotQueries, BRANDS } from './brand-config';
-import { searchVideos, getChannelsRecentVideos, getChannelsByIds, type YouTubeVideoResult } from './youtube-discovery';
+import { searchVideos, getChannelsRecentVideos, getChannelsByIds, fetchStatsBatch, getStatsBatchQuotaUsed, type YouTubeVideoResult } from './youtube-discovery';
 import { fetchVideoComments, hasExistingComments, saveComments } from './video-enrichment';
 import { getOrCreateCreatorProfile } from './creator-profiler';
 import { saveSnapshot } from './performance-snapshot';
@@ -42,6 +42,16 @@ const AI_BATCH_SIZE = 10, MAX_AI_PER_SCAN = 50, SCAN_TIMEOUT_MS = 10 * 60_000;
 
 function trackSearch() { dailySearchUsed++; scanState.searchQuotaUsed = dailySearchUsed; }
 function trackGeneral(n: number) { dailyGeneralUsed += n; scanState.generalQuotaUsed = dailyGeneralUsed; }
+
+/** Performance stage by published age: T+0 (<=3d, will get T+3 refresh),
+ *  T+3 (4-7d, current stats = T+3 snapshot, will get T+7 refresh),
+ *  mature (>7d, stats already mature, no refresh needed). */
+export function performanceStageFor(publishedAt: string): 't0' | 't3' | 'mature' {
+  const ageDays = (Date.now() - new Date(publishedAt).getTime()) / 86400000;
+  if (ageDays <= 3) return 't0';
+  if (ageDays <= 7) return 't3';
+  return 'mature';
+}
 
 function resetState(mode: string) {
   searchCircuitOpen = false;
@@ -262,6 +272,7 @@ export async function runDiscoveryPipeline(options?: {
         view_count: v.viewCount, like_count: v.likeCount, comment_count: v.commentCount,
         workflow_status: 'discovered',
         brand_id: null,
+        performance_stage: performanceStageFor(v.publishedAt),
         first_seen_at: new Date().toISOString(), last_updated_at: new Date().toISOString(),
       }, { onConflict: 'video_id' });
 
@@ -513,11 +524,68 @@ export async function retryClassification(limit: number = 0): Promise<{ classifi
   return { classified: totalClassified, remaining };
 }
 
+
+// ── Performance Refresh Queue（T+3 / T+7）──
+// 独立于 AI Review：只刷新已入库 video_id 的公开统计，不重新 search、不调 AI。
+// T+3: stage=t0 且发布时间<=3天前 → 存 views_t3/likes_t3/comments_t3, stage→t3
+// T+7: stage=t3 且发布时间<=7天前 → 存 views_t7/likes_t7/comments_t7, stage→mature
+export async function refreshPerformanceData(limit = 300): Promise<{ t3Refreshed: number; t7Refreshed: number }> {
+  const db = getSupabase();
+  let t3Refreshed = 0, t7Refreshed = 0;
+  const now = Date.now();
+  const t3Cutoff = new Date(now - 3 * 86400000).toISOString();
+  const t7Cutoff = new Date(now - 7 * 86400000).toISOString();
+
+  const { data: t3vids } = await db.from('youtube_competitor_videos')
+    .select('video_id').eq('performance_stage', 't0').lte('published_at', t3Cutoff).limit(limit);
+  if (t3vids?.length) {
+    const stats = await fetchStatsBatch(t3vids.map((v: any) => v.video_id));
+    for (const v of t3vids) {
+      const s = stats[(v as any).video_id];
+      if (!s) continue;
+      const { error } = await db.from('youtube_competitor_videos').update({
+        views_t3: s.viewCount, likes_t3: s.likeCount, comments_t3: s.commentCount,
+        performance_stage: 't3', performance_updated_at: new Date().toISOString(),
+      }).eq('video_id', (v as any).video_id);
+      if (!error) t3Refreshed++;
+    }
+  }
+
+  const { data: t7vids } = await db.from('youtube_competitor_videos')
+    .select('video_id').eq('performance_stage', 't3').lte('published_at', t7Cutoff).limit(limit);
+  if (t7vids?.length) {
+    const stats = await fetchStatsBatch(t7vids.map((v: any) => v.video_id));
+    for (const v of t7vids) {
+      const s = stats[(v as any).video_id];
+      if (!s) continue;
+      const { error } = await db.from('youtube_competitor_videos').update({
+        views_t7: s.viewCount, likes_t7: s.likeCount, comments_t7: s.commentCount,
+        performance_stage: 'mature', performance_updated_at: new Date().toISOString(),
+      }).eq('video_id', (v as any).video_id);
+      if (!error) t7Refreshed++;
+    }
+  }
+
+  console.log(`[PerfRefresh] t3=${t3Refreshed} t7=${t7Refreshed}`);
+  return { t3Refreshed, t7Refreshed };
+}
 export async function getMonitorStatus() {
   const db = getSupabase();
   const { count: tv } = await db.from('youtube_competitor_videos').select('id', { count: 'exact', head: true });
   const { data: cr } = await db.from('youtube_creator_profiles').select('channel_id');
   const { data: lv } = await db.from('youtube_competitor_videos').select('created_at').order('created_at', { ascending: false }).limit(1).maybeSingle();
   const { data: cfg } = await db.from('monitor_config').select('*').eq('id', 1).maybeSingle();
-  return { totalVideos: tv || 0, totalCreators: (cr || []).length, lastRun: (lv as any)?.created_at || null, searchQuotaUsed: dailySearchUsed, searchQuotaLimit: 100, generalQuotaUsed: dailyGeneralUsed, generalQuotaLimit: 10000, hotspotActive: (cfg as any)?.hotspot_active || false, scanRunning: scanState.running };
+  const now = Date.now();
+  const t3Cut = new Date(now - 3 * 86400000).toISOString();
+  const t7Cut = new Date(now - 7 * 86400000).toISOString();
+  const [cT3, cT7] = await Promise.all([
+    db.from('youtube_competitor_videos').select('id', { count: 'exact', head: true }).eq('performance_stage', 't0').lte('published_at', t3Cut),
+    db.from('youtube_competitor_videos').select('id', { count: 'exact', head: true }).eq('performance_stage', 't3').lte('published_at', t7Cut),
+  ]);
+  return { totalVideos: tv || 0, totalCreators: (cr || []).length, lastRun: (lv as any)?.created_at || null,
+    searchQuotaUsed: dailySearchUsed, searchQuotaLimit: 100,
+    generalQuotaUsed: dailyGeneralUsed, generalQuotaLimit: 10000,
+    statsQuotaUsed: getStatsBatchQuotaUsed(), statsQuotaLimit: 10000,
+    perfT3Pending: cT3.count ?? 0, perfT7Pending: cT7.count ?? 0,
+    hotspotActive: (cfg as any)?.hotspot_active || false, scanRunning: scanState.running };
 }

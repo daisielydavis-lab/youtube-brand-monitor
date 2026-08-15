@@ -263,7 +263,7 @@ export async function getCreatorsFromVideos(options?: {
     const baselineRows: any[] = [];
     for (let from = 0; ; from += 1000) {
       const { data } = await db.from('youtube_competitor_videos')
-        .select('channel_id,view_count')
+        .select('channel_id,view_count,views_t3,views_t7')
         .gte('published_at', since)
         .not('placement_type', 'in', '("confirmed_paid_placement","likely_sponsored")')
         .range(from, from + 999);
@@ -273,7 +273,7 @@ export async function getCreatorsFromVideos(options?: {
     }
     for (const v of baselineRows) {
       const e = baselineByChannel.get(v.channel_id) || { sum: 0, n: 0 };
-      e.sum += v.view_count || 0; e.n++;
+      e.sum += v.views_t7 ?? v.views_t3 ?? v.view_count ?? 0; e.n++;
       baselineByChannel.set(v.channel_id, e);
     }
   }
@@ -362,7 +362,7 @@ export async function getCreatorsFromVideos(options?: {
       historySpanDays > 60 ? 'long_term' : 'recurring';
 
     // ── Vs Baseline: sponsored avg vs creator's own non-sponsored avg ──
-    const sponsoredAvg = sorted.reduce((s: number, v: any) => s + (v.view_count || 0), 0) / Math.max(sorted.length, 1);
+    const sponsoredAvg = sorted.reduce((s: number, v: any) => s + ((v.views_t7 ?? v.views_t3 ?? v.view_count) || 0), 0) / Math.max(sorted.length, 1);
     const bl = baselineByChannel.get(channelId);
     const baselineAvg = bl && bl.n > 0 ? bl.sum / bl.n : 0;
     const vsBaselinePct: number | null = baselineAvg > 0
