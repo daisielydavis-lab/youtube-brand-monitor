@@ -1,0 +1,748 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Competitor Monitor v3</title><style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#F5F7FB;color:#172033;font-size:14px;line-height:1.5}
+.container{max-width:1280px;margin:0 auto;padding:20px}
+header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px;flex-wrap:wrap;gap:12px}
+h1{font-size:22px;color:#172033}h2{font-size:15px;color:#4B5870;margin:20px 0 10px;padding-bottom:4px;border-bottom:1px solid #E3E8F1}
+.sub{color:#718099;font-size:13px}
+.sys{display:flex;flex-wrap:wrap;gap:8px;font-size:11px;color:#8490A6}
+.sys span,.dot{background:#FFFFFF;padding:3px 8px;border-radius:10px;display:inline-flex;align-items:center;gap:4px;border:1px solid #E3E8F1}
+.dot::before{content:'';width:5px;height:5px;border-radius:50%}.dot.ok::before{background:#19A974}.dot.warn::before{background:#F59E0B}
+
+/* Controls */
+.ctrls{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:16px;background:#FFFFFF;padding:10px 14px;border-radius:10px;border:1px solid #E3E8F1;box-shadow:0 1px 3px rgba(35,50,80,0.04)}
+.ctrls select{background:#FFFFFF;color:#172033;border:1px solid #CFD8E8;padding:5px 8px;border-radius:6px;font-size:12px}
+.btn-scan{display:inline-block;padding:7px 14px;background:#3B6EF5;color:#fff;border-radius:6px;text-decoration:none;font-size:12px;font-weight:500;margin-left:auto;box-shadow:0 2px 8px rgba(59,110,245,0.18)}
+.btn-scan:hover{background:#2F5DDB}
+
+/* Tabs */
+.tabs{display:flex;gap:4px;margin-bottom:16px;border-bottom:1px solid #E3E8F1;padding-bottom:0}
+.tab{padding:8px 16px;color:#8490A6;text-decoration:none;font-size:13px;border-bottom:2px solid transparent;margin-bottom:-1px}
+.tab:hover{color:#4B5870}.tab.active{color:#3B6EF5;border-bottom-color:#3B6EF5}
+
+/* KPI */
+.kpi-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:20px}
+.kpi{background:#FFFFFF;border:1px solid #E3E8F1;border-radius:12px;padding:16px;text-align:center;box-shadow:0 1px 3px rgba(35,50,80,0.04)}
+.kpi.hl{border-color:#3B6EF5;background:#F3F7FF}
+.kpi-n{font-size:28px;font-weight:700;color:#172033}.kpi-l{font-size:11px;color:#8490A6;margin-top:2px}
+
+/* Brand */
+.brand-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;margin-bottom:20px}
+.brand-card{background:#FFFFFF;border:1px solid #E3E8F1;border-radius:12px;padding:14px;box-shadow:0 1px 3px rgba(35,50,80,0.04)}
+.bc-n{font-size:15px;font-weight:700;margin-bottom:6px}.bc-s{font-size:12px;color:#4B5870;margin-bottom:3px}.bc-s span{color:#172033;font-weight:600}
+
+/* Game rows */
+.game-row{display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid #F5F7FB;font-size:13px;color:#4B5870}
+.game-row i{font-style:normal;font-size:11px;margin:0 2px}
+.g-bar{width:80px;height:5px;background:#E9EEF6;border-radius:3px;overflow:hidden;flex-shrink:0}
+.g-fill{height:100%;background:#3B6EF5;border-radius:3px;display:block}
+
+/* Tables */
+.dt{width:100%;border-collapse:collapse;font-size:12px;margin-bottom:12px}
+.dt th{text-align:left;padding:6px 8px;background:#F8FAFD;color:#8490A6;font-weight:500;font-size:10px;text-transform:uppercase;border-bottom:1px solid #E3E8F1}
+.dt td{padding:6px 8px;border-bottom:1px solid #F5F7FB;color:#4B5870}.dt tr:hover{background:#F8FAFD}
+.dt a{color:#3B6EF5;text-decoration:none}
+
+/* Badges */
+.b{padding:1px 6px;border-radius:8px;font-size:10px;font-weight:500;white-space:nowrap}
+.b-confirmed_paid_placement,.b-Confirmed{background:#FEF2F2;color:#DC2626}
+.b-likely_sponsored,.b-Likely{background:#FFFBEB;color:#D97706}
+.b-organic_mention,.b-Organic{background:#ECFDF5;color:#059669}
+.b-official_brand_video{background:#EFF6FF;color:#2563EB}
+.b-unknown{background:#F8FAFD;color:#8490A6}
+
+/* Evidence tags */
+.et{font-size:9px;background:#F8FAFD;color:#8490A6;padding:1px 5px;border-radius:3px;margin:1px;display:inline-block;border:1px solid #E3E8F1}
+
+/* Video actions */
+.acts{white-space:nowrap}.a{width:22px;height:22px;border:1px solid #CFD8E8;border-radius:3px;background:#fff;color:#8490A6;cursor:pointer;font-size:11px;margin:0 1px}
+.a:hover{background:#F8FAFD}.a-y:hover{color:#19A974;border-color:#19A974}
+.a-o:hover{color:#F59E0B;border-color:#F59E0B}.a-r:hover{color:#EF5B5B;border-color:#EF5B5B}
+
+/* Campaign card */
+.camp-card{background:#FFFFFF;border:1px solid #E3E8F1;border-radius:8px;padding:12px}
+
+/* Comments */
+.comment{background:#FFFFFF;border:1px solid #E3E8F1;border-radius:6px;padding:8px 10px;margin-bottom:6px;font-size:12px}
+.bt{font-size:10px;background:#F8FAFD;padding:1px 4px;border-radius:3px;margin-right:3px;color:#8490A6}
+
+/* Two col */
+.two-col{display:grid;grid-template-columns:1fr 1fr;gap:20px}@media(max-width:768px){.two-col{grid-template-columns:1fr}}
+
+/* Empty / Onboard */
+.mt{color:#8490A6;font-style:italic;padding:16px;text-align:center}
+.onboard{max-width:560px;margin:40px auto;background:#FFFFFF;border:1px solid #E3E8F1;border-radius:18px;padding:32px 36px;box-shadow:0 8px 28px rgba(35,50,80,0.06)}
+.onboard h2{font-size:20px;color:#172033;border:none;margin-bottom:4px}
+.onboard>p{color:#4B5870;margin-bottom:20px;font-size:13px}
+/* Config summary */
+.config-summary{display:grid;grid-template-columns:1fr 1fr;gap:6px 20px;margin-bottom:20px;padding:12px;background:#F8FAFD;border:1px solid #E8EDF5;border-radius:8px}
+.cs-row{display:flex;justify-content:space-between;font-size:12px;padding:2px 0;color:#8490A6}
+.cs-row span:last-child{color:#172033;font-weight:600}
+/* Checklist */
+.checklist{text-align:left;margin-bottom:20px}
+.cl-item{font-size:13px;padding:6px 0;display:flex;align-items:center;gap:8px;color:#8490A6}
+.cl-item::before{content:'';width:6px;height:6px;border-radius:50%;flex-shrink:0}
+.cl-item.done{color:#4B5870}.cl-item.done::before{background:#19A974}
+.cl-item.pending{color:#8490A6}.cl-item.pending::before{background:#A6B0C2}
+/* Scan config */
+.scan-config{background:#F3F7FF;border:1px solid #DCE7FF;border-radius:10px;padding:16px;margin-bottom:16px}
+.sc-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+.sc-label{font-size:13px;color:#4B5870}
+.sc-select{background:#FFFFFF;color:#172033;border:1px solid #CFD8E8;padding:6px 10px;border-radius:6px;font-size:13px;cursor:pointer}
+.sc-estimate{display:flex;justify-content:space-between;font-size:12px;color:#8490A6;margin-bottom:14px}
+.sc-estimate strong{color:#172033}
+.sc-note{font-size:11px;color:#8490A6;margin-bottom:12px;line-height:1.6}
+/* Scan progress */
+.scan-progress{margin-bottom:16px;text-align:left}
+.scan-progress h3{font-size:15px;color:#3B6EF5;margin-bottom:12px}
+.sp-steps{display:flex;flex-direction:column;gap:4px;margin-bottom:10px}
+.sp-step{font-size:13px;color:#8490A6;padding:3px 0}
+.sp-step.active{color:#3B6EF5}.sp-step.done{color:#19A974}
+.sp-bar{height:4px;background:#E9EEF6;border-radius:2px;overflow:hidden;margin-bottom:10px}
+.sp-bar-fill{height:100%;background:#3B6EF5;transition:width 0.5s}
+.sp-stats{font-size:12px;color:#4B5870;display:flex;flex-wrap:wrap;gap:12px}
+.sp-stats b{color:#172033}
+.scan-done{text-align:center;padding:16px 0}
+.scan-done h3{color:#19A974}.scan-done p{color:#4B5870;margin:4px 0 12px}
+/* Quota */
+.quota-section{margin-top:20px;border-top:1px solid #E3E8F1;padding-top:16px}
+.q-row{display:flex;align-items:center;gap:10px;margin-bottom:8px;font-size:12px}
+.q-label{color:#4B5870;width:130px;flex-shrink:0}.q-num{color:#8490A6;width:80px;flex-shrink:0;text-align:right}
+.q-bar{flex:1;height:4px;background:#E9EEF6;border-radius:2px;overflow:hidden}
+.q-fill{height:100%;border-radius:2px;transition:width 0.5s}
+.q-reset{font-size:11px;color:#8490A6;margin-top:6px;text-align:right}
+.oc{font-size:14px;padding:8px 0;color:#4B5870;display:flex;align-items:center;gap:8px;text-align:left}
+.oc-i{font-size:16px;width:20px;text-align:center;flex-shrink:0}.oc-i.ok{color:#19A974}.oc-i.wait{color:#A6B0C2}
+.btn-p{display:inline-block;padding:12px 24px;background:#3B6EF5;color:white;border-radius:8px;text-decoration:none;font-size:14px;font-weight:600;cursor:pointer;border:none;box-shadow:0 6px 16px rgba(59,110,245,0.22)}
+.btn-p:hover{background:#2F5DDB}
+.disc{font-size:10px;color:#8490A6;text-align:center;margin-top:24px;padding-top:10px;border-top:1px solid #E3E8F1}
+.toast{position:fixed;bottom:20px;right:20px;background:#FFFFFF;color:#172033;padding:10px 18px;border-radius:8px;border:1px solid #E3E8F1;z-index:100;box-shadow:0 4px 12px rgba(35,50,80,0.1)}
+</style></head><body>
+<div class="container">
+  <header>
+    <div><h1>📊 YouTube Competitor Monitor</h1><p class="sub">GearUP · ExitLag · LagZapper</p></div>
+    <div class="sys">
+      <span class="dot ok">Search: 0/100</span>
+      <span>General: 0/10K</span>
+      <span>Last: Just now</span>
+      <span>Hotspot: ⚪</span>
+    </div>
+  </header>
+  <div class="ctrls">
+    <select onchange="applyFilter('brand',this.value)"><option value="all">All Brands</option><option value="GearUP" >GearUP</option><option value="ExitLag" >ExitLag</option><option value="LagZapper" >LagZapper</option></select>
+    <select onchange="applyFilter('market',this.value)"><option value="all">Global</option><option value="US" >US</option><option value="RU" >Russia</option><option value="BR" >Brazil</option></select>
+    <select onchange="applyFilter('range',this.value)"><option value="7d" >7 Days</option><option value="30d" >30 Days</option><option value="90d" >90 Days</option></select>
+    <a href="/run" class="btn-scan">Run Scan</a>
+  </div>
+  <nav class="tabs">
+    <a href="#" class="tab" onclick="switchTab('overview')" id="tab-overview">Overview</a>
+    <a href="#" class="tab" onclick="switchTab('campaigns')" id="tab-campaigns">Campaigns</a>
+    <a href="#" class="tab" onclick="switchTab('videos')" id="tab-videos">Videos</a>
+    <a href="#" class="tab" onclick="switchTab('creators')" id="tab-creators">Creators</a>
+    <a href="#" class="tab" onclick="switchTab('comments')" id="tab-comments">Comments</a>
+    <a href="#" class="tab" onclick="switchTab('system')" id="tab-system">System</a>
+  </nav>
+  <div id="tab-panel-overview" class="tab-content">
+  <div class="kpi-row" style="grid-template-columns:repeat(5,1fr)">
+    <div class="kpi"><div class="kpi-n">161</div><div class="kpi-l">竞品投放视频</div></div>
+    <div class="kpi"><div class="kpi-n">4</div><div class="kpi-l">待确认视频</div></div>
+    <div class="kpi"><div class="kpi-n">80</div><div class="kpi-l">活跃投放博主</div></div>
+    <div class="kpi"><div class="kpi-n">8</div><div class="kpi-l">集中投放项目</div></div>
+    <div class="kpi hl"><div class="kpi-n" style="color:#EF5B5B">35%</div><div class="kpi-l">AI分析覆盖率</div><div style="font-size:11px;color:#F59E0B;margin-top:2px">302 已分析 · 564 待复核</div></div>
+  </div>
+
+  <div style="font-size:11px;color:#8490A6;margin-bottom:4px;padding:6px 10px;background:#F8FAFD;border-radius:6px;border:1px solid #E3E8F1">
+    数据范围: <b>161 条竞品投放视频</b> · 80 位博主 · 57 个游戏 · Aug 8, 2026 → Aug 15, 2026
+    <div style="margin-top:2px;color:#A3ADC2">抓取 1,416 视频 · AI分析 35% (302 已分析 · 564 待复核) · 4 待确认 · 80 新增博主</div>
+  </div>
+
+  
+  <div style="display:flex;align-items:center;gap:10px;font-size:12px;margin-bottom:12px;padding:8px 12px;background:#F3F7FF;border:1px solid #DCE5F7;border-radius:8px;color:#4B5870">
+    <span style="font-weight:700;color:#172033">161 条竞品投放视频</span>
+    <span style="color:#A3ADC2">→</span>
+    <span>🟦 <b style="color:#3B6EF5">16</b> 条集中投放 · <b>8</b> 个项目</span>
+    <span style="color:#A3ADC2">|</span>
+    <span>⬜ <b style="color:#8490A6">145</b> 条独立投放</span>
+  </div>
+
+  <h2>🚨 近期投放动态</h2>
+  <div class="camp-card" style="margin-bottom:10px;border-left:3px solid #22c55e">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div>
+          <span style="font-size:16px;font-weight:700;color:#22c55e">LagZapper</span>
+          <span style="font-size:14px;color:#4B5870"> × Hell Let Loose</span>
+          <span style="font-size:10px;background:#F3F7FF;color:#3B6EF5;padding:1px 6px;border-radius:3px;margin-left:6px">多博主投放</span>
+        </div>
+        <span style="font-size:11px;color:#19A974">进行中 · 2026-08-13 → 2026-08-15</span>
+      </div>
+      <div style="display:flex;gap:16px;margin-top:8px;font-size:12px;color:#4B5870">
+        <span>👤 <b>2</b> 位博主</span>
+        <span>🎬 <b>2</b> 条投放</span>
+        <span>👁 <b>4.7K</b> 播放</span>
+        <span>🌍 地区未知</span>
+        <span style="background:#F3F7FF;color:#3B6EF5;padding:1px 8px;border-radius:4px">降低延迟</span>
+      </div>
+    </div><div class="camp-card" style="margin-bottom:10px;border-left:3px solid #3b82f6">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div>
+          <span style="font-size:16px;font-weight:700;color:#3b82f6">ExitLag</span>
+          <span style="font-size:14px;color:#4B5870"> × Valorant</span>
+          <span style="font-size:10px;background:#F3F7FF;color:#3B6EF5;padding:1px 6px;border-radius:3px;margin-left:6px">多博主投放</span>
+        </div>
+        <span style="font-size:11px;color:#19A974">进行中 · 2026-08-15 → 2026-08-15</span>
+      </div>
+      <div style="display:flex;gap:16px;margin-top:8px;font-size:12px;color:#4B5870">
+        <span>👤 <b>2</b> 位博主</span>
+        <span>🎬 <b>2</b> 条投放</span>
+        <span>👁 <b>291</b> 播放</span>
+        <span>🌍 地区未知</span>
+        <span style="background:#F3F7FF;color:#3B6EF5;padding:1px 8px;border-radius:4px">降低延迟</span>
+      </div>
+    </div><div class="camp-card" style="margin-bottom:10px;border-left:3px solid #3b82f6">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div>
+          <span style="font-size:16px;font-weight:700;color:#3b82f6">ExitLag</span>
+          <span style="font-size:14px;color:#4B5870"> × Genshin Impact</span>
+          <span style="font-size:10px;background:#F3F7FF;color:#3B6EF5;padding:1px 6px;border-radius:3px;margin-left:6px">多博主投放</span>
+        </div>
+        <span style="font-size:11px;color:#19A974">进行中 · 2026-08-14 → 2026-08-14</span>
+      </div>
+      <div style="display:flex;gap:16px;margin-top:8px;font-size:12px;color:#4B5870">
+        <span>👤 <b>2</b> 位博主</span>
+        <span>🎬 <b>2</b> 条投放</span>
+        <span>👁 <b>608</b> 播放</span>
+        <span>🌍 BR</span>
+        <span style="background:#F3F7FF;color:#3B6EF5;padding:1px 8px;border-radius:4px">游戏评测</span>
+      </div>
+    </div><div class="camp-card" style="margin-bottom:10px;border-left:3px solid #3b82f6">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div>
+          <span style="font-size:16px;font-weight:700;color:#3b82f6">ExitLag</span>
+          <span style="font-size:14px;color:#4B5870"> × Roblox</span>
+          <span style="font-size:10px;background:#F3F7FF;color:#3B6EF5;padding:1px 6px;border-radius:3px;margin-left:6px">多博主投放</span>
+        </div>
+        <span style="font-size:11px;color:#19A974">进行中 · 2026-08-13 → 2026-08-14</span>
+      </div>
+      <div style="display:flex;gap:16px;margin-top:8px;font-size:12px;color:#4B5870">
+        <span>👤 <b>2</b> 位博主</span>
+        <span>🎬 <b>2</b> 条投放</span>
+        <span>👁 <b>184</b> 播放</span>
+        <span>🌍 地区未知</span>
+        <span style="background:#F3F7FF;color:#3B6EF5;padding:1px 8px;border-radius:4px">降低延迟</span>
+      </div>
+    </div><div class="camp-card" style="margin-bottom:10px;border-left:3px solid #3b82f6">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div>
+          <span style="font-size:16px;font-weight:700;color:#3b82f6">ExitLag</span>
+          <span style="font-size:14px;color:#4B5870"> × Delta Force</span>
+          <span style="font-size:10px;background:#F3F7FF;color:#3B6EF5;padding:1px 6px;border-radius:3px;margin-left:6px">单博主连续投放</span>
+        </div>
+        <span style="font-size:11px;color:#19A974">进行中 · 2026-08-14 → 2026-08-15</span>
+      </div>
+      <div style="display:flex;gap:16px;margin-top:8px;font-size:12px;color:#4B5870">
+        <span>👤 <b>1</b> 位博主</span>
+        <span>🎬 <b>2</b> 条投放</span>
+        <span>👁 <b>489</b> 播放</span>
+        <span>🌍 地区未知</span>
+        <span style="background:#F3F7FF;color:#3B6EF5;padding:1px 8px;border-radius:4px">优惠码</span>
+      </div>
+    </div><div class="camp-card" style="margin-bottom:10px;border-left:3px solid #3b82f6">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div>
+          <span style="font-size:16px;font-weight:700;color:#3b82f6">ExitLag</span>
+          <span style="font-size:14px;color:#4B5870"> × Seal Online</span>
+          <span style="font-size:10px;background:#F3F7FF;color:#3B6EF5;padding:1px 6px;border-radius:3px;margin-left:6px">单博主连续投放</span>
+        </div>
+        <span style="font-size:11px;color:#19A974">进行中 · 2026-08-13 → 2026-08-13</span>
+      </div>
+      <div style="display:flex;gap:16px;margin-top:8px;font-size:12px;color:#4B5870">
+        <span>👤 <b>1</b> 位博主</span>
+        <span>🎬 <b>2</b> 条投放</span>
+        <span>👁 <b>1.3K</b> 播放</span>
+        <span>🌍 US</span>
+        <span style="background:#F3F7FF;color:#3B6EF5;padding:1px 8px;border-radius:4px">降低延迟</span>
+      </div>
+    </div><div class="camp-card" style="margin-bottom:10px;border-left:3px solid #3b82f6">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div>
+          <span style="font-size:16px;font-weight:700;color:#3b82f6">ExitLag</span>
+          <span style="font-size:14px;color:#4B5870"> × Battlefield 6</span>
+          <span style="font-size:10px;background:#F3F7FF;color:#3B6EF5;padding:1px 6px;border-radius:3px;margin-left:6px">单博主连续投放</span>
+        </div>
+        <span style="font-size:11px;color:#19A974">进行中 · 2026-08-14 → 2026-08-15</span>
+      </div>
+      <div style="display:flex;gap:16px;margin-top:8px;font-size:12px;color:#4B5870">
+        <span>👤 <b>1</b> 位博主</span>
+        <span>🎬 <b>2</b> 条投放</span>
+        <span>👁 <b>28</b> 播放</span>
+        <span>🌍 地区未知</span>
+        <span style="background:#F3F7FF;color:#3B6EF5;padding:1px 8px;border-radius:4px">降低延迟</span>
+      </div>
+    </div><div class="camp-card" style="margin-bottom:10px;border-left:3px solid #3b82f6">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div>
+          <span style="font-size:16px;font-weight:700;color:#3b82f6">ExitLag</span>
+          <span style="font-size:14px;color:#4B5870"> × Evercold</span>
+          <span style="font-size:10px;background:#F3F7FF;color:#3B6EF5;padding:1px 6px;border-radius:3px;margin-left:6px">单博主连续投放</span>
+        </div>
+        <span style="font-size:11px;color:#19A974">进行中 · 2026-08-15 → 2026-08-15</span>
+      </div>
+      <div style="display:flex;gap:16px;margin-top:8px;font-size:12px;color:#4B5870">
+        <span>👤 <b>1</b> 位博主</span>
+        <span>🎬 <b>2</b> 条投放</span>
+        <span>👁 <b>15</b> 播放</span>
+        <span>🌍 US</span>
+        <span style="background:#F3F7FF;color:#3B6EF5;padding:1px 8px;border-radius:4px">优惠码</span>
+      </div>
+    </div>
+
+  <h2>🔍 竞品投放分布</h2>
+  <div class="brand-grid">
+    
+    <div class="brand-card" style="border-top:3px solid #3b82f6">
+      <div class="bc-n" style="color:#3b82f6">ExitLag</div>
+      <div class="bc-s"><span>129</span> 条投放 · <span>62</span> 位博主</div>
+    </div>
+    <div class="brand-card" style="border-top:3px solid #f59e0b">
+      <div class="bc-n" style="color:#f59e0b">GearUP</div>
+      <div class="bc-s"><span>29</span> 条投放 · <span>15</span> 位博主</div>
+    </div>
+    <div class="brand-card" style="border-top:3px solid #22c55e">
+      <div class="bc-n" style="color:#22c55e">LagZapper</div>
+      <div class="bc-s"><span>3</span> 条投放 · <span>3</span> 位博主</div>
+    </div>
+  </div>
+
+  <div class="two-col">
+    <div><h2>🎮 重点投放游戏</h2>
+      <div style="font-size:11px;color:#8490A6;margin-bottom:6px">Top 6 of 57 个游戏 · 共 161 条投放</div>
+      <div class="game-row"><span style="flex:1">unknown</span><span>25 条投放</span></div><div class="game-row"><span style="flex:1">CS2</span><span>15 条投放</span></div><div class="game-row"><span style="flex:1">Valorant</span><span>15 条投放</span></div><div class="game-row"><span style="flex:1">PUBG</span><span>8 条投放</span></div><div class="game-row"><span style="flex:1">Apex Legends</span><span>5 条投放</span></div><div class="game-row"><span style="flex:1">Tibia</span><span>5 条投放</span></div>
+    </div>
+    <div><h2>🏷 主要投放主题</h2>
+      <div class="game-row"><span style="flex:1">reduce_ping</span><span>55</span></div><div class="game-row"><span style="flex:1">优惠码</span><span>52</span></div><div class="game-row"><span style="flex:1">其他</span><span>28</span></div><div class="game-row"><span style="flex:1">游戏评测</span><span>13</span></div><div class="game-row"><span style="flex:1">教程攻略</span><span>10</span></div><div class="game-row"><span style="flex:1">new_launch</span><span>2</span></div>
+    </div>
+  </div></div>
+  <div id="tab-panel-campaigns" class="tab-content" style="display:none">
+  <div style="font-size:11px;color:#8490A6;margin-bottom:12px;padding:6px 10px;background:#F8FAFD;border-radius:6px;border:1px solid #E3E8F1">
+    范围: <b>8 个集中投放项目</b> · 16 条集中投放 · 80 位博主 · 覆盖 161 条竞品投放视频的 10%
+  </div><div class="camp-card" style="margin-bottom:14px;border-left:3px solid #22c55e;padding:16px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px">
+        <div>
+          <span style="font-size:17px;font-weight:700;color:#22c55e">LagZapper</span>
+          <span style="font-size:15px;color:#4B5870"> × Hell Let Loose</span>
+          <span style="font-size:11px;background:#F3F7FF;color:#3B6EF5;padding:2px 8px;border-radius:3px;margin-left:8px">多博主投放</span>
+        </div>
+        <span style="font-size:12px;padding:4px 10px;border-radius:8px;color:#fff;background:#19A974">进行中</span>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:10px;margin-bottom:10px">
+        <div><span style="font-size:11px;color:#8490A6;display:block">周期</span><span style="font-size:13px;font-weight:600;color:#172033">2026-08-13 → 2026-08-15</span></div>
+        <div><span style="font-size:11px;color:#8490A6;display:block">博主</span><span style="font-size:13px;font-weight:600;color:#172033">2</span></div>
+        <div><span style="font-size:11px;color:#8490A6;display:block">投放数</span><span style="font-size:13px;font-weight:600;color:#172033">2</span></div>
+        <div><span style="font-size:11px;color:#8490A6;display:block">预估播放</span><span style="font-size:13px;font-weight:600;color:#172033">4.7K</span></div>
+        <div><span style="font-size:11px;color:#8490A6;display:block">市场</span><span style="font-size:13px;font-weight:600;color:#172033">地区未知</span></div>
+      </div>
+      <div style="font-size:12px;color:#4B5870">
+        <span style="background:#F3F7FF;color:#3B6EF5;padding:2px 8px;border-radius:4px;margin-right:6px">降低延迟</span>
+      </div>
+    </div><div class="camp-card" style="margin-bottom:14px;border-left:3px solid #3b82f6;padding:16px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px">
+        <div>
+          <span style="font-size:17px;font-weight:700;color:#3b82f6">ExitLag</span>
+          <span style="font-size:15px;color:#4B5870"> × Valorant</span>
+          <span style="font-size:11px;background:#F3F7FF;color:#3B6EF5;padding:2px 8px;border-radius:3px;margin-left:8px">多博主投放</span>
+        </div>
+        <span style="font-size:12px;padding:4px 10px;border-radius:8px;color:#fff;background:#19A974">进行中</span>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:10px;margin-bottom:10px">
+        <div><span style="font-size:11px;color:#8490A6;display:block">周期</span><span style="font-size:13px;font-weight:600;color:#172033">2026-08-15 → 2026-08-15</span></div>
+        <div><span style="font-size:11px;color:#8490A6;display:block">博主</span><span style="font-size:13px;font-weight:600;color:#172033">2</span></div>
+        <div><span style="font-size:11px;color:#8490A6;display:block">投放数</span><span style="font-size:13px;font-weight:600;color:#172033">2</span></div>
+        <div><span style="font-size:11px;color:#8490A6;display:block">预估播放</span><span style="font-size:13px;font-weight:600;color:#172033">291</span></div>
+        <div><span style="font-size:11px;color:#8490A6;display:block">市场</span><span style="font-size:13px;font-weight:600;color:#172033">地区未知</span></div>
+      </div>
+      <div style="font-size:12px;color:#4B5870">
+        <span style="background:#F3F7FF;color:#3B6EF5;padding:2px 8px;border-radius:4px;margin-right:6px">降低延迟</span>
+      </div>
+    </div><div class="camp-card" style="margin-bottom:14px;border-left:3px solid #3b82f6;padding:16px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px">
+        <div>
+          <span style="font-size:17px;font-weight:700;color:#3b82f6">ExitLag</span>
+          <span style="font-size:15px;color:#4B5870"> × Genshin Impact</span>
+          <span style="font-size:11px;background:#F3F7FF;color:#3B6EF5;padding:2px 8px;border-radius:3px;margin-left:8px">多博主投放</span>
+        </div>
+        <span style="font-size:12px;padding:4px 10px;border-radius:8px;color:#fff;background:#19A974">进行中</span>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:10px;margin-bottom:10px">
+        <div><span style="font-size:11px;color:#8490A6;display:block">周期</span><span style="font-size:13px;font-weight:600;color:#172033">2026-08-14 → 2026-08-14</span></div>
+        <div><span style="font-size:11px;color:#8490A6;display:block">博主</span><span style="font-size:13px;font-weight:600;color:#172033">2</span></div>
+        <div><span style="font-size:11px;color:#8490A6;display:block">投放数</span><span style="font-size:13px;font-weight:600;color:#172033">2</span></div>
+        <div><span style="font-size:11px;color:#8490A6;display:block">预估播放</span><span style="font-size:13px;font-weight:600;color:#172033">608</span></div>
+        <div><span style="font-size:11px;color:#8490A6;display:block">市场</span><span style="font-size:13px;font-weight:600;color:#172033">BR</span></div>
+      </div>
+      <div style="font-size:12px;color:#4B5870">
+        <span style="background:#F3F7FF;color:#3B6EF5;padding:2px 8px;border-radius:4px;margin-right:6px">游戏评测</span>
+      </div>
+    </div><div class="camp-card" style="margin-bottom:14px;border-left:3px solid #3b82f6;padding:16px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px">
+        <div>
+          <span style="font-size:17px;font-weight:700;color:#3b82f6">ExitLag</span>
+          <span style="font-size:15px;color:#4B5870"> × Roblox</span>
+          <span style="font-size:11px;background:#F3F7FF;color:#3B6EF5;padding:2px 8px;border-radius:3px;margin-left:8px">多博主投放</span>
+        </div>
+        <span style="font-size:12px;padding:4px 10px;border-radius:8px;color:#fff;background:#19A974">进行中</span>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:10px;margin-bottom:10px">
+        <div><span style="font-size:11px;color:#8490A6;display:block">周期</span><span style="font-size:13px;font-weight:600;color:#172033">2026-08-13 → 2026-08-14</span></div>
+        <div><span style="font-size:11px;color:#8490A6;display:block">博主</span><span style="font-size:13px;font-weight:600;color:#172033">2</span></div>
+        <div><span style="font-size:11px;color:#8490A6;display:block">投放数</span><span style="font-size:13px;font-weight:600;color:#172033">2</span></div>
+        <div><span style="font-size:11px;color:#8490A6;display:block">预估播放</span><span style="font-size:13px;font-weight:600;color:#172033">184</span></div>
+        <div><span style="font-size:11px;color:#8490A6;display:block">市场</span><span style="font-size:13px;font-weight:600;color:#172033">地区未知</span></div>
+      </div>
+      <div style="font-size:12px;color:#4B5870">
+        <span style="background:#F3F7FF;color:#3B6EF5;padding:2px 8px;border-radius:4px;margin-right:6px">降低延迟</span>
+      </div>
+    </div><div class="camp-card" style="margin-bottom:14px;border-left:3px solid #3b82f6;padding:16px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px">
+        <div>
+          <span style="font-size:17px;font-weight:700;color:#3b82f6">ExitLag</span>
+          <span style="font-size:15px;color:#4B5870"> × Delta Force</span>
+          <span style="font-size:11px;background:#F3F7FF;color:#3B6EF5;padding:2px 8px;border-radius:3px;margin-left:8px">单博主连续投放</span>
+        </div>
+        <span style="font-size:12px;padding:4px 10px;border-radius:8px;color:#fff;background:#19A974">进行中</span>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:10px;margin-bottom:10px">
+        <div><span style="font-size:11px;color:#8490A6;display:block">周期</span><span style="font-size:13px;font-weight:600;color:#172033">2026-08-14 → 2026-08-15</span></div>
+        <div><span style="font-size:11px;color:#8490A6;display:block">博主</span><span style="font-size:13px;font-weight:600;color:#172033">1</span></div>
+        <div><span style="font-size:11px;color:#8490A6;display:block">投放数</span><span style="font-size:13px;font-weight:600;color:#172033">2</span></div>
+        <div><span style="font-size:11px;color:#8490A6;display:block">预估播放</span><span style="font-size:13px;font-weight:600;color:#172033">489</span></div>
+        <div><span style="font-size:11px;color:#8490A6;display:block">市场</span><span style="font-size:13px;font-weight:600;color:#172033">地区未知</span></div>
+      </div>
+      <div style="font-size:12px;color:#4B5870">
+        <span style="background:#F3F7FF;color:#3B6EF5;padding:2px 8px;border-radius:4px;margin-right:6px">优惠码</span>
+      </div>
+    </div><div class="camp-card" style="margin-bottom:14px;border-left:3px solid #3b82f6;padding:16px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px">
+        <div>
+          <span style="font-size:17px;font-weight:700;color:#3b82f6">ExitLag</span>
+          <span style="font-size:15px;color:#4B5870"> × Seal Online</span>
+          <span style="font-size:11px;background:#F3F7FF;color:#3B6EF5;padding:2px 8px;border-radius:3px;margin-left:8px">单博主连续投放</span>
+        </div>
+        <span style="font-size:12px;padding:4px 10px;border-radius:8px;color:#fff;background:#19A974">进行中</span>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:10px;margin-bottom:10px">
+        <div><span style="font-size:11px;color:#8490A6;display:block">周期</span><span style="font-size:13px;font-weight:600;color:#172033">2026-08-13 → 2026-08-13</span></div>
+        <div><span style="font-size:11px;color:#8490A6;display:block">博主</span><span style="font-size:13px;font-weight:600;color:#172033">1</span></div>
+        <div><span style="font-size:11px;color:#8490A6;display:block">投放数</span><span style="font-size:13px;font-weight:600;color:#172033">2</span></div>
+        <div><span style="font-size:11px;color:#8490A6;display:block">预估播放</span><span style="font-size:13px;font-weight:600;color:#172033">1.3K</span></div>
+        <div><span style="font-size:11px;color:#8490A6;display:block">市场</span><span style="font-size:13px;font-weight:600;color:#172033">US</span></div>
+      </div>
+      <div style="font-size:12px;color:#4B5870">
+        <span style="background:#F3F7FF;color:#3B6EF5;padding:2px 8px;border-radius:4px;margin-right:6px">降低延迟</span>
+      </div>
+    </div><div class="camp-card" style="margin-bottom:14px;border-left:3px solid #3b82f6;padding:16px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px">
+        <div>
+          <span style="font-size:17px;font-weight:700;color:#3b82f6">ExitLag</span>
+          <span style="font-size:15px;color:#4B5870"> × Battlefield 6</span>
+          <span style="font-size:11px;background:#F3F7FF;color:#3B6EF5;padding:2px 8px;border-radius:3px;margin-left:8px">单博主连续投放</span>
+        </div>
+        <span style="font-size:12px;padding:4px 10px;border-radius:8px;color:#fff;background:#19A974">进行中</span>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:10px;margin-bottom:10px">
+        <div><span style="font-size:11px;color:#8490A6;display:block">周期</span><span style="font-size:13px;font-weight:600;color:#172033">2026-08-14 → 2026-08-15</span></div>
+        <div><span style="font-size:11px;color:#8490A6;display:block">博主</span><span style="font-size:13px;font-weight:600;color:#172033">1</span></div>
+        <div><span style="font-size:11px;color:#8490A6;display:block">投放数</span><span style="font-size:13px;font-weight:600;color:#172033">2</span></div>
+        <div><span style="font-size:11px;color:#8490A6;display:block">预估播放</span><span style="font-size:13px;font-weight:600;color:#172033">28</span></div>
+        <div><span style="font-size:11px;color:#8490A6;display:block">市场</span><span style="font-size:13px;font-weight:600;color:#172033">地区未知</span></div>
+      </div>
+      <div style="font-size:12px;color:#4B5870">
+        <span style="background:#F3F7FF;color:#3B6EF5;padding:2px 8px;border-radius:4px;margin-right:6px">降低延迟</span>
+      </div>
+    </div><div class="camp-card" style="margin-bottom:14px;border-left:3px solid #3b82f6;padding:16px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px">
+        <div>
+          <span style="font-size:17px;font-weight:700;color:#3b82f6">ExitLag</span>
+          <span style="font-size:15px;color:#4B5870"> × Evercold</span>
+          <span style="font-size:11px;background:#F3F7FF;color:#3B6EF5;padding:2px 8px;border-radius:3px;margin-left:8px">单博主连续投放</span>
+        </div>
+        <span style="font-size:12px;padding:4px 10px;border-radius:8px;color:#fff;background:#19A974">进行中</span>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:10px;margin-bottom:10px">
+        <div><span style="font-size:11px;color:#8490A6;display:block">周期</span><span style="font-size:13px;font-weight:600;color:#172033">2026-08-15 → 2026-08-15</span></div>
+        <div><span style="font-size:11px;color:#8490A6;display:block">博主</span><span style="font-size:13px;font-weight:600;color:#172033">1</span></div>
+        <div><span style="font-size:11px;color:#8490A6;display:block">投放数</span><span style="font-size:13px;font-weight:600;color:#172033">2</span></div>
+        <div><span style="font-size:11px;color:#8490A6;display:block">预估播放</span><span style="font-size:13px;font-weight:600;color:#172033">15</span></div>
+        <div><span style="font-size:11px;color:#8490A6;display:block">市场</span><span style="font-size:13px;font-weight:600;color:#172033">US</span></div>
+      </div>
+      <div style="font-size:12px;color:#4B5870">
+        <span style="background:#F3F7FF;color:#3B6EF5;padding:2px 8px;border-radius:4px;margin-right:6px">优惠码</span>
+      </div>
+    </div></div>
+  <div id="tab-panel-videos" class="tab-content" style="display:none">
+  <div class="ctrls" style="align-items:center;gap:10px;flex-wrap:wrap">
+    <span style="font-size:12px;color:#8490A6;font-weight:600">View:</span>
+    <button onclick="switchVideoView('competitor')" id="vid-btn-competitor" class="btn-scan" style="font-size:11px;padding:4px 10px">竞品投放视频 161 · Showing 1–20 of 161</button>
+    <button onclick="switchVideoView('unresolved')" id="vid-btn-unresolved" style="background:#1e293b;color:#f59e0b;border:1px solid #f59e0b;padding:4px 10px;border-radius:6px;font-size:11px;cursor:pointer">待确认视频 4 · Showing 4</button>
+    <button onclick="switchVideoView('all')" id="vid-btn-all" style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;padding:4px 10px;border-radius:6px;font-size:11px;cursor:pointer">全部抓取 1,416 · Showing latest 30</button>
+    <span style="margin-left:12px;color:#334155">|</span>
+    <select onchange="applyFilter('placement',this.value)"><option value="all">All Placements</option><option value="confirmed_paid_placement" >Confirmed</option><option value="likely_sponsored" >Likely</option><option value="organic_mention" >Organic</option></select>
+    <select onchange="applyFilter('type',this.value)"><option value="all">All Types</option><option value="dedicated" >Dedicated</option><option value="integrated" >Integrated</option><option value="shorts" >Shorts</option><option value="live" >Livestream</option></select>
+  </div>
+  <table class="dt vf" id="video-table"><thead><tr><th></th><th>Title</th><th>Channel</th><th>Brand</th><th>Game</th><th>Type</th><th>Views</th><th>Evidence</th><th>Actions</th></tr></thead><tbody id="video-tbody">
+  <tr data-vid="KbAiAUYRaKY">
+    <td><img src="https://i.ytimg.com/vi/KbAiAUYRaKY/mqdefault.jpg" width="80" height="45" style="border-radius:4px"></td>
+    <td><a href="https://youtube.com/watch?v=KbAiAUYRaKY" target="_blank">Chill Apex Live !sfx !giveaway</a></td>
+    <td style="white-space:nowrap">Tuhin Frags</td>
+    <td style="white-space:nowrap">ExitLag</td>
+    <td style="white-space:nowrap">Apex Legends</td>
+    <td><span class="et">Livestream</span></td>
+    <td style="white-space:nowrap">63</td>
+    <td><span title="" style="cursor:help">⚪ <span class="b b-likely_sponsored">Likely</span></span></td>
+    <td class="acts"><button onclick="va('KbAiAUYRaKY','confirm_placement')" class="a a-y" title="Confirm">✓</button><button onclick="va('KbAiAUYRaKY','mark_organic')" class="a a-o" title="Organic">O</button><button onclick="va('KbAiAUYRaKY','ignore')" class="a a-r" title="Ignore">✕</button></td>
+  </tr><tr data-vid="LIaX_4mTmjM">
+    <td><img src="https://i.ytimg.com/vi/LIaX_4mTmjM/mqdefault.jpg" width="80" height="45" style="border-radius:4px"></td>
+    <td><a href="https://youtube.com/watch?v=LIaX_4mTmjM" target="_blank">【CS2】官匹｜42 Kill 還是銀牌 1？這定級系統到底怎麼了！😨#cs2 #csgo</a></td>
+    <td style="white-space:nowrap">Raiya瑞亞</td>
+    <td style="white-space:nowrap">GearUP</td>
+    <td style="white-space:nowrap">CS2</td>
+    <td><span class="et">Integration</span></td>
+    <td style="white-space:nowrap">3</td>
+    <td><span title="" style="cursor:help">⚪ <span class="b b-likely_sponsored">Likely</span></span></td>
+    <td class="acts"><button onclick="va('LIaX_4mTmjM','confirm_placement')" class="a a-y" title="Confirm">✓</button><button onclick="va('LIaX_4mTmjM','mark_organic')" class="a a-o" title="Organic">O</button><button onclick="va('LIaX_4mTmjM','ignore')" class="a a-r" title="Ignore">✕</button></td>
+  </tr><tr data-vid="Ckc5XYb-0Cc">
+    <td><img src="https://i.ytimg.com/vi/Ckc5XYb-0Cc/mqdefault_live.jpg" width="80" height="45" style="border-radius:4px"></td>
+    <td><a href="https://youtube.com/watch?v=Ckc5XYb-0Cc" target="_blank">Tibia - Ek 2800 Top Ek Global - Bom Dia Amigões!!! ❗exi…</a></td>
+    <td style="white-space:nowrap">Galll</td>
+    <td style="white-space:nowrap">ExitLag</td>
+    <td style="white-space:nowrap">Tibia</td>
+    <td><span class="et">Livestream</span></td>
+    <td style="white-space:nowrap">20</td>
+    <td><span title="" style="cursor:help">⚪ <span class="b b-likely_sponsored">Likely</span></span></td>
+    <td class="acts"><button onclick="va('Ckc5XYb-0Cc','confirm_placement')" class="a a-y" title="Confirm">✓</button><button onclick="va('Ckc5XYb-0Cc','mark_organic')" class="a a-o" title="Organic">O</button><button onclick="va('Ckc5XYb-0Cc','ignore')" class="a a-r" title="Ignore">✕</button></td>
+  </tr><tr data-vid="xmgT7t1uqmo">
+    <td><img src="https://i.ytimg.com/vi/xmgT7t1uqmo/mqdefault_live.jpg" width="80" height="45" style="border-radius:4px"></td>
+    <td><a href="https://youtube.com/watch?v=xmgT7t1uqmo" target="_blank">[LIVE] HAPPPY INDEPENDENCE DAY!! | VALO NOW BIGWALK LAT…</a></td>
+    <td style="white-space:nowrap">Deepak Jotwani</td>
+    <td style="white-space:nowrap">ExitLag</td>
+    <td style="white-space:nowrap">Valorant</td>
+    <td><span class="et">Livestream</span></td>
+    <td style="white-space:nowrap">47</td>
+    <td><span title="" style="cursor:help">⚪ <span class="b b-likely_sponsored">Likely</span></span></td>
+    <td class="acts"><button onclick="va('xmgT7t1uqmo','confirm_placement')" class="a a-y" title="Confirm">✓</button><button onclick="va('xmgT7t1uqmo','mark_organic')" class="a a-o" title="Organic">O</button><button onclick="va('xmgT7t1uqmo','ignore')" class="a a-r" title="Ignore">✕</button></td>
+  </tr><tr data-vid="tAoqr-9SMB0">
+    <td><img src="https://i.ytimg.com/vi/tAoqr-9SMB0/mqdefault.jpg" width="80" height="45" style="border-radius:4px"></td>
+    <td><a href="https://youtube.com/watch?v=tAoqr-9SMB0" target="_blank">Стоит ли играть в Hell Let Loose Vietnam</a></td>
+    <td style="white-space:nowrap">MavericK Bro</td>
+    <td style="white-space:nowrap">LagZapper</td>
+    <td style="white-space:nowrap">Hell Let Loose</td>
+    <td><span class="et">Dedicated</span></td>
+    <td style="white-space:nowrap">434</td>
+    <td><span title="" style="cursor:help">⚪ <span class="b b-confirmed_paid_placement">Confirmed</span></span></td>
+    <td class="acts"><button onclick="va('tAoqr-9SMB0','confirm_placement')" class="a a-y" title="Confirm">✓</button><button onclick="va('tAoqr-9SMB0','mark_organic')" class="a a-o" title="Organic">O</button><button onclick="va('tAoqr-9SMB0','ignore')" class="a a-r" title="Ignore">✕</button></td>
+  </tr><tr data-vid="UiFCy5ahnOI">
+    <td><img src="https://i.ytimg.com/vi/UiFCy5ahnOI/mqdefault_live.jpg" width="80" height="45" style="border-radius:4px"></td>
+    <td><a href="https://youtube.com/watch?v=UiFCy5ahnOI" target="_blank">лууутінгГ  | Season 10 ||  Delta Force || #deltaforce  …</a></td>
+    <td style="white-space:nowrap">W4llfacer</td>
+    <td style="white-space:nowrap">ExitLag</td>
+    <td style="white-space:nowrap">Delta Force</td>
+    <td><span class="et">Integration</span></td>
+    <td style="white-space:nowrap">86</td>
+    <td><span title="" style="cursor:help">⚪ <span class="b b-likely_sponsored">Likely</span></span></td>
+    <td class="acts"><button onclick="va('UiFCy5ahnOI','confirm_placement')" class="a a-y" title="Confirm">✓</button><button onclick="va('UiFCy5ahnOI','mark_organic')" class="a a-o" title="Organic">O</button><button onclick="va('UiFCy5ahnOI','ignore')" class="a a-r" title="Ignore">✕</button></td>
+  </tr><tr data-vid="LWHQer4ctrQ">
+    <td><img src="https://i.ytimg.com/vi/LWHQer4ctrQ/mqdefault.jpg" width="80" height="45" style="border-radius:4px"></td>
+    <td><a href="https://youtube.com/watch?v=LWHQer4ctrQ" target="_blank">Tag Him/Her #valorant #gamingindia #exitlagaffiliate #v…</a></td>
+    <td style="white-space:nowrap">WG Playz</td>
+    <td style="white-space:nowrap">ExitLag</td>
+    <td style="white-space:nowrap">Valorant</td>
+    <td><span class="et">Shorts</span></td>
+    <td style="white-space:nowrap">309</td>
+    <td><span title="" style="cursor:help">⚪ <span class="b b-likely_sponsored">Likely</span></span></td>
+    <td class="acts"><button onclick="va('LWHQer4ctrQ','confirm_placement')" class="a a-y" title="Confirm">✓</button><button onclick="va('LWHQer4ctrQ','mark_organic')" class="a a-o" title="Organic">O</button><button onclick="va('LWHQer4ctrQ','ignore')" class="a a-r" title="Ignore">✕</button></td>
+  </tr><tr data-vid="BYgwQRf7WjU">
+    <td><img src="https://i.ytimg.com/vi/BYgwQRf7WjU/mqdefault.jpg" width="80" height="45" style="border-radius:4px"></td>
+    <td><a href="https://youtube.com/watch?v=BYgwQRf7WjU" target="_blank">ExitLag!   BF6 RED SEC / Rush Grind!! pix !comandos +18</a></td>
+    <td style="white-space:nowrap">FPS Maromba</td>
+    <td style="white-space:nowrap">ExitLag</td>
+    <td style="white-space:nowrap">Battlefield 6</td>
+    <td><span class="et">Livestream</span></td>
+    <td style="white-space:nowrap">8</td>
+    <td><span title="" style="cursor:help">⚪ <span class="b b-likely_sponsored">Likely</span></span></td>
+    <td class="acts"><button onclick="va('BYgwQRf7WjU','confirm_placement')" class="a a-y" title="Confirm">✓</button><button onclick="va('BYgwQRf7WjU','mark_organic')" class="a a-o" title="Organic">O</button><button onclick="va('BYgwQRf7WjU','ignore')" class="a a-r" title="Ignore">✕</button></td>
+  </tr><tr data-vid="SAJssYVEuJk">
+    <td><img src="https://i.ytimg.com/vi/SAJssYVEuJk/mqdefault.jpg" width="80" height="45" style="border-radius:4px"></td>
+    <td><a href="https://youtube.com/watch?v=SAJssYVEuJk" target="_blank">TIBIA GLOBAL - KNIGHT LVL 1200 - !MEMBRO !PIX  !REAL !E…</a></td>
+    <td style="white-space:nowrap">Brunao Charlovinho</td>
+    <td style="white-space:nowrap">ExitLag</td>
+    <td style="white-space:nowrap">Tibia</td>
+    <td><span class="et">Livestream</span></td>
+    <td style="white-space:nowrap">186</td>
+    <td><span title="" style="cursor:help">⚪ <span class="b b-likely_sponsored">Likely</span></span></td>
+    <td class="acts"><button onclick="va('SAJssYVEuJk','confirm_placement')" class="a a-y" title="Confirm">✓</button><button onclick="va('SAJssYVEuJk','mark_organic')" class="a a-o" title="Organic">O</button><button onclick="va('SAJssYVEuJk','ignore')" class="a a-r" title="Ignore">✕</button></td>
+  </tr><tr data-vid="cTBlkU_6Peg">
+    <td><img src="https://i.ytimg.com/vi/cTBlkU_6Peg/mqdefault.jpg" width="80" height="45" style="border-radius:4px"></td>
+    <td><a href="https://youtube.com/watch?v=cTBlkU_6Peg" target="_blank">Sparking! Zero With Friends!|Celebrate Gamer Month With…</a></td>
+    <td style="white-space:nowrap">AccursedMist</td>
+    <td style="white-space:nowrap">ExitLag</td>
+    <td style="white-space:nowrap">Sparking! Zero</td>
+    <td><span class="et">Integration</span></td>
+    <td style="white-space:nowrap">2</td>
+    <td><span title="" style="cursor:help">⚪ <span class="b b-confirmed_paid_placement">Confirmed</span></span></td>
+    <td class="acts"><button onclick="va('cTBlkU_6Peg','confirm_placement')" class="a a-y" title="Confirm">✓</button><button onclick="va('cTBlkU_6Peg','mark_organic')" class="a a-o" title="Organic">O</button><button onclick="va('cTBlkU_6Peg','ignore')" class="a a-r" title="Ignore">✕</button></td>
+  </tr><tr data-vid="dqzZQ_xvss4">
+    <td><img src="https://i.ytimg.com/vi/dqzZQ_xvss4/mqdefault_live.jpg" width="80" height="45" style="border-radius:4px"></td>
+    <td><a href="https://youtube.com/watch?v=dqzZQ_xvss4" target="_blank">Tara na at Maglaro</a></td>
+    <td style="white-space:nowrap">Ezio Plays</td>
+    <td style="white-space:nowrap">ExitLag</td>
+    <td style="white-space:nowrap">unknown</td>
+    <td><span class="et">Shorts</span></td>
+    <td style="white-space:nowrap">12</td>
+    <td><span title="" style="cursor:help">⚪ <span class="b b-confirmed_paid_placement">Confirmed</span></span></td>
+    <td class="acts"><button onclick="va('dqzZQ_xvss4','confirm_placement')" class="a a-y" title="Confirm">✓</button><button onclick="va('dqzZQ_xvss4','mark_organic')" class="a a-o" title="Organic">O</button><button onclick="va('dqzZQ_xvss4','ignore')" class="a a-r" title="Ignore">✕</button></td>
+  </tr><tr data-vid="zuGwiUpqmCk">
+    <td><img src="https://i.ytimg.com/vi/zuGwiUpqmCk/mqdefault.jpg" width="80" height="45" style="border-radius:4px"></td>
+    <td><a href="https://youtube.com/watch?v=zuGwiUpqmCk" target="_blank">🔴Evercold waiting room!🔴CODE: ARTHARS for 50% EXITLAG…</a></td>
+    <td style="white-space:nowrap">ArtharsFF14</td>
+    <td style="white-space:nowrap">ExitLag</td>
+    <td style="white-space:nowrap">Final Fantasy XIV</td>
+    <td><span class="et">Livestream</span></td>
+    <td style="white-space:nowrap">457</td>
+    <td><span title="" style="cursor:help">⚪ <span class="b b-likely_sponsored">Likely</span></span></td>
+    <td class="acts"><button onclick="va('zuGwiUpqmCk','confirm_placement')" class="a a-y" title="Confirm">✓</button><button onclick="va('zuGwiUpqmCk','mark_organic')" class="a a-o" title="Organic">O</button><button onclick="va('zuGwiUpqmCk','ignore')" class="a a-r" title="Ignore">✕</button></td>
+  </tr><tr data-vid="YO3XKoKz_dU">
+    <td><img src="https://i.ytimg.com/vi/YO3XKoKz_dU/mqdefault.jpg" width="80" height="45" style="border-radius:4px"></td>
+    <td><a href="https://youtube.com/watch?v=YO3XKoKz_dU" target="_blank">🔴Evercold waiting room!🔴CODE: ARTHARS for 50% EXITLAG…</a></td>
+    <td style="white-space:nowrap">ArtharsLIVE</td>
+    <td style="white-space:nowrap">ExitLag</td>
+    <td style="white-space:nowrap">Evercold</td>
+    <td><span class="et">Livestream</span></td>
+    <td style="white-space:nowrap">15</td>
+    <td><span title="" style="cursor:help">⚪ <span class="b b-likely_sponsored">Likely</span></span></td>
+    <td class="acts"><button onclick="va('YO3XKoKz_dU','confirm_placement')" class="a a-y" title="Confirm">✓</button><button onclick="va('YO3XKoKz_dU','mark_organic')" class="a a-o" title="Organic">O</button><button onclick="va('YO3XKoKz_dU','ignore')" class="a a-r" title="Ignore">✕</button></td>
+  </tr><tr data-vid="boZ7o8-ZgrY">
+    <td><img src="https://i.ytimg.com/vi/boZ7o8-ZgrY/mqdefault_live.jpg" width="80" height="45" style="border-radius:4px"></td>
+    <td><a href="https://youtube.com/watch?v=boZ7o8-ZgrY" target="_blank">[V] Day #125 | Happy Independence Day! | Faceit grind n…</a></td>
+    <td style="white-space:nowrap">nyk</td>
+    <td style="white-space:nowrap">ExitLag</td>
+    <td style="white-space:nowrap">CS2</td>
+    <td><span class="et">Livestream</span></td>
+    <td style="white-space:nowrap">39</td>
+    <td><span title="" style="cursor:help">⚪ <span class="b b-likely_sponsored">Likely</span></span></td>
+    <td class="acts"><button onclick="va('boZ7o8-ZgrY','confirm_placement')" class="a a-y" title="Confirm">✓</button><button onclick="va('boZ7o8-ZgrY','mark_organic')" class="a a-o" title="Organic">O</button><button onclick="va('boZ7o8-ZgrY','ignore')" class="a a-r" title="Ignore">✕</button></td>
+  </tr><tr data-vid="2i9_40gFLo8">
+    <td><img src="https://i.ytimg.com/vi/2i9_40gFLo8/mqdefault_live.jpg" width="80" height="45" style="border-radius:4px"></td>
+    <td><a href="https://youtube.com/watch?v=2i9_40gFLo8" target="_blank">Day #125 | Happy Independence Day! | Faceit grind never…</a></td>
+    <td style="white-space:nowrap">nyk</td>
+    <td style="white-space:nowrap">ExitLag</td>
+    <td style="white-space:nowrap">CS2</td>
+    <td><span class="et">Livestream</span></td>
+    <td style="white-space:nowrap">304</td>
+    <td><span title="" style="cursor:help">⚪ <span class="b b-likely_sponsored">Likely</span></span></td>
+    <td class="acts"><button onclick="va('2i9_40gFLo8','confirm_placement')" class="a a-y" title="Confirm">✓</button><button onclick="va('2i9_40gFLo8','mark_organic')" class="a a-o" title="Organic">O</button><button onclick="va('2i9_40gFLo8','ignore')" class="a a-r" title="Ignore">✕</button></td>
+  </tr><tr data-vid="-Z8SfsFbrhg">
+    <td><img src="https://i.ytimg.com/vi/-Z8SfsFbrhg/mqdefault.jpg" width="80" height="45" style="border-radius:4px"></td>
+    <td><a href="https://youtube.com/watch?v=-Z8SfsFbrhg" target="_blank">Let's Play</a></td>
+    <td style="white-space:nowrap">Ezio Plays</td>
+    <td style="white-space:nowrap">ExitLag</td>
+    <td style="white-space:nowrap">unknown</td>
+    <td><span class="et">Livestream</span></td>
+    <td style="white-space:nowrap">1</td>
+    <td><span title="" style="cursor:help">⚪ <span class="b b-likely_sponsored">Likely</span></span></td>
+    <td class="acts"><button onclick="va('-Z8SfsFbrhg','confirm_placement')" class="a a-y" title="Confirm">✓</button><button onclick="va('-Z8SfsFbrhg','mark_organic')" class="a a-o" title="Organic">O</button><button onclick="va('-Z8SfsFbrhg','ignore')" class="a a-r" title="Ignore">✕</button></td>
+  </tr><tr data-vid="FeY-38atjiU">
+    <td><img src="https://i.ytimg.com/vi/FeY-38atjiU/mqdefault_live.jpg" width="80" height="45" style="border-radius:4px"></td>
+    <td><a href="https://youtube.com/watch?v=FeY-38atjiU" target="_blank">Começando runzinha do 0 no 7 Days to die || !sr ON || !…</a></td>
+    <td style="white-space:nowrap">Brayman4K</td>
+    <td style="white-space:nowrap">ExitLag</td>
+    <td style="white-space:nowrap">7 Days to Die</td>
+    <td><span class="et">Livestream</span></td>
+    <td style="white-space:nowrap">0</td>
+    <td><span title="" style="cursor:help">⚪ <span class="b b-likely_sponsored">Likely</span></span></td>
+    <td class="acts"><button onclick="va('FeY-38atjiU','confirm_placement')" class="a a-y" title="Confirm">✓</button><button onclick="va('FeY-38atjiU','mark_organic')" class="a a-o" title="Organic">O</button><button onclick="va('FeY-38atjiU','ignore')" class="a a-r" title="Ignore">✕</button></td>
+  </tr><tr data-vid="g7IwBNC2WUc">
+    <td><img src="https://i.ytimg.com/vi/g7IwBNC2WUc/mqdefault_live.jpg" width="80" height="45" style="border-radius:4px"></td>
+    <td><a href="https://youtube.com/watch?v=g7IwBNC2WUc" target="_blank">Новый день! Новая жизнь! Начнем сначала ! Вступай в TG …</a></td>
+    <td style="white-space:nowrap">WHOYOUARE TV</td>
+    <td style="white-space:nowrap">ExitLag</td>
+    <td style="white-space:nowrap">Aion</td>
+    <td><span class="et">Livestream</span></td>
+    <td style="white-space:nowrap">0</td>
+    <td><span title="" style="cursor:help">⚪ <span class="b b-likely_sponsored">Likely</span></span></td>
+    <td class="acts"><button onclick="va('g7IwBNC2WUc','confirm_placement')" class="a a-y" title="Confirm">✓</button><button onclick="va('g7IwBNC2WUc','mark_organic')" class="a a-o" title="Organic">O</button><button onclick="va('g7IwBNC2WUc','ignore')" class="a a-r" title="Ignore">✕</button></td>
+  </tr><tr data-vid="2hwfOGRYcUc">
+    <td><img src="https://i.ytimg.com/vi/2hwfOGRYcUc/mqdefault.jpg" width="80" height="45" style="border-radius:4px"></td>
+    <td><a href="https://youtube.com/watch?v=2hwfOGRYcUc" target="_blank">HOW TO FIX HIGH PING IN LEAGUE OFLEGENDS (2026 ExitLag …</a></td>
+    <td style="white-space:nowrap">Twotorial</td>
+    <td style="white-space:nowrap">ExitLag</td>
+    <td style="white-space:nowrap">League of Legends</td>
+    <td><span class="et">Dedicated</span></td>
+    <td style="white-space:nowrap">4</td>
+    <td><span title="" style="cursor:help">⚪ <span class="b b-likely_sponsored">Likely</span></span></td>
+    <td class="acts"><button onclick="va('2hwfOGRYcUc','confirm_placement')" class="a a-y" title="Confirm">✓</button><button onclick="va('2hwfOGRYcUc','mark_organic')" class="a a-o" title="Organic">O</button><button onclick="va('2hwfOGRYcUc','ignore')" class="a a-r" title="Ignore">✕</button></td>
+  </tr><tr data-vid="4eZDE7R9rr4">
+    <td><img src="https://i.ytimg.com/vi/4eZDE7R9rr4/mqdefault.jpg" width="80" height="45" style="border-radius:4px"></td>
+    <td><a href="https://youtube.com/watch?v=4eZDE7R9rr4" target="_blank">Slow Attack Speed in Night Crows? Try THIS! | UGPhone +…</a></td>
+    <td style="white-space:nowrap">MBHGG</td>
+    <td style="white-space:nowrap">ExitLag</td>
+    <td style="white-space:nowrap">Night Crows</td>
+    <td><span class="et">Integration</span></td>
+    <td style="white-space:nowrap">9</td>
+    <td><span title="" style="cursor:help">⚪ <span class="b b-confirmed_paid_placement">Confirmed</span></span></td>
+    <td class="acts"><button onclick="va('4eZDE7R9rr4','confirm_placement')" class="a a-y" title="Confirm">✓</button><button onclick="va('4eZDE7R9rr4','mark_organic')" class="a a-o" title="Organic">O</button><button onclick="va('4eZDE7R9rr4','ignore')" class="a a-r" title="Ignore">✕</button></td>
+  </tr>
+  </tbody></table>
+  <script>
+  // Pre-cache video data for view switching
+  var competitorVids = [{"videoId":"KbAiAUYRaKY","title":"Chill Apex Live !sfx !giveaway","thumbnailUrl":"https://i.ytimg.com/vi/KbAiAUYRaKY/mqdefault.jpg","channelName":"Tuhin Frags","brand":"ExitLag","game":"Apex Legends","viewCount":63,"placementType":"likely_sponsored","contentCategory":"live","discoveryEvidence":[]},{"videoId":"LIaX_4mTmjM","title":"【CS2】官匹｜42 Kill 還是銀牌 1？這定級系統到底怎麼了！😨#cs2 #csgo","thumbnailUrl":"https://i.ytimg.com/vi/LIaX_4mTmjM/mqdefault.jpg","channelName":"Raiya瑞亞","brand":"GearUP","game":"CS2","viewCount":3,"placementType":"likely_sponsored","contentCategory":"integrated","discoveryEvidence":[]},{"videoId":"Ckc5XYb-0Cc","title":"Tibia - Ek 2800 Top Ek Global - Bom Dia Amigões!!! ❗exitlag✔️ ❗realcoins✔️","thumbnailUrl":"https://i.ytimg.com/vi/Ckc5XYb-0Cc/mqdefault_live.jpg","channelName":"Galll","brand":"ExitLag","game":"Tibia","viewCount":20,"placementType":"likely_sponsored","contentCategory":"live","discoveryEvidence":[]},{"videoId":"xmgT7t1uqmo","title":"[LIVE] HAPPPY INDEPENDENCE DAY!! | VALO NOW BIGWALK LATER | !exitlag !kick #ExitLagAffiliate","thumbnailUrl":"https://i.ytimg.com/vi/xmgT7t1uqmo/mqdefault_live.jpg","channelName":"Deepak Jotwani","brand":"ExitLag","game":"Valorant","viewCount":47,"placementType":"likely_sponsored","contentCategory":"live","discoveryEvidence":[]},{"videoId":"tAoqr-9SMB0","title":"Стоит ли играть в Hell Let Loose Vietnam","thumbnailUrl":"https://i.ytimg.com/vi/tAoqr-9SMB0/mqdefault.jpg","channelName":"MavericK Bro","brand":"LagZapper","game":"Hell Let Loose","viewCount":434,"placementType":"confirmed_paid_placement","contentCategory":"dedicated","discoveryEvidence":[]},{"videoId":"UiFCy5ahnOI","title":"лууутінгГ  | Season 10 ||  Delta Force || #deltaforce  #deltaforcegame","thumbnailUrl":"https://i.ytimg.com/vi/UiFCy5ahnOI/mqdefault_live.jpg","channelName":"W4llfacer","brand":"ExitLag","game":"Delta Force","viewCount":86,"placementType":"likely_sponsored","contentCategory":"integrated","discoveryEvidence":[]},{"videoId":"LWHQer4ctrQ","title":"Tag Him/Her #valorant #gamingindia #exitlagaffiliate #valorantclips #funny","thumbnailUrl":"https://i.ytimg.com/vi/LWHQer4ctrQ/mqdefault.jpg","channelName":"WG Playz","brand":"ExitLag","game":"Valorant","viewCount":309,"placementType":"likely_sponsored","contentCategory":"shorts","discoveryEvidence":[]},{"videoId":"BYgwQRf7WjU","title":"ExitLag!   BF6 RED SEC / Rush Grind!! pix !comandos +18","thumbnailUrl":"https://i.ytimg.com/vi/BYgwQRf7WjU/mqdefault.jpg","channelName":"FPS Maromba","brand":"ExitLag","game":"Battlefield 6","viewCount":8,"placementType":"likely_sponsored","contentCategory":"live","discoveryEvidence":[]},{"videoId":"SAJssYVEuJk","title":"TIBIA GLOBAL - KNIGHT LVL 1200 - !MEMBRO !PIX  !REAL !EXITLAG","thumbnailUrl":"https://i.ytimg.com/vi/SAJssYVEuJk/mqdefault.jpg","channelName":"Brunao Charlovinho","brand":"ExitLag","game":"Tibia","viewCount":186,"placementType":"likely_sponsored","contentCategory":"live","discoveryEvidence":[]},{"videoId":"cTBlkU_6Peg","title":"Sparking! Zero With Friends!|Celebrate Gamer Month With EXITLAG!","thumbnailUrl":"https://i.ytimg.com/vi/cTBlkU_6Peg/mqdefault.jpg","channelName":"AccursedMist","brand":"ExitLag","game":"Sparking! Zero","viewCount":2,"placementType":"confirmed_paid_placement","contentCategory":"integrated","discoveryEvidence":[]},{"videoId":"dqzZQ_xvss4","title":"Tara na at Maglaro","thumbnailUrl":"https://i.ytimg.com/vi/dqzZQ_xvss4/mqdefault_live.jpg","channelName":"Ezio Plays","brand":"ExitLag","game":"unknown","viewCount":12,"placementType":"confirmed_paid_placement","contentCategory":"shorts","discoveryEvidence":[]},{"videoId":"zuGwiUpqmCk","title":"🔴Evercold waiting room!🔴CODE: ARTHARS for 50% EXITLAG DISCOUNT!","thumbnailUrl":"https://i.ytimg.com/vi/zuGwiUpqmCk/mqdefault.jpg","channelName":"ArtharsFF14","brand":"ExitLag","game":"Final Fantasy XIV","viewCount":457,"placementType":"likely_sponsored","contentCategory":"live","discoveryEvidence":[]},{"videoId":"YO3XKoKz_dU","title":"🔴Evercold waiting room!🔴CODE: ARTHARS for 50% EXITLAG DISCOUNT!","thumbnailUrl":"https://i.ytimg.com/vi/YO3XKoKz_dU/mqdefault.jpg","channelName":"ArtharsLIVE","brand":"ExitLag","game":"Evercold","viewCount":15,"placementType":"likely_sponsored","contentCategory":"live","discoveryEvidence":[]},{"videoId":"boZ7o8-ZgrY","title":"[V] Day #125 | Happy Independence Day! | Faceit grind never stops | !clip !exitlag !delay","thumbnailUrl":"https://i.ytimg.com/vi/boZ7o8-ZgrY/mqdefault_live.jpg","channelName":"nyk","brand":"ExitLag","game":"CS2","viewCount":39,"placementType":"likely_sponsored","contentCategory":"live","discoveryEvidence":[]},{"videoId":"2i9_40gFLo8","title":"Day #125 | Happy Independence Day! | Faceit grind never stops | !clip !exitlag !delay","thumbnailUrl":"https://i.ytimg.com/vi/2i9_40gFLo8/mqdefault_live.jpg","channelName":"nyk","brand":"ExitLag","game":"CS2","viewCount":304,"placementType":"likely_sponsored","contentCategory":"live","discoveryEvidence":[]},{"videoId":"-Z8SfsFbrhg","title":"Let's Play","thumbnailUrl":"https://i.ytimg.com/vi/-Z8SfsFbrhg/mqdefault.jpg","channelName":"Ezio Plays","brand":"ExitLag","game":"unknown","viewCount":1,"placementType":"likely_sponsored","contentCategory":"live","discoveryEvidence":[]},{"videoId":"FeY-38atjiU","title":"Começando runzinha do 0 no 7 Days to die || !sr ON || !exitlag","thumbnailUrl":"https://i.ytimg.com/vi/FeY-38atjiU/mqdefault_live.jpg","channelName":"Brayman4K","brand":"ExitLag","game":"7 Days to Die","viewCount":0,"placementType":"likely_sponsored","contentCategory":"live","discoveryEvidence":[]},{"videoId":"g7IwBNC2WUc","title":"Новый день! Новая жизнь! Начнем сначала ! Вступай в TG там всегда есть что выйграть!tg!dc!fail!macro","thumbnailUrl":"https://i.ytimg.com/vi/g7IwBNC2WUc/mqdefault_live.jpg","channelName":"WHOYOUARE TV","brand":"ExitLag","game":"Aion","viewCount":0,"placementType":"likely_sponsored","contentCategory":"live","discoveryEvidence":[]},{"videoId":"2hwfOGRYcUc","title":"HOW TO FIX HIGH PING IN LEAGUE OFLEGENDS (2026 ExitLag Settings)","thumbnailUrl":"https://i.ytimg.com/vi/2hwfOGRYcUc/mqdefault.jpg","channelName":"Twotorial","brand":"ExitLag","game":"League of Legends","viewCount":4,"placementType":"likely_sponsored","contentCategory":"dedicated","discoveryEvidence":[]},{"videoId":"4eZDE7R9rr4","title":"Slow Attack Speed in Night Crows? Try THIS! | UGPhone + ExitLag","thumbnailUrl":"https://i.ytimg.com/vi/4eZDE7R9rr4/mqdefault.jpg","channelName":"MBHGG","brand":"ExitLag","game":"Night Crows","viewCount":9,"placementType":"confirmed_paid_placement","contentCategory":"integrated","discoveryEvidence":[]}];
+  var unresolvedVids = [{"videoId":"PbjiwHzc_4o","title":"Other Server Free Fire Not Opening | Free Fire Indonesia Server Not Open | Free Fire Login Problem","thumbnailUrl":"https://i.ytimg.com/vi/PbjiwHzc_4o/mqdefault.jpg","channelName":"S.P Gaming 67 • 95k views • 1 hours ago\n...\n","brand":"unknown","game":"Free Fire","viewCount":5959,"placementType":"likely_sponsored","contentCategory":"integrated","discoveryEvidence":[]},{"videoId":"1VScOqkCGRI","title":"14 Days Until GTA 6 News? The Final Countdown","thumbnailUrl":"https://i.ytimg.com/vi/1VScOqkCGRI/mqdefault.jpg","channelName":"GTA 6 Masterclass","brand":"unknown","game":"GTA 6","viewCount":13,"placementType":"likely_sponsored","contentCategory":"integrated","discoveryEvidence":[]},{"videoId":"LHuud8z-Xs8","title":"The Strange Truth About GTA 6 Pre-Orders","thumbnailUrl":"https://i.ytimg.com/vi/LHuud8z-Xs8/mqdefault.jpg","channelName":"GTA 6 Masterclass","brand":"unknown","game":"GTA 6","viewCount":0,"placementType":"likely_sponsored","contentCategory":"integrated","discoveryEvidence":[]},{"videoId":"88D1FD8jgog","title":"GTA 6 Trailer 3: Why It Drops Before August 7th","thumbnailUrl":"https://i.ytimg.com/vi/88D1FD8jgog/mqdefault.jpg","channelName":"GTA 6 Masterclass","brand":"unknown","game":"GTA 6","viewCount":8,"placementType":"likely_sponsored","contentCategory":"integrated","discoveryEvidence":[]}];
+  var allVids = [{"videoId":"6LRvpiyLAxE","title":"How to Fix LEGO Batman: Legacy of the Dark Knight Not Launching on PC | Steam Fix","thumbnailUrl":"https://i.ytimg.com/vi/6LRvpiyLAxE/mqdefault.jpg","channelName":"Fixitbro","brand":"unknown","game":"unknown","viewCount":0,"placementType":"unknown","contentCategory":null,"discoveryEvidence":[]},{"videoId":"-V6OOdom6H0","title":"POE3.29-極致零特效體驗-毒蛇打擊‧曼巴！電腦現在很貴，對他好一點｜暗影刺客 刺客｜Viper Strike of the Mamba","thumbnailUrl":"https://i.ytimg.com/vi/-V6OOdom6H0/mqdefault.jpg","channelName":"DS 低欸死","brand":"ExitLag","game":"Diablo 4","viewCount":973,"placementType":"organic_mention","contentCategory":"integrated_placement","discoveryEvidence":[]},{"videoId":"KbAiAUYRaKY","title":"Chill Apex Live !sfx !giveaway","thumbnailUrl":"https://i.ytimg.com/vi/KbAiAUYRaKY/mqdefault.jpg","channelName":"Tuhin Frags","brand":"ExitLag","game":"Apex Legends","viewCount":63,"placementType":"likely_sponsored","contentCategory":"live","discoveryEvidence":[]},{"videoId":"Y0u4GlvaF5I","title":"🔴PUBG PC | Tamil | ROAD TO 3,000 SUBS #tamilgaming #pubg #exitlag #medaltv","thumbnailUrl":"https://i.ytimg.com/vi/Y0u4GlvaF5I/mqdefault_live.jpg","channelName":"MR CS TamilGaming","brand":"ExitLag","game":"PUBG","viewCount":9,"placementType":"organic_mention","contentCategory":"integrated_placement","discoveryEvidence":[]},{"videoId":"X9lFGWUCaSY","title":"This 65W Mini Charger Charges Your Laptop & iPhone Fast! ⚡ (GOOJODOQ GaN) #GOOJODOQ #GaNCharger","thumbnailUrl":"https://i.ytimg.com/vi/X9lFGWUCaSY/mqdefault.jpg","channelName":"𝖩.𝖥𝗈𝗋𝖼𝖾 𝖦𝖺𝗆𝗂𝗇𝗀","brand":"unknown","game":"unknown","viewCount":68,"placementType":"organic_mention","contentCategory":"shorts","discoveryEvidence":[]},{"videoId":"sTgbGVZHAQY","title":"🎒Challenge หยิบเจมทุกเม็ด! ภารกิจสุดกาว | Backpack Battles : EP700","thumbnailUrl":"https://i.ytimg.com/vi/sTgbGVZHAQY/mqdefault.jpg","channelName":"Nu Castper","brand":"unknown","game":"Backpack Battles","viewCount":2,"placementType":"unknown","contentCategory":"live","discoveryEvidence":[]},{"videoId":"244xrzGLXko","title":"ААА, ЖЕНЩИНААА #armareforger #stalkerrp #сталкер #сталкеррп #армарефорджер #dayzrp","thumbnailUrl":"https://i.ytimg.com/vi/244xrzGLXko/mqdefault.jpg","channelName":"August Station","brand":"unknown","game":"Arma Reforger","viewCount":878,"placementType":"unknown","contentCategory":"shorts","discoveryEvidence":[]},{"videoId":"LIaX_4mTmjM","title":"【CS2】官匹｜42 Kill 還是銀牌 1？這定級系統到底怎麼了！😨#cs2 #csgo","thumbnailUrl":"https://i.ytimg.com/vi/LIaX_4mTmjM/mqdefault.jpg","channelName":"Raiya瑞亞","brand":"GearUP","game":"CS2","viewCount":3,"placementType":"likely_sponsored","contentCategory":"integrated","discoveryEvidence":[]},{"videoId":"xhFehX9ZCMM","title":"💀 12 Kills MAX CRIT Greninja!||#ganeshgamingyt #viral #pokemonunite #trending #shorts #viralshorts","thumbnailUrl":"https://i.ytimg.com/vi/xhFehX9ZCMM/mqdefault.jpg","channelName":"GaneshGaming YT","brand":"unknown","game":"Pokemon Unite","viewCount":16,"placementType":"unknown","contentCategory":"shorts","discoveryEvidence":[]},{"videoId":"Ckc5XYb-0Cc","title":"Tibia - Ek 2800 Top Ek Global - Bom Dia Amigões!!! ❗exitlag✔️ ❗realcoins✔️","thumbnailUrl":"https://i.ytimg.com/vi/Ckc5XYb-0Cc/mqdefault_live.jpg","channelName":"Galll","brand":"ExitLag","game":"Tibia","viewCount":20,"placementType":"likely_sponsored","contentCategory":"live","discoveryEvidence":[]},{"videoId":"U4MUgxeLBs4","title":"WoW ↑ EQUIPANDO/UPANDO ALTS ↑ SEASON 2 CHEGANDO","thumbnailUrl":"https://i.ytimg.com/vi/U4MUgxeLBs4/mqdefault.jpg","channelName":"Xande_RPG","brand":"unknown","game":"World of Warcraft","viewCount":84,"placementType":"unknown","contentCategory":"live","discoveryEvidence":[]},{"videoId":"xmgT7t1uqmo","title":"[LIVE] HAPPPY INDEPENDENCE DAY!! | VALO NOW BIGWALK LATER | !exitlag !kick #ExitLagAffiliate","thumbnailUrl":"https://i.ytimg.com/vi/xmgT7t1uqmo/mqdefault_live.jpg","channelName":"Deepak Jotwani","brand":"ExitLag","game":"Valorant","viewCount":47,"placementType":"likely_sponsored","contentCategory":"live","discoveryEvidence":[]},{"videoId":"tAoqr-9SMB0","title":"Стоит ли играть в Hell Let Loose Vietnam","thumbnailUrl":"https://i.ytimg.com/vi/tAoqr-9SMB0/mqdefault.jpg","channelName":"MavericK Bro","brand":"LagZapper","game":"Hell Let Loose","viewCount":434,"placementType":"confirmed_paid_placement","contentCategory":"dedicated","discoveryEvidence":[]},{"videoId":"myhE6xR__x0","title":"กลับไปฟังแบบเก่าไม่ได้แล้วกู #dota #nucastper","thumbnailUrl":"https://i.ytimg.com/vi/myhE6xR__x0/mqdefault.jpg","channelName":"Nu Castper","brand":"unknown","game":"Dota","viewCount":16,"placementType":"unknown","contentCategory":"shorts","discoveryEvidence":[]},{"videoId":"k__fTR3zdsw","title":"We Tried Pico Park on ROBLOX and It Ruined Our Friendship","thumbnailUrl":"https://i.ytimg.com/vi/k__fTR3zdsw/mqdefault.jpg","channelName":"Wagwizard ","brand":"unknown","game":"Roblox","viewCount":0,"placementType":"unknown","contentCategory":"shorts","discoveryEvidence":[]},{"videoId":"UiFCy5ahnOI","title":"лууутінгГ  | Season 10 ||  Delta Force || #deltaforce  #deltaforcegame","thumbnailUrl":"https://i.ytimg.com/vi/UiFCy5ahnOI/mqdefault_live.jpg","channelName":"W4llfacer","brand":"ExitLag","game":"Delta Force","viewCount":86,"placementType":"likely_sponsored","contentCategory":"integrated","discoveryEvidence":[]},{"videoId":"hyRhzUUQPAs","title":"🇮🇳 HAPPY INDEPENDENCE DAY! 🇮🇳 | HONOR OF KINGS LIVE 🔥 | ROAD TO 1K SUBS 🎯 #short","thumbnailUrl":"https://i.ytimg.com/vi/hyRhzUUQPAs/mqdefault.jpg","channelName":"GaneshGaming YT","brand":"unknown","game":"Honor of Kings","viewCount":78,"placementType":"unknown","contentCategory":"live","discoveryEvidence":[]},{"videoId":"zL2ca-tBigY","title":"How to Install AI Models Locally with Pinokio AI | Pinokio AI Tutorial 2026","thumbnailUrl":"https://i.ytimg.com/vi/zL2ca-tBigY/mqdefault.jpg","channelName":"How-To-Mastery","brand":"unknown","game":"unknown","viewCount":0,"placementType":"unknown","contentCategory":"shorts","discoveryEvidence":[]},{"videoId":"HcMduKaX0bE","title":"🔴Counter-Strike 2 | Tamil | ROAD TO 3,000 SUBS #tamilgaming #cs2 #exitlag #medaltv","thumbnailUrl":"https://i.ytimg.com/vi/HcMduKaX0bE/mqdefault_live.jpg","channelName":"MR CS TamilGaming","brand":"ExitLag","game":"CS2","viewCount":191,"placementType":"organic_mention","contentCategory":"integrated_placement","discoveryEvidence":[]},{"videoId":"LWHQer4ctrQ","title":"Tag Him/Her #valorant #gamingindia #exitlagaffiliate #valorantclips #funny","thumbnailUrl":"https://i.ytimg.com/vi/LWHQer4ctrQ/mqdefault.jpg","channelName":"WG Playz","brand":"ExitLag","game":"Valorant","viewCount":309,"placementType":"likely_sponsored","contentCategory":"shorts","discoveryEvidence":[]},{"videoId":"DuWLnWVddyk","title":"How to Unhide Your Channel on YouTube | YouTube Tips 2026","thumbnailUrl":"https://i.ytimg.com/vi/DuWLnWVddyk/mqdefault.jpg","channelName":"How-To-Mastery","brand":"unknown","game":"unknown","viewCount":0,"placementType":"unknown","contentCategory":"shorts","discoveryEvidence":[]},{"videoId":"QHtODQ3hK4I","title":"BARATA ESTÁ MAIS FORTE QUE O FERUMBRAS!","thumbnailUrl":"https://i.ytimg.com/vi/QHtODQ3hK4I/mqdefault.jpg","channelName":"Brunao Charlovinho","brand":"unknown","game":"unknown","viewCount":105,"placementType":"unknown","contentCategory":"live","discoveryEvidence":[]},{"videoId":"BYgwQRf7WjU","title":"ExitLag!   BF6 RED SEC / Rush Grind!! pix !comandos +18","thumbnailUrl":"https://i.ytimg.com/vi/BYgwQRf7WjU/mqdefault.jpg","channelName":"FPS Maromba","brand":"ExitLag","game":"Battlefield 6","viewCount":8,"placementType":"likely_sponsored","contentCategory":"live","discoveryEvidence":[]},{"videoId":"4goUjwbYkTw","title":"🇮🇳 HAPPY INDEPENDENCE DAY! 🇮🇳 | HONOR OF KINGS LIVE 🔥 | ROAD TO 1K SUBS 🎯 #short","thumbnailUrl":"https://i.ytimg.com/vi/4goUjwbYkTw/mqdefault.jpg","channelName":"GaneshGaming YT","brand":"unknown","game":"Honor of Kings","viewCount":62,"placementType":"unknown","contentCategory":"live","discoveryEvidence":[]},{"videoId":"SAJssYVEuJk","title":"TIBIA GLOBAL - KNIGHT LVL 1200 - !MEMBRO !PIX  !REAL !EXITLAG","thumbnailUrl":"https://i.ytimg.com/vi/SAJssYVEuJk/mqdefault.jpg","channelName":"Brunao Charlovinho","brand":"ExitLag","game":"Tibia","viewCount":186,"placementType":"likely_sponsored","contentCategory":"live","discoveryEvidence":[]},{"videoId":"cTBlkU_6Peg","title":"Sparking! Zero With Friends!|Celebrate Gamer Month With EXITLAG!","thumbnailUrl":"https://i.ytimg.com/vi/cTBlkU_6Peg/mqdefault.jpg","channelName":"AccursedMist","brand":"ExitLag","game":"Sparking! Zero","viewCount":2,"placementType":"confirmed_paid_placement","contentCategory":"integrated","discoveryEvidence":[]},{"videoId":"dqzZQ_xvss4","title":"Tara na at Maglaro","thumbnailUrl":"https://i.ytimg.com/vi/dqzZQ_xvss4/mqdefault_live.jpg","channelName":"Ezio Plays","brand":"ExitLag","game":"unknown","viewCount":12,"placementType":"confirmed_paid_placement","contentCategory":"shorts","discoveryEvidence":[]},{"videoId":"0yUPd75hUos","title":"How to Find Facebook Page ID | Facebook Tips 2026","thumbnailUrl":"https://i.ytimg.com/vi/0yUPd75hUos/mqdefault.jpg","channelName":"How-To-Mastery","brand":"unknown","game":"unknown","viewCount":0,"placementType":"unknown","contentCategory":"shorts","discoveryEvidence":[]},{"videoId":"zofwfEoV1Js","title":"Eating Fuzzy Giant Shrimp Claws","thumbnailUrl":"https://i.ytimg.com/vi/zofwfEoV1Js/mqdefault.jpg","channelName":"Food Card","brand":"unknown","game":"unknown","viewCount":150,"placementType":"organic_mention","contentCategory":"shorts","discoveryEvidence":[]},{"videoId":"Lt4d3Xs33_E","title":"The Most Gigantic Shrimp Tail You've Ever Seen!","thumbnailUrl":"https://i.ytimg.com/vi/Lt4d3Xs33_E/mqdefault.jpg","channelName":"Food Card","brand":"unknown","game":"unknown","viewCount":528,"placementType":"organic_mention","contentCategory":"shorts","discoveryEvidence":[]}];
+  </script></div>
+  <div id="tab-panel-creators" class="tab-content" style="display:none">
+  <div class="ctrls" style="align-items:center;gap:10px;margin-bottom:12px">
+    <span style="font-size:12px;color:#8490A6;font-weight:600">Show:</span>
+    <button onclick="switchCreatorView('active')" id="cr-btn-active" class="btn-scan" style="font-size:11px;padding:4px 10px">Active in Period</button>
+    <button onclick="switchCreatorView('all')" id="cr-btn-all" style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;padding:4px 10px;border-radius:6px;font-size:11px;cursor:pointer">All Tracked Creators</button>
+  </div>
+  <div id="creators-load"><p class="mt">Loading creators...</p></div></div>
+  <div id="tab-panel-comments" class="tab-content" style="display:none"><div id="comments-load"><p class="mt">Loading comments...</p></div></div>
+  <div id="tab-panel-system" class="tab-content" style="display:none">
+  <div class="kpi-row" style="grid-template-columns:repeat(4,1fr)">
+    <div class="kpi "><div class="kpi-n">0<small style="font-size:14px;color:#64748b">/100</small></div><div class="kpi-l">Search Quota</div></div>
+    <div class="kpi"><div class="kpi-n">0<small style="font-size:14px;color:#64748b">/10K</small></div><div class="kpi-l">General Quota</div></div>
+    <div class="kpi"><div class="kpi-n">2850</div><div class="kpi-l">Total Videos</div></div>
+    <div class="kpi"><div class="kpi-n">227</div><div class="kpi-l">Tracked Creators</div></div>
+  </div>
+  <h2>Scan Logs</h2>
+  <table class="dt"><thead><tr><th>Time</th><th>Mode</th><th>Searches</th><th>Found</th><th>New</th><th>Quota Used</th><th>Status</th></tr></thead><tbody id="scan-logs"><tr><td colspan="7" class="mt">Loading...</td></tr></tbody></table>
+  <h2>Hotspot</h2>
+  <div class="ctrls" style="align-items:center">
+    <input id="hs-game" placeholder="Game name (e.g. Valorant)" style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;padding:6px 10px;border-radius:6px;width:200px">
+    <input id="hs-days" placeholder="Days (1-7)" value="7" style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;padding:6px 10px;border-radius:6px;width:80px">
+    <button onclick="startHotspot()" class="btn-scan">Start Hotspot</button>
+    <button onclick="stopHotspot()" style="background:#1e293b;color:#ef4444;border:1px solid #ef4444;padding:6px 12px;border-radius:6px;cursor:pointer">Stop Hotspot</button>
+    <span id="hs-status" style="font-size:12px;color:#64748b">⚪ Inactive</span>
+  </div></div>
+  <div class="disc">ⓘ Public data estimates only. <span onclick="this.nextElementSibling.style.display='inline'" style="color:#38bdf8;cursor:pointer">More</span><span style="display:none;color:#64748b"> Does not represent ROI, CPA, conversion rate, or ad spend. Shorts and long-form tracked separately.</span></div>
+  <div id="toast" class="toast" style="display:none"></div>
+</div>
+<script>
+var creatorView='active';
+function applyFilter(k,v){const u=new URL(location);v==='all'?u.searchParams.delete(k):u.searchParams.set(k,v);location=u.toString()}
+function switchTab(t){document.querySelectorAll('.tab-content').forEach(e=>e.style.display='none');document.querySelectorAll('.tab').forEach(e=>e.classList.remove('active'));document.getElementById('tab-panel-'+t).style.display='block';document.getElementById('tab-'+t).classList.add('active');if(t==='creators')loadCreators();if(t==='comments')loadComments();if(t==='system')loadSystem();localStorage.setItem('tab',t)}
+async function va(id,a){try{const r=await fetch('/api/videos/'+id+'/action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:a})});const d=await r.json();if(!d.success){showToast('❌ '+d.error);return}showToast('✅ Updated');const row=document.querySelector('tr[data-vid="'+id+'"]');if(!row)return;const badgeCell=row.querySelector('td:nth-child(8)');if(badgeCell){const labels={confirmed_paid_placement:'Confirmed',likely_sponsored:'Likely',organic_mention:'Organic',unknown:'Unknown'};const newType=a==='confirm_placement'?'confirmed_paid_placement':a==='mark_organic'?'organic_mention':'unknown';const icon=newType==='confirmed_paid_placement'?'🟢':newType==='organic_mention'?'🟡':'⚪';badgeCell.innerHTML='<span title="">'+icon+' <span class="b b-'+newType+'">'+(labels[newType]||newType)+'</span></span>'}}catch(e){showToast('❌ Failed')}}
+function showToast(m){const t=document.getElementById('toast');t.textContent=m;t.style.display='block';setTimeout(()=>t.style.display='none',2000)}
+// ── Video view switcher ──
+function renderVideoRows(vids){var label={dedicated:'Dedicated',integrated:'Integration',shorts:'Shorts',live:'Livestream',dedicated_review:'Dedicated',integrated_placement:'Integration',live_replay:'Livestream',comparison:'Comparison',tutorial:'Tutorial',gameplay:'Gameplay'};var badge={confirmed_paid_placement:'Confirmed',likely_sponsored:'Likely',organic_mention:'Organic',official_brand_video:'Official',unknown:'Unknown'};function esc(s){return s?s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'):''}function fmt(n){return n>=1000000?(n/1000000).toFixed(1)+'M':n>=1000?(n/1000).toFixed(1)+'K':String(n)}function evi(rc){if(!rc||!rc.length)return'\u26aa';var hs=rc.some(function(r){return['brand_in_title','promo_code','sponsored_tag','paid_tag','brand_link'].indexOf(r)>=0});return hs?'\uD83D\uDFE2':'\uD83D\uDFE1'}return vids.slice(0,30).map(function(v){return'<tr data-vid="'+esc(v.videoId)+'"><td>'+(v.thumbnailUrl?'<img src="'+esc(v.thumbnailUrl)+'" width=80 height=45 style=border-radius:4px>':'')+'</td><td><a href="https://youtube.com/watch?v='+esc(v.videoId)+'" target=_blank>'+esc(v.title.slice(0,55))+(v.title.length>55?'\u2026':'')+'</a></td><td style=white-space:nowrap>'+esc(v.channelName)+'</td><td style=white-space:nowrap>'+esc(v.brand)+'</td><td style=white-space:nowrap>'+esc(v.game)+'</td><td><span class=et>'+esc(label[v.contentCategory]||v.contentCategory||'?')+'</span></td><td style=white-space:nowrap>'+fmt(v.viewCount)+'</td><td><span title="'+esc((v.reasonCodes||v.discoveryEvidence||[]).join(', '))+'" style=cursor:help>'+evi(v.reasonCodes||v.discoveryEvidence)+' <span class="b b-'+v.placementType+'">'+(badge[v.placementType]||v.placementType)+'</span></span></td><td class=acts><button onclick="va(\''+v.videoId+'\',\'confirm_placement\')" class="a a-y" title=Confirm>\u2713</button><button onclick="va(\''+v.videoId+'\',\'mark_organic\')" class="a a-o" title=Organic>O</button><button onclick="va(\''+v.videoId+'\',\'ignore\')" class="a a-r" title=Ignore>\u2715</button></td></tr>'}).join('')}
+function switchVideoView(view){var tbody=document.getElementById('video-tbody');var vids=view==='competitor'?competitorVids:view==='unresolved'?unresolvedVids:allVids;tbody.innerHTML=renderVideoRows(vids);document.querySelectorAll('[id^=vid-btn-]').forEach(function(b){b.style.background='#1e293b';b.style.color='#e2e8f0';b.style.border='1px solid #334155'});var btn=document.getElementById('vid-btn-'+view);if(btn){btn.style.background='#3568e8';btn.style.color='#fff';btn.style.border='1px solid #3568e8'}}
+// ── Creator view switcher ──
+function switchCreatorView(view){creatorView=view;document.querySelectorAll('[id^=cr-btn-]').forEach(function(b){b.style.background='#1e293b';b.style.color='#e2e8f0';b.style.border='1px solid #334155'});var btn=document.getElementById('cr-btn-'+view);if(btn){btn.style.background='#3568e8';btn.style.color='#fff';btn.style.border='1px solid #3568e8'};loadCreators()}
+async function loadCreators(){var el=document.getElementById('creators-load');try{var url=creatorView==='all'?'/api/creators?range=30&all=1':'/api/creators?range=30';var r=await fetch(url);var d=await r.json();if(!d||!d.length){el.innerHTML='<p class=mt>No creators found in this period.</p>';return}function fmtN(n){return n>=1000000?(n/1000000).toFixed(1)+'M':n>=1000?(n/1000).toFixed(1)+'K':String(n)}function relTag(r){var m={new:['New','#3B6EF5','#F3F7FF'],recurring:['Recurring','#6B7280','#F3F4F6'],long_term:['Long-term','#7C3AED','#F5F3FF'],multi_brand:['Multi-Brand','#D97706','#FFFBEB']};var x=m[r]||[r,'#3B6EF5','#F3F7FF'];return'<span style="font-size:10px;background:'+x[2]+';color:'+x[1]+';padding:1px 6px;border-radius:3px">'+x[0]+'</span>'}el.innerHTML='<table class=dt><thead><tr><th>Creator</th><th>Subs</th><th>Sponsored Videos</th><th>Brand</th><th>Games</th><th>Avg Views</th><th>Vs Baseline</th><th>Relation</th></tr></thead><tbody>'+d.slice(0,30).map(function(c){var conf='<span style=color:#19A974;font-weight:600>'+c.confirmedCount+' Confirmed</span>';var lik='<span style=color:#D97706;font-weight:600>'+c.likelyCount+' Likely</span>';var brandCol=Object.entries(c.brandMentions||{}).filter(function(e){return e[1]>0}).sort(function(a,b){return b[1]-a[1]}).map(function(e){var col={GearUP:'#f59e0b',ExitLag:'#3b82f6',LagZapper:'#22c55e'}[e[0]]||'#94a3b8';return'<span style="font-size:11px;color:'+col+';font-weight:600">'+e[0]+'</span>'}).join(' ');var vs=c.vsBaselinePct===null||c.vsBaselinePct===undefined?'-':(c.vsBaselinePct>=0?'<span style="color:#19A974;font-weight:600">+'+(c.vsBaselinePct)+'%</span>':'<span style="color:#EF5B5B;font-weight:600">'+(c.vsBaselinePct)+'%</span>');return'<tr><td style="white-space:nowrap">'+escapeHtml(c.channelName||'?')+'</td><td>'+(c.subscriberCount?fmtN(c.subscriberCount):'-')+'</td><td><span style="font-size:14px;font-weight:700">'+c.videosInWindow+'</span><br><span style="font-size:11px">'+conf+' · '+lik+'</span></td><td>'+brandCol+'</td><td>'+escapeHtml((c.games||[]).slice(0,2).join(', '))+'</td><td>'+fmtN(c.avgViews||0)+'</td><td>'+vs+'</td><td>'+relTag(c.relationType)+'</td></tr>'}).join('')+'</tbody></table>'}catch(e){el.innerHTML='<p class=mt>Failed to load creators</p>'}}
+async function loadComments(){const el=document.getElementById('comments-load');try{const[r,raw]=await Promise.all([fetch('/api/comments/summary'),fetch('/api/comments?limit=30')]);const s=await r.json();const d=await raw.json();if(!s.total){el.innerHTML='<p class=mt>No comments analyzed yet</p>';return}const fb=s.fallback?'<div style="font-size:11px;color:#8a6d1a;background:#FDF6E3;border:1px solid #E8D9A0;border-radius:6px;padding:6px 10px;margin-bottom:12px">No competitor-specific comments available. Showing comments from analyzed candidate videos.</div>':'';const flags=c=>'<span class=bt>'+(c.brand?'🏷 Brand':'')+(c.intent?' 💳 Intent':'')+(c.question?' ❓ Question':'')+(c.concern?' ⚠️ Concern':'')+'</span>';const cov=s.placementTotal?'<div style="font-size:11px;color:#8490A6;margin:4px 0 12px">'+s.total+' comments from '+s.placementCoverage+' / '+s.placementTotal+' placement videos</div>':'';el.innerHTML=fb+'<div style="display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-bottom:16px"><div class=kpi><div class=kpi-n>'+s.total+'</div><div class=kpi-l>Comments Analyzed</div></div><div class=kpi><div class=kpi-n style=color:#3b82f6>'+s.brandMentions+'</div><div class=kpi-l>Brand Mentions</div></div><div class=kpi><div class=kpi-n style=color:#F59E0B>'+s.productQuestions+'</div><div class=kpi-l>Product Questions</div></div><div class=kpi><div class=kpi-n style=color:#19A974>'+s.purchaseIntent+'</div><div class=kpi-l>Purchase / Trial Intent</div></div><div class=kpi><div class=kpi-n style=color:#19A974>'+s.positiveFeedback+'</div><div class=kpi-l>Positive Feedback</div></div><div class=kpi><div class=kpi-n style=color:#EF5B5B>'+s.negativeConcern+'</div><div class=kpi-l>Negative / Concern</div></div></div>'+cov+'<h2>Top Audience Signals</h2>'+((s.topSignals||[]).length?'': '<p class=mt>No strong signals yet</p>')+ (s.topSignals||[]).slice(0,8).map(x=>'<div class=comment><b>'+escapeHtml(x.author)+'</b> on '+escapeHtml((x.videoTitle||'').slice(0,50))+'<br>“'+escapeHtml(x.text)+'”<br>'+flags(x.flags)+'</div>').join('')+'<h2>Most Discussed</h2><table class=dt><thead><tr><th>Video</th><th>Channel</th><th>Comments</th></tr></thead><tbody>'+s.topVideos.slice(0,10).map(v=>'<tr><td><a href="https://youtube.com/watch?v='+escapeHtml(v.videoId)+'" target=_blank>'+escapeHtml((v.title||'').slice(0,60))+'</a></td><td>'+escapeHtml(v.channelName||'?')+'</td><td>'+v.commentCount+'</td></tr>').join('')+'</tbody></table><h2>Recent</h2>'+d.slice(0,20).map(c=>'<div class=comment><b>'+escapeHtml(c.author_name||'?')+'</b> on '+escapeHtml((c.youtube_competitor_videos||{}).title||'?').slice(0,50)+'<br>'+escapeHtml((c.comment_text||'').slice(0,200))+'<br><span class=bt>'+(c.has_purchase_intent?'💳 Intent':'')+' '+(c.is_brand_related?'🏷 Brand':'')+' '+(c.sentiment||'')+'</span></div>').join('')}catch(e){el.innerHTML='<p class=mt>Failed to load</p>'}}
+async function loadSystem(){try{const r=await fetch('/api/system');const d=await r.json();const logs=d.logs||[];document.getElementById('scan-logs').innerHTML=logs.slice(0,15).map(l=>'<tr><td>'+new Date(l.created_at).toLocaleString()+'</td><td>'+l.scan_mode+'</td><td>'+l.queries_attempted+'/'+l.queries_succeeded+'</td><td>'+l.videos_found+'</td><td>'+l.videos_new+'</td><td>'+l.search_quota_used+'S/'+l.general_quota_used+'G</td><td>'+(l.quota_exhausted?'⚠️ Quota':'✅')+'</td></tr>').join('')||'<tr><td colspan="7" class="mt">No logs</td></tr>';document.getElementById('hs-status').textContent=d.config?.hotspot_active?'🔴 Active until '+new Date(d.config.hotspot_active_until).toLocaleString():'⚪ Inactive'}catch(e){}}
+async function startHotspot(){const g=document.getElementById('hs-game').value;const d=parseInt(document.getElementById('hs-days').value)||7;if(!g)return showToast('❌ Enter a game name');try{const r=await fetch('/api/hotspot/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({games:[g],durationDays:d})});const j=await r.json();showToast(j.success?'✅ Hotspot active':'❌ Failed');setTimeout(loadSystem,500)}catch(e){showToast('❌ Failed')}}
+async function stopHotspot(){try{await fetch('/api/hotspot/stop',{method:'POST'});showToast('✅ Hotspot stopped');setTimeout(loadSystem,500)}catch(e){showToast('❌ Failed')}}
+function escapeHtml(t){return t?t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'):''}
+// Restore tab
+const savedTab=localStorage.getItem('tab')||'overview';
+switchTab(savedTab);
+</script></body></html>

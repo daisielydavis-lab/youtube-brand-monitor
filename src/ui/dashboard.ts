@@ -85,6 +85,10 @@ export function renderDashboard(
     if(!iso) return 'Never'; const d=(Date.now()-new Date(iso).getTime())/1000;
     return d<60?'Just now':d<3600?Math.floor(d/60)+'m':d<86400?Math.floor(d/3600)+'h':Math.floor(d/86400)+'d ago';
   };
+  const timeAgoZh = (iso: string) => {
+    if(!iso) return '从未'; const d=(Date.now()-new Date(iso).getTime())/1000;
+    return d<60?'刚刚':d<3600?Math.floor(d/60)+' 分钟前':d<86400?Math.floor(d/3600)+' 小时前':Math.floor(d/86400)+' 天前';
+  };
 
   // ── Empty state ──
   if (!data.hasData) return emptyState(sysStatus);
@@ -101,8 +105,8 @@ export function renderDashboard(
   const aiPct = aiReviewed + aiPending > 0 ? Math.round(aiReviewed / (aiReviewed + aiPending) * 100) : 0;
   const aiColor = aiPct >= 80 ? '#19A974' : aiPct >= 50 ? '#F59E0B' : '#EF5B5B';
   const pendingStatus = aiPending > 0
-    ? `<div style="font-size:11px;color:#F59E0B;margin-top:2px">${aiReviewed} reviewed · ${aiPending} pending</div>`
-    : `<div style="font-size:11px;color:#19A974;margin-top:2px">${aiReviewed} reviewed · complete</div>`;
+    ? `<div style="font-size:11px;color:#F59E0B;margin-top:2px">${aiReviewed.toLocaleString()} 已分析 · ${aiPending.toLocaleString()} 待复核</div>`
+    : `<div style="font-size:11px;color:#19A974;margin-top:2px">${aiReviewed.toLocaleString()} 已分析 · 完成</div>`;
   // Data scope 日期友好格式: "2026-08-08" → "Aug 8, 2026"
   const fmtScopeDate = (s: string): string => {
     if (!s) return '';
@@ -110,110 +114,109 @@ export function renderDashboard(
     const mn = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][Math.max(0, Math.min(11, (+mo || 1) - 1))];
     return `${mn} ${+d || 1}, ${y}`;
   };
+  // Stage ⑦ 产品化: 采集与分析解耦。KPI 行 = 业务数字; 口径条 = 数据范围+AI 进度状态
+  const rangeDaysNow = parseInt((filter.range || '7').replace(/[^0-9]/g, '') || '7', 10);
+  const rangeLabel = ({1:'过去24小时',7:'过去7天',30:'过去30天',90:'过去90天'} as any)[rangeDaysNow] || `过去${rangeDaysNow}天`;
   const overview = `
   <div class="kpi-row" style="grid-template-columns:repeat(5,1fr)">
-    <div class="kpi"><div class="kpi-n">${kpi.competitorPlacements ?? 0}</div><div class="kpi-l">Competitor Placements</div></div>
-    <div class="kpi"><div class="kpi-n">${kpi.unresolvedCandidates ?? 0}</div><div class="kpi-l">Unresolved Candidates</div></div>
-    <div class="kpi"><div class="kpi-n">${kpi.activeCreators ?? 0}</div><div class="kpi-l">Active Creators</div></div>
-    <div class="kpi"><div class="kpi-n">${kpi.activeCampaigns ?? 0}</div><div class="kpi-l">Campaign Clusters</div></div>
-    <div class="kpi hl"><div class="kpi-n" style="color:${aiColor}">${aiPct}%</div><div class="kpi-l">AI Review Coverage</div>${pendingStatus}</div>
+    <div class="kpi hl"><div class="kpi-n">${kpi.competitorPlacements ?? 0}</div><div class="kpi-l">竞品投放</div></div>
+    <div class="kpi"><div class="kpi-n">${kpi.uniqueCreators ?? 0}</div><div class="kpi-l">投放博主</div></div>
+    <div class="kpi"><div class="kpi-n">${kpi.totalGames ?? 0}</div><div class="kpi-l">覆盖游戏</div></div>
+    <div class="kpi"><div class="kpi-n">${kpi.activeCampaigns ?? 0}</div><div class="kpi-l">集中投放项目</div></div>
+    <div class="kpi"><div class="kpi-n" style="color:${aiColor}">${aiPct}%</div><div class="kpi-l">AI分析完成</div>${pendingStatus}</div>
   </div>
 
-  <div style="font-size:11px;color:#8490A6;margin-bottom:4px;padding:6px 10px;background:#F8FAFD;border-radius:6px;border:1px solid #E3E8F1">
-    Data scope: <b>${(kpi.totalPlacements ?? kpi.competitorPlacements ?? 0).toLocaleString()} competitor placements</b> · ${(kpi.uniqueCreators ?? 0).toLocaleString()} unique creators · ${kpi.totalGames ?? 0} games · ${fmtScopeDate(kpi.windowStart ?? '')} → ${fmtScopeDate(kpi.windowEnd ?? '')}
-    <div style="margin-top:2px;color:#A3ADC2">Discovery ${(kpi.totalVideos ?? 0).toLocaleString()} videos · AI Review ${aiPct}% (${aiReviewed.toLocaleString()} reviewed · ${aiPending.toLocaleString()} pending) · ${(kpi.unresolvedCandidates ?? 0)} unresolved · ${kpi.newCompetitorCreators ?? 0} new creators</div>
+  <div style="background:#F8FAFD;border:1px solid #E3E8F1;border-radius:8px;padding:12px 14px;margin-bottom:12px">
+    <div style="font-size:13px;color:#4B5870;font-weight:600">当前统计范围：${rangeLabel} · ${fmtScopeDate(kpi.windowStart ?? '')} → ${fmtScopeDate(kpi.windowEnd ?? '')}</div>
+    <div style="font-size:15px;margin:6px 0;color:#172033"><b style="font-size:17px">${(kpi.totalPlacements ?? kpi.competitorPlacements ?? 0).toLocaleString()}</b> 条竞品投放　<b style="font-size:17px">${(kpi.uniqueCreators ?? 0).toLocaleString()}</b> 位投放博主　<b style="font-size:17px">${kpi.totalGames ?? 0}</b> 款游戏　<b style="font-size:17px">${kpi.activeCampaigns ?? 0}</b> 个集中投放项目</div>
+    <div style="font-size:12.5px;color:#8490A6">共发现 ${(kpi.totalVideos ?? 0).toLocaleString()} 条视频 · 已完成 AI 分析 ${aiReviewed.toLocaleString()} 条（${aiPct}%）· 待分析 ${aiPending.toLocaleString()} 条 · 待确认 ${kpi.unresolvedCandidates ?? 0} 条 · 新增博主 ${kpi.newCompetitorCreators ?? 0}</div>
+    <div style="font-size:12.5px;${aiPending > 0 ? 'color:#C2570B' : 'color:#19A974'};margin-top:3px">${aiPending > 0 ? `🟠 仍有 ${aiPending.toLocaleString()} 条视频待分析，最终投放数量可能继续增加` : '🟢 AI 分析完成 100%，当前窗口数据已完整'}</div>
   </div>
 
   ${(kpi.campaignPlacements ?? 0) + (kpi.standalonePlacements ?? 0) > 0 ? `
   <div style="display:flex;align-items:center;gap:10px;font-size:12px;margin-bottom:12px;padding:8px 12px;background:#F3F7FF;border:1px solid #DCE5F7;border-radius:8px;color:#4B5870">
-    <span style="font-weight:700;color:#172033">${(kpi.totalPlacements ?? kpi.competitorPlacements ?? 0).toLocaleString()} Competitor Placements</span>
+    <span style="font-weight:700;color:#172033">${(kpi.totalPlacements ?? kpi.competitorPlacements ?? 0).toLocaleString()} 条竞品投放视频</span>
     <span style="color:#A3ADC2">→</span>
-    <span>🟦 <b style="color:#3B6EF5">${(kpi.campaignPlacements ?? 0).toLocaleString()}</b> campaign placements · <b>${kpi.activeCampaigns ?? 0}</b> campaigns</span>
+    <span>🟦 <b style="color:#3B6EF5">${(kpi.campaignPlacements ?? 0).toLocaleString()}</b> 条集中投放 · <b>${kpi.activeCampaigns ?? 0}</b> 个项目</span>
     <span style="color:#A3ADC2">|</span>
-    <span>⬜ <b style="color:#8490A6">${(kpi.standalonePlacements ?? 0).toLocaleString()}</b> standalone placements</span>
+    <span>⬜ <b style="color:#8490A6">${(kpi.standalonePlacements ?? 0).toLocaleString()}</b> 条独立投放</span>
   </div>` : ''}
 
-  <h2>🚨 Recent Campaign Signals</h2>
+  <h2>🚨 近期投放动态</h2>
   ${campaigns.length ? campaigns.slice(0, 8).map((c: any) => {
     const brandColor = ({GearUP:'#f59e0b',ExitLag:'#3b82f6',LagZapper:'#22c55e'} as any)[c.brand]||'#94a3b8';
-    const ovCtLabel: Record<string,string> = {multi_creator_campaign:'Multi-Creator',creator_series:'Creator Series',one_off_placement:'Placement',brand_push:'Brand Push'};
     const statusColor = c.status === 'active' ? '#19A974' : c.status === 'cooling' ? '#F59E0B' : '#8490A6';
     const angle = c.primary_selling_point || c.primarySellingPoint || '';
-    // Intensity (Stage ⑤): what kind of push is this?
-    const intensity = (c.video_count||0) >= 5 && (c.creator_count||0) === 1 ? 'High-frequency creator series'
-      : (c.creator_count||0) >= 2 ? 'Coordinated campaign'
-      : (c.video_count||0) >= 3 ? 'Focused push'
-      : 'Single placement';
+    const market = fmtMarket(c.primary_market || c.primaryMarket || '');
     return `<div class="camp-card" style="margin-bottom:10px;border-left:3px solid ${brandColor}">
       <div style="display:flex;justify-content:space-between;align-items:center">
         <div>
           <span style="font-size:16px;font-weight:700;color:${brandColor}">${esc(c.brand)}</span>
           <span style="font-size:14px;color:#4B5870"> × ${esc(c.game)}</span>
-          <span style="font-size:10px;background:#F3F7FF;color:#3B6EF5;padding:1px 6px;border-radius:3px;margin-left:6px">${ovCtLabel[c.cluster_type]||c.cluster_type||'Campaign'}</span>
-          <span style="font-size:10px;background:#FFF7ED;color:#C2570B;padding:1px 6px;border-radius:3px;margin-left:6px">⚡ ${intensity}</span>
+          <span style="font-size:10px;background:#F3F7FF;color:#3B6EF5;padding:1px 6px;border-radius:3px;margin-left:6px">${CT_ZH[c.cluster_type]||c.cluster_type||'集中投放'}</span>
         </div>
-        <span style="font-size:11px;color:${statusColor}">${c.status} · ${c.active_from} → ${c.active_to}</span>
+        <span style="font-size:11px;color:${statusColor}">${STATUS_ZH[c.status]||c.status} · ${c.active_from} → ${c.active_to}</span>
       </div>
       <div style="display:flex;gap:16px;margin-top:8px;font-size:12px;color:#4B5870">
-        <span>👤 <b>${c.creator_count}</b> creators</span>
-        <span>🎬 <b>${c.video_count}</b> placements</span>
-        <span>👁 <b>${fmt(c.total_estimated_views||0)}</b> views</span>
-        <span>🌍 ${esc(c.primary_market||c.primaryMarket||'Global')}</span>
-        ${angle ? `<span style="background:#F3F7FF;color:#3B6EF5;padding:1px 8px;border-radius:4px">${esc(angle)}</span>` : ''}
+        <span>👤 <b>${c.creator_count}</b> 位博主</span>
+        <span>🎬 <b>${c.video_count}</b> 条投放</span>
+        <span>👁 <b>${fmt(c.total_estimated_views||0)}</b> 播放</span>
+        <span>🌍 ${esc(market)}</span>
+        ${angle ? `<span style="background:#F3F7FF;color:#3B6EF5;padding:1px 8px;border-radius:4px">${esc(ANGLE_ZH[angle]||angle)}</span>` : ''}
       </div>
     </div>`;
-  }).join('') : '<p class="mt">No campaign clusters detected in this window. Run a scan to discover competitive moves.</p>'}
+  }).join('') : '<p class="mt">本窗口暂无集中投放项目。运行扫描以发现竞品投放动态。</p>'}
 
-  <h2>🔍 Placements by Competitor</h2>
+  <h2>🔍 竞品投放分布</h2>
   <div class="brand-grid">
     ${data.brandComparison.slice(0, 3).map(b=>`
     <div class="brand-card" style="border-top:3px solid ${bc(b.brandName)}">
       <div class="bc-n" style="color:${bc(b.brandName)}">${esc(b.brandName)}</div>
-      <div class="bc-s"><span>${b.newVideos}</span> placements · <span>${b.creators}</span> creators</div>
+      <div class="bc-s"><span>${b.newVideos}</span> 条投放 · <span>${b.creators}</span> 位博主</div>
     </div>`).join('')}
   </div>
 
   <div class="two-col">
-    <div><h2>🎮 Top Games by Placements</h2>
-      <div style="font-size:11px;color:#8490A6;margin-bottom:6px">Top ${Math.min(data.topGames.length, 6)} of ${kpi.totalGames ?? data.topGames.length} games · ${(kpi.totalPlacements ?? kpi.competitorPlacements ?? 0).toLocaleString()} placements total</div>
-      ${data.topGames.slice(0,6).map(g=>`<div class="game-row"><span style="flex:1">${esc(g.game)}</span><span>${g.videoCount} placements</span></div>`).join('')||'<p class="mt">No data</p>'}
+    <div><h2>🎮 重点投放游戏</h2>
+      <div style="font-size:11px;color:#8490A6;margin-bottom:6px">Top ${Math.min(data.topGames.length, 6)} of ${kpi.totalGames ?? data.topGames.length} 个游戏 · 共 ${(kpi.totalPlacements ?? kpi.competitorPlacements ?? 0).toLocaleString()} 条投放</div>
+      ${data.topGames.slice(0,6).map(g=>`<div class="game-row"><span style="flex:1">${esc(g.game)}</span><span>${g.videoCount} 条投放</span></div>`).join('')||'<p class="mt">暂无数据</p>'}
     </div>
-    <div><h2>🏷 Placements by Content Angle</h2>
-      ${data.topThemes.slice(0,6).map(t=>`<div class="game-row"><span style="flex:1">${fmtTopic(t.topic)}</span><span>${t.videoCount}</span></div>`).join('')||'<p class="mt">No data</p>'}
+    <div><h2>🏷 主要投放主题</h2>
+      ${data.topThemes.slice(0,6).map(t=>`<div class="game-row"><span style="flex:1">${fmtTopic(t.topic)}</span><span>${t.videoCount}</span></div>`).join('')||'<p class="mt">暂无数据</p>'}
     </div>
   </div>`;
 
   // ── TAB 2: Campaigns ──
-  const ctLabel: Record<string,string> = {multi_creator_campaign:'Multi-Creator Campaign',creator_series:'Creator Series',one_off_placement:'One-off Placement',brand_push:'Brand Push'};
   const campCoveragePct = (kpi.totalPlacements ?? kpi.competitorPlacements ?? 0) > 0
     ? Math.round((kpi.campaignPlacements ?? 0) / (kpi.totalPlacements ?? 1) * 100) : 0;
   const campaignsTab = (`
   <div style="font-size:11px;color:#8490A6;margin-bottom:12px;padding:6px 10px;background:#F8FAFD;border-radius:6px;border:1px solid #E3E8F1">
-    Scope: <b>${kpi.activeCampaigns ?? 0} campaigns</b> · ${(kpi.campaignPlacements ?? 0).toLocaleString()} campaign placements · ${(kpi.uniqueCreators ?? 0).toLocaleString()} creators · covering ${campCoveragePct}% of ${(kpi.totalPlacements ?? kpi.competitorPlacements ?? 0).toLocaleString()} competitor placements
+    范围: <b>${kpi.activeCampaigns ?? 0} 个集中投放项目</b> · ${(kpi.campaignPlacements ?? 0).toLocaleString()} 条集中投放 · ${(kpi.uniqueCreators ?? 0).toLocaleString()} 位博主 · 覆盖 ${(kpi.totalPlacements ?? kpi.competitorPlacements ?? 0).toLocaleString()} 条竞品投放视频的 ${campCoveragePct}%
   </div>` + (campaigns.length ? campaigns.map((c:any)=>{
     const brandColor = ({GearUP:'#f59e0b',ExitLag:'#3b82f6',LagZapper:'#22c55e'} as any)[c.brand]||'#94a3b8';
     const statusColor = c.status === 'active' ? '#19A974' : c.status === 'cooling' ? '#F59E0B' : '#8490A6';
+    const campAngle = c.primary_selling_point || c.primarySellingPoint || '';
     return `<div class="camp-card" style="margin-bottom:14px;border-left:3px solid ${brandColor};padding:16px">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px">
         <div>
           <span style="font-size:17px;font-weight:700;color:${brandColor}">${esc(c.brand)}</span>
           <span style="font-size:15px;color:#4B5870"> × ${esc(c.game)}</span>
-          <span style="font-size:11px;background:#F3F7FF;color:#3B6EF5;padding:2px 8px;border-radius:3px;margin-left:8px">${ctLabel[c.cluster_type]||c.cluster_type||'Campaign'}</span>
+          <span style="font-size:11px;background:#F3F7FF;color:#3B6EF5;padding:2px 8px;border-radius:3px;margin-left:8px">${CT_ZH[c.cluster_type]||c.cluster_type||'集中投放'}</span>
         </div>
-        <span style="font-size:12px;padding:4px 10px;border-radius:8px;color:#fff;background:${statusColor}">${c.status}</span>
+        <span style="font-size:12px;padding:4px 10px;border-radius:8px;color:#fff;background:${statusColor}">${STATUS_ZH[c.status]||c.status}</span>
       </div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:10px;margin-bottom:10px">
-        <div><span style="font-size:11px;color:#8490A6;display:block">Period</span><span style="font-size:13px;font-weight:600;color:#172033">${c.active_from} → ${c.active_to}</span></div>
-        <div><span style="font-size:11px;color:#8490A6;display:block">Creators</span><span style="font-size:13px;font-weight:600;color:#172033">${c.creator_count}</span></div>
-        <div><span style="font-size:11px;color:#8490A6;display:block">Placements</span><span style="font-size:13px;font-weight:600;color:#172033">${c.video_count}</span></div>
-        <div><span style="font-size:11px;color:#8490A6;display:block">Est. Views</span><span style="font-size:13px;font-weight:600;color:#172033">${fmt(c.total_estimated_views||0)}</span></div>
-        <div><span style="font-size:11px;color:#8490A6;display:block">Market</span><span style="font-size:13px;font-weight:600;color:#172033">${esc(c.primary_market||c.primaryMarket||'Global')}</span></div>
+        <div><span style="font-size:11px;color:#8490A6;display:block">周期</span><span style="font-size:13px;font-weight:600;color:#172033">${c.active_from} → ${c.active_to}</span></div>
+        <div><span style="font-size:11px;color:#8490A6;display:block">博主</span><span style="font-size:13px;font-weight:600;color:#172033">${c.creator_count}</span></div>
+        <div><span style="font-size:11px;color:#8490A6;display:block">投放数</span><span style="font-size:13px;font-weight:600;color:#172033">${c.video_count}</span></div>
+        <div><span style="font-size:11px;color:#8490A6;display:block">预估播放</span><span style="font-size:13px;font-weight:600;color:#172033">${fmt(c.total_estimated_views||0)}</span></div>
+        <div><span style="font-size:11px;color:#8490A6;display:block">市场</span><span style="font-size:13px;font-weight:600;color:#172033">${esc(fmtMarket(c.primary_market||c.primaryMarket||''))}</span></div>
       </div>
       <div style="font-size:12px;color:#4B5870">
-        <span style="background:#F3F7FF;color:#3B6EF5;padding:2px 8px;border-radius:4px;margin-right:6px">${esc(c.primary_selling_point||c.primarySellingPoint||'General')}</span>
+        <span style="background:#F3F7FF;color:#3B6EF5;padding:2px 8px;border-radius:4px;margin-right:6px">${esc(ANGLE_ZH[campAngle]||campAngle||'常规植入')}</span>
       </div>
     </div>`;
-  }).join('') : '<p class="mt">No campaigns detected yet. Campaigns are auto-detected when the same brand+game combination has multiple placements within 7 days.</p>'));
+  }).join('') : '<p class="mt">暂无集中投放项目。同一品牌 × 同一游戏在 7 天内出现多条投放时会自动识别。</p>'));
 
   // ── TAB 3: Videos — 3 views: Competitor Placements / Unresolved / All Discovered ──
   const contentTypeLabel: Record<string,string> = {dedicated:'Dedicated',integrated:'Integration',shorts:'Shorts',live:'Livestream',dedicated_review:'Dedicated',integrated_placement:'Integration',live_replay:'Livestream',comparison:'Comparison',tutorial:'Tutorial',gameplay:'Gameplay'};
@@ -245,9 +248,9 @@ export function renderDashboard(
   const videosTab = `
   <div class="ctrls" style="align-items:center;gap:10px;flex-wrap:wrap">
     <span style="font-size:12px;color:#8490A6;font-weight:600">View:</span>
-    <button onclick="switchVideoView('competitor')" id="vid-btn-competitor" class="btn-scan" style="font-size:11px;padding:4px 10px">Competitor Placements ${cpTotal} · Showing 1–${Math.min(data.recentVideos.length, kpi.competitorPlacements ?? 0).toLocaleString()} of ${cpTotal}</button>
-    <button onclick="switchVideoView('unresolved')" id="vid-btn-unresolved" style="background:#1e293b;color:#f59e0b;border:1px solid #f59e0b;padding:4px 10px;border-radius:6px;font-size:11px;cursor:pointer">Unresolved ${unTotal} · Showing ${Math.min(unresolvedVids.length, kpi.unresolvedCandidates ?? 0).toLocaleString()}</button>
-    <button onclick="switchVideoView('all')" id="vid-btn-all" style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;padding:4px 10px;border-radius:6px;font-size:11px;cursor:pointer">All Discovered ${discTotal} · Showing latest ${allVids.length}</button>
+    <button onclick="switchVideoView('competitor')" id="vid-btn-competitor" class="btn-scan" style="font-size:11px;padding:4px 10px">竞品投放视频 ${cpTotal} · Showing 1–${Math.min(data.recentVideos.length, kpi.competitorPlacements ?? 0).toLocaleString()} of ${cpTotal}</button>
+    <button onclick="switchVideoView('unresolved')" id="vid-btn-unresolved" style="background:#1e293b;color:#f59e0b;border:1px solid #f59e0b;padding:4px 10px;border-radius:6px;font-size:11px;cursor:pointer">待确认视频 ${unTotal} · Showing ${Math.min(unresolvedVids.length, kpi.unresolvedCandidates ?? 0).toLocaleString()}</button>
+    <button onclick="switchVideoView('all')" id="vid-btn-all" style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;padding:4px 10px;border-radius:6px;font-size:11px;cursor:pointer">全部抓取 ${discTotal} · Showing latest ${allVids.length}</button>
     <span style="margin-left:12px;color:#334155">|</span>
     <select onchange="applyFilter('placement',this.value)"><option value="all">All Placements</option><option value="confirmed_paid_placement" ${sel('placement','confirmed_paid_placement')}>Confirmed</option><option value="likely_sponsored" ${sel('placement','likely_sponsored')}>Likely</option><option value="organic_mention" ${sel('placement','organic_mention')}>Organic</option></select>
     <select onchange="applyFilter('type',this.value)"><option value="all">All Types</option><option value="dedicated" ${sel('type','dedicated')}>Dedicated</option><option value="integrated" ${sel('type','integrated')}>Integrated</option><option value="shorts" ${sel('type','shorts')}>Shorts</option><option value="live" ${sel('type','live')}>Livestream</option></select>
@@ -276,48 +279,51 @@ export function renderDashboard(
   const commentsTab = `<div id="comments-load"><p class="mt">Loading comments...</p></div>`;
 
   // ── TAB 6: System ──
+  // Stage ⑦ 产品化: Run Scan 从 Overview 移到这里 — 采集是系统层职责, 使用者只看分析
   const systemTab = `
-  <div class="kpi-row" style="grid-template-columns:repeat(4,1fr)">
-    <div class="kpi ${quotaPct>70?'hl':''}"><div class="kpi-n">${sysStatus.searchQuotaUsed||0}<small style="font-size:14px;color:#64748b">/100</small></div><div class="kpi-l">Search Quota</div></div>
-    <div class="kpi"><div class="kpi-n">${sysStatus.generalQuotaUsed||0}<small style="font-size:14px;color:#64748b">/10K</small></div><div class="kpi-l">General Quota</div></div>
-    <div class="kpi"><div class="kpi-n">${sysStatus.totalVideos||0}</div><div class="kpi-l">Total Videos</div></div>
-    <div class="kpi"><div class="kpi-n">${sysStatus.totalCreators||0}</div><div class="kpi-l">Tracked Creators</div></div>
+  <h2>数据采集</h2>
+  <div style="background:#F8FAFD;border:1px solid #E3E8F1;border-radius:8px;padding:12px 14px;margin-bottom:14px">
+    <div style="font-size:13px;color:#4B5870;font-weight:600;margin-bottom:8px">🟢 自动扫描：开启</div>
+    <div style="font-size:13px;color:#4B5870;line-height:1.9">
+      上次扫描：<b>${timeAgoZh(sysStatus.lastRun)}</b>　下次自动扫描：每日 06:00 UTC　·　AI 复核队列：每日 10:00 UTC（每轮 100 条）<br>
+      当前待 AI 复核：<b style="color:#C2570B">${kpi.aiPending ?? 0}</b> 条　·　搜索配额：<b>${sysStatus.searchQuotaUsed||0}</b>/100　·　常规配额：<b>${sysStatus.generalQuotaUsed||0}</b>/10K
+    </div>
+    <div style="margin-top:10px"><a href="/run" class="btn-scan">立即扫描一次</a><span style="font-size:11px;color:#8490A6;margin-left:10px">采集频率由系统配置，与页面右上角的统计周期无关</span></div>
   </div>
-  <h2>Scan Logs</h2>
-  <table class="dt"><thead><tr><th>Time</th><th>Mode</th><th>Searches</th><th>Found</th><th>New</th><th>Quota Used</th><th>Status</th></tr></thead><tbody id="scan-logs"><tr><td colspan="7" class="mt">Loading...</td></tr></tbody></table>
-  <h2>Hotspot</h2>
+  <h2>Hotspot 热点模式</h2>
   <div class="ctrls" style="align-items:center">
-    <input id="hs-game" placeholder="Game name (e.g. Valorant)" style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;padding:6px 10px;border-radius:6px;width:200px">
-    <input id="hs-days" placeholder="Days (1-7)" value="7" style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;padding:6px 10px;border-radius:6px;width:80px">
-    <button onclick="startHotspot()" class="btn-scan">Start Hotspot</button>
-    <button onclick="stopHotspot()" style="background:#1e293b;color:#ef4444;border:1px solid #ef4444;padding:6px 12px;border-radius:6px;cursor:pointer">Stop Hotspot</button>
-    <span id="hs-status" style="font-size:12px;color:#64748b">${sysStatus.hotspotActive?'🔴 Active':'⚪ Inactive'}</span>
-  </div>`;
+    <input id="hs-game" placeholder="游戏名（如 AION 2）" style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;padding:6px 10px;border-radius:6px;width:200px">
+    <input id="hs-days" placeholder="天数 (1-7)" value="7" style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;padding:6px 10px;border-radius:6px;width:80px">
+    <button onclick="startHotspot()" class="btn-scan">开启热点模式</button>
+    <button onclick="stopHotspot()" style="background:#1e293b;color:#ef4444;border:1px solid #ef4444;padding:6px 12px;border-radius:6px;cursor:pointer">关闭</button>
+    <span id="hs-status" style="font-size:12px;color:#64748b">${sysStatus.hotspotActive?'🔴 热点模式进行中':'⚪ 未开启'}</span>
+  </div>
+  <h2>扫描日志</h2>
+  <table class="dt"><thead><tr><th>时间</th><th>模式</th><th>搜索</th><th>发现</th><th>新增</th><th>配额</th><th>状态</th></tr></thead><tbody id="scan-logs"><tr><td colspan="7" class="mt">加载中...</td></tr></tbody></table>`;
 
-  return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Competitor Monitor v3</title><style>${CSS}</style></head><body>
+  return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>竞品投放监控 v3</title><style>${CSS}</style></head><body>
 <div class="container">
   <header>
     <div><h1>📊 YouTube Competitor Monitor</h1><p class="sub">GearUP · ExitLag · LagZapper</p></div>
     <div class="sys">
-      <span class="dot ${(sysStatus.searchQuotaUsed||0)>70?'warn':'ok'}">Search: ${sysStatus.searchQuotaUsed||0}/100</span>
-      <span>General: ${sysStatus.generalQuotaUsed||0}/10K</span>
-      <span>Last: ${timeAgo(sysStatus.lastRun)}</span>
-      <span>Hotspot: ${sysStatus.hotspotActive?'🔴':'⚪'}</span>
+      <span style="color:#19A974;font-weight:600">🟢 自动监控正常</span>
+      <span>最后更新：${timeAgoZh(sysStatus.lastRun)}</span>
+      <span>待 AI 复核：${kpi.aiPending ?? 0}</span>
     </div>
   </header>
   <div class="ctrls">
-    <select onchange="applyFilter('brand',this.value)"><option value="all">All Brands</option><option value="GearUP" ${sel('brand','GearUP')}>GearUP</option><option value="ExitLag" ${sel('brand','ExitLag')}>ExitLag</option><option value="LagZapper" ${sel('brand','LagZapper')}>LagZapper</option></select>
-    <select onchange="applyFilter('market',this.value)"><option value="all">Global</option><option value="US" ${sel('market','US')}>US</option><option value="RU" ${sel('market','RU')}>Russia</option><option value="BR" ${sel('market','BR')}>Brazil</option></select>
-    <select onchange="applyFilter('range',this.value)"><option value="7d" ${sel('range','7d')}>7 Days</option><option value="30d" ${sel('range','30d')}>30 Days</option><option value="90d" ${sel('range','90d')}>90 Days</option></select>
-    <a href="/run" class="btn-scan">Run Scan</a>
+    <select onchange="applyFilter('brand',this.value)"><option value="all" ${sel('brand','all')}>全部竞品</option><option value="GearUP" ${sel('brand','GearUP')}>GearUP</option><option value="ExitLag" ${sel('brand','ExitLag')}>ExitLag</option><option value="LagZapper" ${sel('brand','LagZapper')}>LagZapper</option></select>
+    <select onchange="applyFilter('market',this.value)"><option value="all" ${sel('market','all')}>全球</option><option value="US" ${sel('market','US')}>US</option><option value="RU" ${sel('market','RU')}>俄罗斯</option><option value="BR" ${sel('market','BR')}>巴西</option></select>
+    <select onchange="applyFilter('range',this.value)"><option value="1d" ${(filter.range||'7d')==='1d'?'selected':''}>过去24小时</option><option value="7d" ${(filter.range||'7d')==='7d'?'selected':''}>过去7天</option><option value="30d" ${(filter.range||'7d')==='30d'?'selected':''}>过去30天</option><option value="90d" ${(filter.range||'7d')==='90d'?'selected':''}>过去90天</option></select>
+    <span class="chip" style="margin-left:8px">${rangeLabel} · ${fmtScopeDate(kpi.windowStart ?? '')} → ${fmtScopeDate(kpi.windowEnd ?? '')}</span>
   </div>
   <nav class="tabs">
-    <a href="#" class="tab" onclick="switchTab('overview')" id="tab-overview">Overview</a>
-    <a href="#" class="tab" onclick="switchTab('campaigns')" id="tab-campaigns">Campaigns</a>
-    <a href="#" class="tab" onclick="switchTab('videos')" id="tab-videos">Videos</a>
-    <a href="#" class="tab" onclick="switchTab('creators')" id="tab-creators">Creators</a>
-    <a href="#" class="tab" onclick="switchTab('comments')" id="tab-comments">Comments</a>
-    <a href="#" class="tab" onclick="switchTab('system')" id="tab-system">System</a>
+    <a href="#" class="tab" onclick="switchTab('overview')" id="tab-overview">总览</a>
+    <a href="#" class="tab" onclick="switchTab('campaigns')" id="tab-campaigns">投放项目</a>
+    <a href="#" class="tab" onclick="switchTab('videos')" id="tab-videos">投放视频</a>
+    <a href="#" class="tab" onclick="switchTab('creators')" id="tab-creators">投放博主</a>
+    <a href="#" class="tab" onclick="switchTab('comments')" id="tab-comments">观众信号</a>
+    <a href="#" class="tab" onclick="switchTab('system')" id="tab-system">系统</a>
   </nav>
   <div id="tab-panel-overview" class="tab-content">${overview}</div>
   <div id="tab-panel-campaigns" class="tab-content" style="display:none">${campaignsTab}</div>
@@ -503,9 +509,17 @@ document.getElementById('scan-days').addEventListener('change',function(){
 }
 
 function fmtTopic(t: string): string {
-  const m: Record<string,string> = {game_integration:'Game Integration',lag_fix:'Reduce Ping',booster_review:'Booster Review',competitor_comparison:'Comparison',promo_code:'Promo Code',free_limited:'Free/Trial',new_game_launch:'New Launch',season_update:'Season Update',region_unlock:'Cross-Region',tutorial:'Tutorial',pure_endorsement:'Sponsored'};
+  const m: Record<string,string> = {game_integration:'游戏场景植入',lag_fix:'降低延迟',booster_review:'加速器评测',competitor_comparison:'竞品对比',promo_code:'优惠码',free_limited:'免费/试用',new_game_launch:'新品/新游上线',season_update:'赛季更新',region_unlock:'跨区解锁',tutorial:'教程攻略',pure_endorsement:'纯推荐植入',game_review:'游戏评测',general:'常规植入',other:'其他',uncategorized:'其他'};
   return m[t]||t;
 }
+// Campaign 主题角度中文化 (primary_selling_point 存的是英文显示名)
+const ANGLE_ZH: Record<string,string> = {'Reduce Ping':'降低延迟','Promo Code':'优惠码','Game Review':'游戏评测','Game Integration':'游戏场景植入','Tutorial':'教程攻略','New Launch':'新品/新游上线','General':'常规植入','Other':'其他','Free/Trial':'免费/试用','Season Update':'赛季更新','Cross-Region':'跨区解锁','Booster Review':'加速器评测','Comparison':'竞品对比','Sponsored':'纯推荐植入','Gameplay':'实机演示','Shorts':'短视频','Livestream':'直播'};
+// 集群类型中文化
+const CT_ZH: Record<string,string> = {multi_creator_campaign:'多博主投放',creator_series:'单博主连续投放',one_off_placement:'单次投放',brand_push:'品牌集中推广'};
+// 状态中文化
+const STATUS_ZH: Record<string,string> = {active:'进行中',cooling:'降温中',ended:'已结束'};
+// 市场显示: Unknown → 地区未知
+const fmtMarket = (mkt: string): string => (mkt === 'Unknown' || !mkt) ? '地区未知' : mkt;
 
 const CSS = `
 *{box-sizing:border-box;margin:0;padding:0}

@@ -352,7 +352,7 @@ app.post('/api/videos/:id/action', async (req, res) => {
 
 // ── Shared dashboard query (used by both / and /api/dashboard) ──
 // 3-layer data model: all analytics derived from Layer 3 (Competitor Placements)
-async function queryDashboardData(rangeDays: number) {
+async function queryDashboardData(rangeDays: number, brandFilter?: string, marketFilter?: string) {
   const since = new Date(Date.now() - rangeDays * 86400000).toISOString();
   const db = getSupabase();
 
@@ -392,8 +392,15 @@ async function queryDashboardData(rangeDays: number) {
   const coveragePct = totalInRange > 0 ? Math.round((totalAnalyzed / totalInRange) * 100) : 0;
 
   // ── Layer 3: Competitor Placements (brand ∈ valid AND placement ∈ confirmed/likely) ──
-  const competitorPlacements = filterCompetitorPlacements(videos);
+  // Stage ⑦: 品牌/市场筛选 = Analytics 层 (只重聚合 DB, 不触发抓取)
+  let competitorPlacements = filterCompetitorPlacements(videos);
   const unresolvedCandidates = filterUnresolvedCandidates(videos);
+  if (brandFilter && brandFilter !== 'all') {
+    competitorPlacements = competitorPlacements.filter(v => resolveBrand(v) === brandFilter);
+  }
+  if (marketFilter && marketFilter !== 'all') {
+    competitorPlacements = competitorPlacements.filter(v => (v.market || '') === marketFilter);
+  }
 
   // All discovered unique creators in window
   const allCreators = new Set(videos.map(v => v.channel_id));
@@ -525,8 +532,11 @@ app.get('/', async (_req, res) => {
 
   try {
     // Step 1: Query video data (critical)
+    // Stage ⑦: range/brand/market = Analytics 层筛选, 全部只查 DB 重新聚合
     const range = parseInt((_req.query.range as string) || '7', 10);
-    const data = await queryDashboardData(range);
+    const brandFilter = _req.query.brand as string | undefined;
+    const marketFilter = _req.query.market as string | undefined;
+    const data = await queryDashboardData(range, brandFilter, marketFilter);
     console.log(`[Dashboard:${requestId}] Step1 videos done: hasData=${data.hasData}`);
 
     // Step 2: Campaigns — ONE source of truth, no per-page re-computation.
@@ -608,7 +618,7 @@ app.get('/api/dashboard', async (req, res) => {
 
   try {
     const rangeDays = parseInt((req.query.range as string) || '7', 10);
-    const data = await queryDashboardData(rangeDays);
+    const data = await queryDashboardData(rangeDays, req.query.brand as string, req.query.market as string);
 
     if (!data.hasData) {
       return res.json({ ok: true, hasData: false, kpis: {}, brands: [], games: [], themes: [], creators: [], recentVideos: [], scanStatus: {} });
