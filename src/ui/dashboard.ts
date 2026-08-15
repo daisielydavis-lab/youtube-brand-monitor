@@ -108,14 +108,25 @@ export function renderDashboard(
     <div class="kpi"><div class="kpi-n">${kpi.competitorPlacements ?? 0}</div><div class="kpi-l">Competitor Placements</div></div>
     <div class="kpi"><div class="kpi-n">${kpi.unresolvedCandidates ?? 0}</div><div class="kpi-l">Unresolved Candidates</div></div>
     <div class="kpi"><div class="kpi-n">${kpi.activeCreators ?? 0}</div><div class="kpi-l">Active Creators</div></div>
-    <div class="kpi"><div class="kpi-n">${kpi.activeCampaigns ?? 0}</div><div class="kpi-l">Active Campaigns</div></div>
+    <div class="kpi"><div class="kpi-n">${kpi.activeCampaigns ?? 0}</div><div class="kpi-l">Campaign Clusters</div></div>
     <div class="kpi hl"><div class="kpi-n" style="color:${aiColor}">${aiPct}%</div><div class="kpi-l">AI Review Coverage</div>${pendingStatus}</div>
   </div>
 
-  <div style="font-size:11px;color:#8490A6;margin-bottom:12px;padding:6px 10px;background:#F8FAFD;border-radius:6px;border:1px solid #E3E8F1">
-    Discovery Coverage: ${(kpi.totalAnalyzed ?? 0).toLocaleString()} / ${(kpi.totalVideos ?? 0).toLocaleString()} processed · AI Review: ${aiPct}% (${aiReviewed.toLocaleString()} / ${(aiReviewed + aiPending).toLocaleString()}) · ${(kpi.competitorPlacements ?? 0).toLocaleString()} placements · ${kpi.unresolvedCandidates ?? 0} unresolved · ${kpi.newCompetitorCreators ?? 0} new creators
+  <div style="font-size:11px;color:#8490A6;margin-bottom:4px;padding:6px 10px;background:#F8FAFD;border-radius:6px;border:1px solid #E3E8F1">
+    Data scope: <b>${(kpi.totalPlacements ?? kpi.competitorPlacements ?? 0).toLocaleString()} competitor placements</b> · ${(kpi.uniqueCreators ?? 0).toLocaleString()} unique creators · ${kpi.totalGames ?? 0} games · ${kpi.windowStart ?? ''} → ${kpi.windowEnd ?? ''}
+    <div style="margin-top:2px;color:#A3ADC2">Discovery ${(kpi.totalVideos ?? 0).toLocaleString()} videos · AI Review ${aiPct}% (${aiReviewed.toLocaleString()} reviewed · ${aiPending.toLocaleString()} pending) · ${(kpi.unresolvedCandidates ?? 0)} unresolved · ${kpi.newCompetitorCreators ?? 0} new creators</div>
   </div>
-  <h2>🚨 Recent Competitive Moves</h2>
+
+  ${(kpi.campaignPlacements ?? 0) + (kpi.standalonePlacements ?? 0) > 0 ? `
+  <div style="display:flex;align-items:center;gap:10px;font-size:12px;margin-bottom:12px;padding:8px 12px;background:#F3F7FF;border:1px solid #DCE5F7;border-radius:8px;color:#4B5870">
+    <span style="font-weight:700;color:#172033">${(kpi.totalPlacements ?? kpi.competitorPlacements ?? 0).toLocaleString()} Competitor Placements</span>
+    <span style="color:#A3ADC2">→</span>
+    <span>🟦 <b style="color:#3B6EF5">${(kpi.campaignPlacements ?? 0).toLocaleString()}</b> campaign placements · <b>${kpi.activeCampaigns ?? 0}</b> campaigns</span>
+    <span style="color:#A3ADC2">|</span>
+    <span>⬜ <b style="color:#8490A6">${(kpi.standalonePlacements ?? 0).toLocaleString()}</b> standalone placements</span>
+  </div>` : ''}
+
+  <h2>🚨 Recent Campaign Signals</h2>
   ${campaigns.length ? campaigns.slice(0, 8).map((c: any) => {
     const brandColor = ({GearUP:'#f59e0b',ExitLag:'#3b82f6',LagZapper:'#22c55e'} as any)[c.brand]||'#94a3b8';
     const ovCtLabel: Record<string,string> = {multi_creator_campaign:'Multi-Creator',creator_series:'Creator Series',one_off_placement:'Placement',brand_push:'Brand Push'};
@@ -138,15 +149,15 @@ export function renderDashboard(
       </div>
       <div style="display:flex;gap:16px;margin-top:8px;font-size:12px;color:#4B5870">
         <span>👤 <b>${c.creator_count}</b> creators</span>
-        <span>🎬 <b>${c.video_count}</b> videos</span>
+        <span>🎬 <b>${c.video_count}</b> placements</span>
         <span>👁 <b>${fmt(c.total_estimated_views||0)}</b> views</span>
         <span>🌍 ${esc(c.primary_market||c.primaryMarket||'Global')}</span>
         ${angle ? `<span style="background:#F3F7FF;color:#3B6EF5;padding:1px 8px;border-radius:4px">${esc(angle)}</span>` : ''}
       </div>
     </div>`;
-  }).join('') : '<p class="mt">No active campaigns detected. Run a scan to discover competitive moves.</p>'}
+  }).join('') : '<p class="mt">No campaign clusters detected in this window. Run a scan to discover competitive moves.</p>'}
 
-  <h2>🔍 Competitor Breakdown</h2>
+  <h2>🔍 Placements by Competitor</h2>
   <div class="brand-grid">
     ${data.brandComparison.slice(0, 3).map(b=>`
     <div class="brand-card" style="border-top:3px solid ${bc(b.brandName)}">
@@ -156,17 +167,23 @@ export function renderDashboard(
   </div>
 
   <div class="two-col">
-    <div><h2>🎮 Top Games</h2>
-      ${data.topGames.slice(0,6).map(g=>`<div class="game-row"><span style="flex:1">${esc(g.game)}</span><span>${g.videoCount} videos</span></div>`).join('')||'<p class="mt">No data</p>'}
+    <div><h2>🎮 Top Games by Placements</h2>
+      <div style="font-size:11px;color:#8490A6;margin-bottom:6px">Top ${Math.min(data.topGames.length, 6)} of ${kpi.totalGames ?? data.topGames.length} games · ${(kpi.totalPlacements ?? kpi.competitorPlacements ?? 0).toLocaleString()} placements total</div>
+      ${data.topGames.slice(0,6).map(g=>`<div class="game-row"><span style="flex:1">${esc(g.game)}</span><span>${g.videoCount} placements</span></div>`).join('')||'<p class="mt">No data</p>'}
     </div>
-    <div><h2>🏷 Content Angles</h2>
+    <div><h2>🏷 Placements by Content Angle</h2>
       ${data.topThemes.slice(0,6).map(t=>`<div class="game-row"><span style="flex:1">${fmtTopic(t.topic)}</span><span>${t.videoCount}</span></div>`).join('')||'<p class="mt">No data</p>'}
     </div>
   </div>`;
 
   // ── TAB 2: Campaigns ──
   const ctLabel: Record<string,string> = {multi_creator_campaign:'Multi-Creator Campaign',creator_series:'Creator Series',one_off_placement:'One-off Placement',brand_push:'Brand Push'};
-  const campaignsTab = campaigns.length ? campaigns.map((c:any)=>{
+  const campCoveragePct = (kpi.totalPlacements ?? kpi.competitorPlacements ?? 0) > 0
+    ? Math.round((kpi.campaignPlacements ?? 0) / (kpi.totalPlacements ?? 1) * 100) : 0;
+  const campaignsTab = (`
+  <div style="font-size:11px;color:#8490A6;margin-bottom:12px;padding:6px 10px;background:#F8FAFD;border-radius:6px;border:1px solid #E3E8F1">
+    Scope: <b>${kpi.activeCampaigns ?? 0} campaigns</b> · ${(kpi.campaignPlacements ?? 0).toLocaleString()} campaign placements · ${(kpi.uniqueCreators ?? 0).toLocaleString()} creators · covering ${campCoveragePct}% of ${(kpi.totalPlacements ?? kpi.competitorPlacements ?? 0).toLocaleString()} competitor placements
+  </div>` + (campaigns.length ? campaigns.map((c:any)=>{
     const brandColor = ({GearUP:'#f59e0b',ExitLag:'#3b82f6',LagZapper:'#22c55e'} as any)[c.brand]||'#94a3b8';
     const statusColor = c.status === 'active' ? '#19A974' : c.status === 'cooling' ? '#F59E0B' : '#8490A6';
     return `<div class="camp-card" style="margin-bottom:14px;border-left:3px solid ${brandColor};padding:16px">
@@ -181,7 +198,7 @@ export function renderDashboard(
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:10px;margin-bottom:10px">
         <div><span style="font-size:11px;color:#8490A6;display:block">Period</span><span style="font-size:13px;font-weight:600;color:#172033">${c.active_from} → ${c.active_to}</span></div>
         <div><span style="font-size:11px;color:#8490A6;display:block">Creators</span><span style="font-size:13px;font-weight:600;color:#172033">${c.creator_count}</span></div>
-        <div><span style="font-size:11px;color:#8490A6;display:block">Videos</span><span style="font-size:13px;font-weight:600;color:#172033">${c.video_count}</span></div>
+        <div><span style="font-size:11px;color:#8490A6;display:block">Placements</span><span style="font-size:13px;font-weight:600;color:#172033">${c.video_count}</span></div>
         <div><span style="font-size:11px;color:#8490A6;display:block">Est. Views</span><span style="font-size:13px;font-weight:600;color:#172033">${fmt(c.total_estimated_views||0)}</span></div>
         <div><span style="font-size:11px;color:#8490A6;display:block">Market</span><span style="font-size:13px;font-weight:600;color:#172033">${esc(c.primary_market||c.primaryMarket||'Global')}</span></div>
       </div>
@@ -189,7 +206,7 @@ export function renderDashboard(
         <span style="background:#F3F7FF;color:#3B6EF5;padding:2px 8px;border-radius:4px;margin-right:6px">${esc(c.primary_selling_point||c.primarySellingPoint||'General')}</span>
       </div>
     </div>`;
-  }).join('') : '<p class="mt">No campaigns detected yet. Campaigns are auto-detected when the same brand+game combination has multiple placements within 7 days.</p>';
+  }).join('') : '<p class="mt">No campaigns detected yet. Campaigns are auto-detected when the same brand+game combination has multiple placements within 7 days.</p>'));
 
   // ── TAB 3: Videos — 3 views: Competitor Placements / Unresolved / All Discovered ──
   const contentTypeLabel: Record<string,string> = {dedicated:'Dedicated',integrated:'Integration',shorts:'Shorts',live:'Livestream',dedicated_review:'Dedicated',integrated_placement:'Integration',live_replay:'Livestream',comparison:'Comparison',tutorial:'Tutorial',gameplay:'Gameplay'};

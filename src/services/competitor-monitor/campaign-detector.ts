@@ -188,12 +188,11 @@ export async function detectCampaigns(): Promise<number> {
 
 export async function getCampaigns(statusFilter?: string): Promise<Campaign[]> {
   const db = getSupabase();
-  // Stage ④ 口径: campaigns table holds historical metadata (detected at a
-  // snapshot, mostly 'ended'). The API must match the dashboard KPI — only
-  // return non-ended campaigns by default. Pass status=ended to audit history.
+  // Stage ⑥ 口径统一: campaigns 表是完整聚类库。status (active/cooling/ended)
+  // 只是状态标签，不改变用户选择的时间窗口 —— 默认返回全部，窗口过滤由
+  // 上层 API/UI 按 last_placement_at 完成。status 参数仅用于显式筛选。
   let q = db.from('campaigns').select('*').order('detected_at', { ascending: false });
   if (statusFilter) q = q.eq('status', statusFilter);
-  else q = q.neq('status', 'ended');
   const { data } = await q;
   return (data || []).map(c => ({
     ...c,

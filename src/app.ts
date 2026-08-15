@@ -355,7 +355,7 @@ async function queryDashboardData(rangeDays: number) {
   // ── Layer 1: Fetch ALL discovered videos in time window (paged — REST caps at 1000/query) ──
   const videos: any[] = [];
   let vidErr: Error | null = null;
-  const cols = 'video_id,title,channel_id,channel_name,published_at,is_short,thumbnail_url,game_name,content_type,placement_type,sponsor_confidence,topic_category,promo_code,view_count,like_count,comment_count,classification_raw,workflow_status,first_seen_at,market,language';
+  const cols = 'video_id,title,channel_id,channel_name,published_at,is_short,thumbnail_url,game_name,content_type,placement_type,sponsor_confidence,topic_category,promo_code,view_count,like_count,comment_count,classification_raw,workflow_status,first_seen_at,market,language,campaign_id';
   for (let from = 0; ; from += 1000) {
     const { data, error } = await db.from('youtube_competitor_videos')
       .select(cols)
@@ -477,6 +477,14 @@ async function queryDashboardData(rangeDays: number) {
     totalVideos: totalInRange,
     totalAnalyzed,
     newCompetitorCreators: newCreatorIds.size,
+    // Stage ⑥ 口径统一: 161 placements 分两层 — 进了 campaign 聚类 vs 独立投放
+    campaignPlacements: competitorPlacements.filter(v => v.campaign_id).length,
+    standalonePlacements: competitorPlacements.filter(v => !v.campaign_id).length,
+    uniqueCreators: activeCreators.size,          // 161 条投放涉及的去重频道数
+    totalGames: gameMap.size,                     // 161 条投放覆盖的游戏数
+    windowStart: since.slice(0, 10),              // Data scope 行: 窗口起止
+    windowEnd: new Date().toISOString().slice(0, 10),
+    totalPlacements: competitorPlacements.length,
   };
 
   // ── Map DB video rows to dashboard VideoRow shape ──
@@ -517,24 +525,37 @@ app.get('/', async (_req, res) => {
     const data = await queryDashboardData(range);
     console.log(`[Dashboard:${requestId}] Step1 videos done: hasData=${data.hasData}`);
 
-    // Step 2: Campaigns — multi_creator_campaign + creator_series, parsed from landing_domain
+    // Step 2: Campaigns — ONE source of truth, no per-page re-computation.
+    // Stage ⑥ 口径统一: Campaigns 页 = 7 天窗口内产生过 placement 的所有
+    // campaign（ended 只是状态标签，不改变用户选择的窗口）。Overview 的
+    // Recent Campaign Signals = 同一批 campaign 按 Move Score 排 Top 8。
+    // Move Score = 新近程度 × KOL 数 × 视频数 × 播放量 × 多创作者加权。
+    const campaignSince = new Date(Date.now() - range * 86400000).toISOString();
     let campaigns: any[] = [];
     try {
-      const { data: c } = await getSupabase().from('campaigns').select('*').order('detected_at', { ascending: false }).limit(30);
-      // Parse cluster_type from landing_domain, strip prefix from primary_selling_point
-      campaigns = (c || []).map((x: any) => ({
+      const { data: c } = await getSupabase().from('campaigns').select('*').order('detected_at', { ascending: false }).limit(100);
+      const all = (c || []).map((x: any) => ({
         ...x,
         cluster_type: x.landing_domain || 'multi_creator_campaign',
         primary_selling_point: (x.primary_selling_point || '').replace(/^[^:]*::/, ''),
       }));
-      // Filter: only show multi_creator_campaign + creator_series
-      const visibleCampaigns = campaigns.filter((x: any) =>
-        x.cluster_type === 'multi_creator_campaign' || x.cluster_type === 'creator_series');
-      // Active count for KPI
-      const activeCampCount = visibleCampaigns.filter((x: any) => x.status === 'active').length;
-      (data.kpis as any).activeCampaigns = activeCampCount;
-      // For Overview competitive moves, show active ones
-      campaigns = visibleCampaigns.filter((x: any) => x.status === 'active' || x.status === 'cooling').slice(0, 10);
+      // 窗口口径: 只保留窗口内产生过 placement 的 campaign
+      const inWindow = all.filter((x: any) =>
+        x.last_placement_at >= campaignSince || x.active_to >= campaignSince.slice(0, 10));
+      // Move Score 排序（Over 两个页面共用）
+      const scoreOf = (x: any): number => {
+        const daysSince = (Date.now() - new Date(x.last_placement_at || x.active_to || x.detected_at).getTime()) / 86400000;
+        const recency = Math.max(0, 1 - daysSince / Math.max(range, 7)); // 新近程度 0-1
+        const creators = x.creator_count || 1;
+        const videos = x.video_count || 1;
+        const views = x.total_estimated_views || 0;
+        const multi = creators >= 2 ? 1.5 : 1; // 多创作者加权
+        return recency * (0.5 + creators) * (0.5 + videos) * Math.log10(10 + views) * multi;
+      };
+      inWindow.forEach((x: any) => { x.moveScore = Math.round(scoreOf(x) * 100) / 100; });
+      campaigns = inWindow.sort((a: any, b: any) => b.moveScore - a.moveScore);
+      // KPI: 窗口内 campaign 总数（口径统一后不再只数 active）
+      (data.kpis as any).activeCampaigns = campaigns.length;
     } catch (e) { console.warn(`[Dashboard:${requestId}] Campaigns query skipped: ${(e as Error).message}`); }
 
     // Step 3: Status (non-critical, safe-fail)
