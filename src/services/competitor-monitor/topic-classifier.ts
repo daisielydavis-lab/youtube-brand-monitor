@@ -56,6 +56,13 @@ function regexExtractGame(title: string, description: string, tags: string[]): s
 
 function regexDetectLanguage(title: string, description: string): string {
   const combined = `${title} ${description}`;
+  // Georgian (mixed titles may also contain Cyrillic — check first)
+  if (/[ა-ჰ]/.test(combined)) return 'ka';
+  // Belarusian (ў)
+  if (/[ўЎ]/.test(combined)) return 'be';
+  // Ukrainian: і/ї/є/ґ (not used in Russian) or high-signal words (и-form conjugations).
+  // JS \b is ASCII-only — substring match with words Russian never contains.
+  if (/[іїєґІЇЄҐ]/.test(combined) || /(насолод|погравши|пограю|вже|треба|найкращ|перемог|українськ|спробуй|увімкни|вмикай|дивись|дивимось|знайдеш|зможеш|чекай|перемагай|гравц)/i.test(combined)) return 'uk';
   // Cyrillic detection
   if (/[а-яА-ЯёЁ]/.test(combined)) return 'ru';
   // Portuguese detection
@@ -213,7 +220,7 @@ function fallbackTopicResult(input: TopicInput): TopicResult {
     contentCategory: regexDetectContentType(input.title, input.description, input.tags),
     topicCategory: regexDetectTopicCategory(input.title, input.description),
     language: regexDetectLanguage(input.title, input.description),
-    market: regexDetectLanguage(input.title, input.description) === 'ru' ? 'RU' : regexDetectLanguage(input.title, input.description) === 'pt' ? 'BR' : 'US',
+    market: ({ ru: 'RU', pt: 'BR', uk: 'UA', be: 'BY', ka: 'GE' } as Record<string, string>)[regexDetectLanguage(input.title, input.description)] || 'US',
   };
 }
 

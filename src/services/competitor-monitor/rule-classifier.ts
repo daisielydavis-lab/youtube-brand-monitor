@@ -159,9 +159,22 @@ function detectTopicCategory(title: string, description: string): string {
 
 // ── Language detection ──
 
+/**
+ * 乌克兰语高信号词（俄语中不出现，用 "и" 同形字变位时兜底）。
+ * 注意：JS 的 \b 是 ASCII 语义，对西里尔文本无效 —— 用子串匹配，
+ * 且只收俄语绝不含的子串（如 обще 含 "ще" 会误伤，故不收入）。
+ */
+const UA_WORD_HINTS = /(насолод|погравши|пограю|вже|треба|найкращ|перемог|українськ|спробуй|увімкни|вмикай|дивись|дивимось|знайдеш|зможеш|чекай|перемагай|гравц)/i;
+
 function detectLanguage(title: string, description: string): { language: string; market: string } {
   const combined = `${title} ${description}`;
-  // Cyrillic
+  // Georgian (mixed titles may also contain Cyrillic — check first)
+  if (/[ა-ჰ]/.test(combined)) return { language: 'ka', market: 'GE' };
+  // Belarusian (ў)
+  if (/[ўЎ]/.test(combined)) return { language: 'be', market: 'BY' };
+  // Ukrainian: і/ї/є/ґ (not used in Russian) or high-signal words (и-form conjugations)
+  if (/[іїєґІЇЄҐ]/.test(combined) || UA_WORD_HINTS.test(combined)) return { language: 'uk', market: 'UA' };
+  // Cyrillic → Russian
   if (/[а-яА-ЯёЁ]/.test(combined)) return { language: 'ru', market: 'RU' };
   // Portuguese
   if (/\b(como|para|mais|melhor|muito|jogar|jogo|jogos|funciona|vale|pena|cupom|desconto|você|você|não|uma|pra|pq|tá)\b/i.test(combined)) {
