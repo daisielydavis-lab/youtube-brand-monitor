@@ -643,9 +643,9 @@ async function queryDashboardData(rangeDays: number, brandFilter?: string, marke
     topThemes,
     topCreators: [] as any[],
     campaignClusters: scopeClusters.campaigns, // Scope 内运行时聚合的项目 (Overview + Campaigns 页共用)
-    recentVideos: competitorPlacements.slice(0, 20).map(toVideoRow), // default: competitor placements
+    recentVideos: competitorPlacements.map(toVideoRow), // 全量 — 前端分页加载更多
     allRecentVideos: videos.slice(0, 30).map(toVideoRow),            // "All Discovered" toggle
-    unresolvedVideos: unresolvedCandidates.slice(0, 20).map(toVideoRow), // "Unresolved Candidates" toggle
+    unresolvedVideos: unresolvedCandidates.map(toVideoRow), // 全量 — 前端分页加载更多
     scanStatus: { lastScanAt: null, nextScanAt: 'Tomorrow 06:00 UTC', totalVideos: totalInRange, totalCreators: activeCreators.size, queriesActive: 6 },
   };
 }
