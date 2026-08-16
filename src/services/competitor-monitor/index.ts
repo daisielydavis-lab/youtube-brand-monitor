@@ -235,10 +235,12 @@ export async function runDiscoveryPipeline(options?: {
     const backfillStart = new Date(Date.now() - backfillDays * 86400000).toISOString();
     const backfillEnd = new Date().toISOString();
     console.log(`[Monitor] Backfill mode — ${backfillDays}d since ${backfillStart.slice(0,10)}, ${queries.length} queries (Search budget ≤ ${Math.max(0, SEARCH_DAILY_BUDGET - dailySearchUsed)})`);
+    let queriesLeft = queries.length;
     for (const q of queries) {
-      if (searchCircuitOpen) { scanState.searchQueriesFailed++; continue; }
+      if (searchCircuitOpen) { scanState.searchQueriesFailed++; queriesLeft--; continue; }
       try {
-        const budgetLeft = Math.max(0, SEARCH_DAILY_BUDGET - dailySearchUsed);
+        // 预算按剩余 query 均分——防止第一个 query（GearUP）独占 70 次，LagZapper 分不到
+        const budgetLeft = Math.max(1, Math.floor((SEARCH_DAILY_BUDGET - dailySearchUsed) / queriesLeft));
         const res = await searchBackfillTimeSliced(q, backfillStart, backfillEnd, {
           initialWindowDays: 7, minWindowDays: 1, maxPages: 3,
           quotaBudget: budgetLeft,
@@ -252,6 +254,7 @@ export async function runDiscoveryPipeline(options?: {
         scanState.searchQueriesFailed++;
         if ((err as Error).message.startsWith('YT_QUOTA_EXHAUSTED')) { searchCircuitOpen = true; scanState.errorCode = 'SEARCH_QUOTA_EXHAUSTED'; }
       }
+      queriesLeft--;
     }
   } else {
     for (const q of queries) {
