@@ -303,7 +303,15 @@ export async function runDiscoveryPipeline(options?: {
           if (!st || RESUME_STATUSES.has(st)) toDo.push({ q, from, to: winTo(from), inserted: !st });
         }
       }
-      toDo.sort((a, b) => a.from < b.from ? -1 : a.from > b.from ? 1 : (a.q.queryText < b.q.queryText ? -1 : 1));
+      // RU/PT 市场 query 优先（用户 2026-08-16：LagZapper 俄区 90 天 100+ 投放，优先补齐语言缺口），
+      // 同市场内按时间从旧到新
+      const isRupt = (t: string) => t === 'ru' || t === 'pt';
+      toDo.sort((a, b) => {
+        const ar = isRupt(a.q.targetLanguage) ? 0 : 1;
+        const br = isRupt(b.q.targetLanguage) ? 0 : 1;
+        if (ar !== br) return ar - br;
+        return a.from < b.from ? -1 : a.from > b.from ? 1 : (a.q.queryText < b.q.queryText ? -1 : 1);
+      });
       // 崩溃残留的 running 行标回 pending（scanState.running 保证不会与并发扫描冲突）
       try { await db.from('backfill_windows').update({ status: 'pending' }).in('status', ['running']); } catch (err) { console.warn('[Monitor] running→pending 重置失败：', (err as Error).message); }
       // 补缺新窗口行（断点续跑时多数已有，只补新增的）
