@@ -95,8 +95,12 @@ export async function searchVideosPaged(
   let hadMore = false;
   const allVideoIds: string[] = [];
   const seen = new Set<string>();
+  let rateRetries = 0;
+  const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
   for (;;) {
+    // 页间节流 250ms：RU/PT 密集窗口递归拆半时防 YouTube QPS 限速（坑 #23：rateLimitExceeded 被误判为 quota 熔断）
+    await sleep(250);
     try {
       const params: Record<string, string | number> = {
         part: 'snippet',
@@ -129,8 +133,15 @@ export async function searchVideosPaged(
       const reason = data?.error?.errors?.[0]?.reason || data?.error?.message || 'unknown';
       const retryAfter = ae.response?.headers?.['retry-after'];
       console.error(`[YouTube] search ${status||'ERR'} for "${query.queryText}": reason=${reason} retryAfter=${retryAfter||'none'} body=${JSON.stringify(data).slice(0,400)}`);
-      if (status === 429 || status === 403 || reason === 'quotaExceeded' || reason === 'rateLimitExceeded') {
+      // 坑 #23：429/rateLimitExceeded 是瞬时 QPS 限速（非每日配额），退避重试最多 3 次；
+      // 只有 quotaExceeded/403 才是每日配额耗尽 → 熔断。
+      if (reason === 'quotaExceeded' || status === 403) {
         throw new Error(`YT_QUOTA_EXHAUSTED:${reason}`);
+      }
+      if (status === 429 || reason === 'rateLimitExceeded') {
+        if (++rateRetries >= 3) throw new Error(`YT_RATE_LIMITED:${reason}`);
+        await sleep(2500 * rateRetries);
+        continue;
       }
       break; // 非配额错误：放弃剩余页，保留已拿到的
     }
