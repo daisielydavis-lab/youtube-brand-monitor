@@ -324,10 +324,23 @@ app.get('/api/comments/summary', async (req, res) => {
 app.get('/api/markets', async (_req: any, res: any) => {
   try {
     const db = getSupabase();
-    const { data } = await db.from('youtube_competitor_videos').select('market');
+    // PostgREST 默认单查询上限 1000 行（坑 #1）——必须分页拉全量，否则计数总和恒为 1000、
+    // "未识别"被截断人为放大（2026-08-16 修复：此前 US+BR+RU+...+未识别恰好=1000）
+    const rows: any[] = [];
+    for (let from = 0; ; from += 1000) {
+      const { data, error } = await db
+        .from('youtube_competitor_videos')
+        .select('market')
+        .order('video_id', { ascending: true })
+        .range(from, from + 999);
+      if (error) throw error;
+      if (!data?.length) break;
+      rows.push(...data);
+      if (data.length < 1000) break;
+    }
     const counts: Record<string, number> = {};
     let none = 0;
-    for (const v of (data || []) as any[]) {
+    for (const v of rows) {
       const m = (v.market as string) || '';
       if (!m) { none++; continue; }
       for (const part of m.split('|')) {
@@ -340,6 +353,7 @@ app.get('/api/markets', async (_req: any, res: any) => {
       .map(([code, count]) => ({ code, label: MKT_ZH[code] || code, count }))
       .sort((a, b) => b.count - a.count);
     if (none > 0) list.push({ code: '__none__', label: '未识别', count: none });
+    // 注意：响应保持纯数组（前端 initMarkets() 依赖 list.length 直接迭代）
     res.json(list);
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });

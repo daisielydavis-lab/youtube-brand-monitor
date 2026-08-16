@@ -14,7 +14,7 @@ import { fetchVideoComments, hasExistingComments, saveComments } from './video-e
 import { getOrCreateCreatorProfile } from './creator-profiler';
 import { saveSnapshot } from './performance-snapshot';
 import { chatJSON } from '../ai/deepseek-client';
-import { batchClassify as ruleClassify, type RuleClassification } from './rule-classifier';
+import { batchClassify as ruleClassify, detectLanguage, type RuleClassification } from './rule-classifier';
 import { evaluateIndustryGate } from './industry-gate';
 
 // ── Types ──
@@ -149,11 +149,18 @@ Videos: ${JSON.stringify(items.map(({ description, ...aiItem }) => aiItem))}`;
         const finalBrand = aiBrand;
         if (pt === 'confirmed_paid_placement' || pt === 'likely_sponsored') likely++;
 
+        // AI 写回必须补 market/language（2026-08-16 坑 #20）：此前 AI update
+        // 不写顶层 market，且 classification_raw 整体覆盖丢掉 rule.market ——
+        // normal scan Phase 5 的 aiQueue 视频不经过 rule 写回，顶层 market
+        // 永久 NULL（1124 条）。用与规则层同口径的语言检测兜底。
+        const { market: aiMarket, language: aiLanguage } = detectLanguage(vid.title, vid.description);
+
         await getSupabase().from('youtube_competitor_videos').update({
           placement_type: pt, sponsor_confidence: (item.confidence || 50) / 100,
           game_name: industryBlocked ? null : (item.game || null),
           topic_category: industryBlocked ? 'game_integration' : (item.theme || 'game_integration'),
           content_type: item.format || 'integrated_placement',
+          market: aiMarket, language: aiLanguage,
           workflow_status: 'classified',
           classification_raw: {
             ai: industryBlocked ? { ...item, brand: null, placementType: 'organic_mention' } : item,

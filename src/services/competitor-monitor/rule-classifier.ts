@@ -166,7 +166,7 @@ function detectTopicCategory(title: string, description: string): string {
  */
 const UA_WORD_HINTS = /(насолод|погравши|пограю|вже|треба|найкращ|перемог|українськ|спробуй|увімкни|вмикай|дивись|дивимось|знайдеш|зможеш|чекай|перемагай|гравц)/i;
 
-function detectLanguage(title: string, description: string): { language: string; market: string } {
+export function detectLanguage(title: string, description: string): { language: string; market: string } {
   const combined = `${title} ${description}`;
   // Georgian (mixed titles may also contain Cyrillic — check first)
   if (/[ა-ჰ]/.test(combined)) return { language: 'ka', market: 'GE' };
