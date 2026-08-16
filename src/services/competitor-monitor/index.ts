@@ -9,7 +9,8 @@
 import { config, validateConfig } from '../../config';
 import { getSupabase } from '../../db/supabase';
 import { getActiveQueries, buildHotspotQueries, BRANDS } from './brand-config';
-import { searchVideos, getChannelsRecentVideos, getChannelsByIds, fetchStatsBatch, getStatsBatchQuotaUsed, type YouTubeVideoResult } from './youtube-discovery';
+import { searchVideosPaged, searchBackfillTimeSliced, getChannelsRecentVideos, getChannelsByIds, fetchStatsBatch, getStatsBatchQuotaUsed, type YouTubeVideoResult } from './youtube-discovery';
+import { upsertWatchlistCreator, scanWatchlistUploads } from './creator-watchlist';
 import { fetchVideoComments, hasExistingComments, saveComments } from './video-enrichment';
 import { getOrCreateCreatorProfile } from './creator-profiler';
 import { saveSnapshot } from './performance-snapshot';
@@ -39,8 +40,11 @@ export let scanState: ScanState = {
 
 let dailySearchUsed = 0, dailyGeneralUsed = 0, searchCircuitOpen = false;
 const AI_BATCH_SIZE = 10, MAX_AI_PER_SCAN = 50, SCAN_TIMEOUT_MS = 10 * 60_000;
+// 配额保护（用户 2026-08-16）：Search 独立池 100/天，日常 ≤70，留 30 buffer
+// 给 Hotspot/异常补扫/分页/调试。超过即熔断，绝不跑到 100。
+const SEARCH_DAILY_BUDGET = 70;
 
-function trackSearch() { dailySearchUsed++; scanState.searchQuotaUsed = dailySearchUsed; }
+function trackSearch(n = 1) { dailySearchUsed += n; scanState.searchQuotaUsed = dailySearchUsed; }
 function trackGeneral(n: number) { dailyGeneralUsed += n; scanState.generalQuotaUsed = dailyGeneralUsed; }
 
 /** Performance stage by published age: T+0 (<=3d, will get T+3 refresh),
@@ -82,7 +86,7 @@ function scorePriority(v: YouTubeVideoResult, knownIds: Set<string>, hotspotGame
 
 // ── True batch AI via unified client ──
 async function batchClassifyVideos(
-  videos: Array<{ videoId: string; title: string; description: string; channelName: string; publishedAt: string; tags: string[]; hasPaidPlacementTag: boolean }>,
+  videos: Array<{ videoId: string; title: string; description: string; channelName: string; channelId: string; publishedAt: string; tags: string[]; hasPaidPlacementTag: boolean }>,
 ): Promise<{ classified: number; likely: number; errors: string[] }> {
   let classified = 0, likely = 0;
   const errors: string[] = [];
@@ -94,7 +98,7 @@ async function batchClassifyVideos(
     const items = batch.map(v => ({
       videoId: v.videoId, title: v.title, descSnippet: v.description.slice(0, 300),
       description: v.description, // full text for server-side industry gate verification (not sent to AI)
-      channelName: v.channelName, publishedAt: v.publishedAt, hasPaidTag: v.hasPaidPlacementTag,
+      channelName: v.channelName, channelId: v.channelId, publishedAt: v.publishedAt, hasPaidTag: v.hasPaidPlacementTag,
       matchedBrand: BRANDS.find(b => b.brandKeywords.some(kw => v.title.toLowerCase().includes(kw) || v.description.toLowerCase().includes(kw)))?.brandName || null,
     }));
 
@@ -169,6 +173,11 @@ Videos: ${JSON.stringify(items.map(({ description, ...aiItem }) => aiItem))}`;
           },
           last_updated_at: new Date().toISOString(),
         }).eq('video_id', item.videoId);
+        // 用户 P0-2：AI 确认投放（confirmed/likely + 品牌）→ Creator 自动进品牌 Watchlist，
+        // 以后靠 uploads playlist 监控该频道（不依赖标题再出现品牌词）
+        if ((pt === 'confirmed_paid_placement' || pt === 'likely_sponsored') && finalBrand && vid.channelId) {
+          upsertWatchlistCreator(finalBrand, vid.channelId, vid.channelName, aiMarket, 'ai_confirmed').catch(() => {});
+        }
         classified++;
       }
       scanState.classified = classified;
@@ -198,7 +207,7 @@ Videos: ${JSON.stringify(items.map(({ description, ...aiItem }) => aiItem))}`;
 
 // ── Main Pipeline ──
 export async function runDiscoveryPipeline(options?: {
-  backfillDays?: number; mode?: 'normal' | 'hotspot' | 'manual'; hotspotGame?: string;
+  backfillDays?: number; mode?: 'normal' | 'hotspot' | 'manual' | 'backfill'; hotspotGame?: string;
   skipAI?: boolean; skipComments?: boolean;
 }): Promise<{ videosDiscovered: number; videosClassified: number }> {
   const mode = options?.mode || 'normal';
@@ -213,36 +222,79 @@ export async function runDiscoveryPipeline(options?: {
   const { data: existing } = await db.from('youtube_competitor_videos').select('video_id').gte('first_seen_at', new Date(Date.now() - 60 * 86400000).toISOString());
   (existing || []).forEach((v: any) => seen.add(v.video_id));
 
-  // Phase 1: Search (with circuit breaker)
+  // Phase 1: Search (with circuit breaker) — 2026-08-16 重构：分页 + 时间闭合
+  // 原则：Search 只负责发现新博主（用户 P0-1），单 query 翻 ≤2 页（100 条），
+  // Search 预算 ≤70/天。backfill 模式走动态时间分片（searchBackfillTimeSliced）。
   let searchFrom = 0;
   const queries = mode === 'hotspot' && options?.hotspotGame ? buildHotspotQueries(options.hotspotGame) : getActiveQueries();
   scanState.searchQueriesTotal = queries.length;
-  for (const q of queries) {
-    if (searchCircuitOpen) { scanState.searchQueriesFailed++; continue; }
-    try {
-      trackSearch();
-      const results = await searchVideos(q, publishedAfter, 50);
-      scanState.searchQueriesSucceeded++;
-      for (const r of results) { if (!seen.has(r.videoId)) { seen.add(r.videoId); allVids.push(r); searchFrom++; } }
-      await db.from('competitor_queries').upsert({ query_text: q.queryText, last_run_at: new Date().toISOString() }, { onConflict: 'query_text' });
-    } catch (err) {
-      scanState.searchQueriesFailed++;
-      if ((err as Error).message.startsWith('YT_QUOTA_EXHAUSTED')) { searchCircuitOpen = true; scanState.errorCode = 'SEARCH_QUOTA_EXHAUSTED'; }
+
+  if (mode === 'backfill') {
+    // 90 天历史回填：每个 query 按 7 天窗口切片 → 满页拆半 → 翻页拉全
+    const backfillDays = options?.backfillDays || 90;
+    const backfillStart = new Date(Date.now() - backfillDays * 86400000).toISOString();
+    const backfillEnd = new Date().toISOString();
+    console.log(`[Monitor] Backfill mode — ${backfillDays}d since ${backfillStart.slice(0,10)}, ${queries.length} queries (Search budget ≤ ${Math.max(0, SEARCH_DAILY_BUDGET - dailySearchUsed)})`);
+    for (const q of queries) {
+      if (searchCircuitOpen) { scanState.searchQueriesFailed++; continue; }
+      try {
+        const budgetLeft = Math.max(0, SEARCH_DAILY_BUDGET - dailySearchUsed);
+        const res = await searchBackfillTimeSliced(q, backfillStart, backfillEnd, {
+          initialWindowDays: 7, minWindowDays: 1, maxPages: 3,
+          quotaBudget: budgetLeft,
+          onSearchCall: () => { if (dailySearchUsed >= SEARCH_DAILY_BUDGET) searchCircuitOpen = true; trackSearch(); },
+        });
+        scanState.searchQueriesSucceeded++;
+        for (const r of res.videos) { if (!seen.has(r.videoId)) { seen.add(r.videoId); allVids.push(r); searchFrom++; } }
+        console.log(`[Monitor] backfill "${q.queryText}" → ${res.videos.length} videos in ${res.searchCalls} search calls`);
+        await db.from('competitor_queries').upsert({ query_text: q.queryText, last_run_at: new Date().toISOString() }, { onConflict: 'query_text' });
+      } catch (err) {
+        scanState.searchQueriesFailed++;
+        if ((err as Error).message.startsWith('YT_QUOTA_EXHAUSTED')) { searchCircuitOpen = true; scanState.errorCode = 'SEARCH_QUOTA_EXHAUSTED'; }
+      }
+    }
+  } else {
+    for (const q of queries) {
+      if (searchCircuitOpen) { scanState.searchQueriesFailed++; continue; }
+      try {
+        const res = await searchVideosPaged(q, publishedAfter, undefined, 2, 50);
+        trackSearch(res.pagesUsed);
+        scanState.searchQueriesSucceeded++;
+        for (const r of res.videos) { if (!seen.has(r.videoId)) { seen.add(r.videoId); allVids.push(r); searchFrom++; } }
+        await db.from('competitor_queries').upsert({ query_text: q.queryText, last_run_at: new Date().toISOString() }, { onConflict: 'query_text' });
+      } catch (err) {
+        scanState.searchQueriesFailed++;
+        if ((err as Error).message.startsWith('YT_QUOTA_EXHAUSTED')) { searchCircuitOpen = true; scanState.errorCode = 'SEARCH_QUOTA_EXHAUSTED'; }
+      }
     }
   }
   scanState.discoveredFromSearch = searchFrom;
 
-  // Phase 2: Channel monitoring
-  const { data: creators } = await db.from('youtube_creator_profiles').select('channel_id').limit(200);
+  // Phase 2: Creator Watchlist uploads 扫描（用户 P0-3，2026-08-16）
+  // Playlist 负责监控已知博主：playlistItems.list 1 unit/页（General 池），
+  // 不占 Search 池。Watchlist 优先，creator_profiles 补充（兼容历史数据）。
   let creatorFrom = 0;
+  let creatorFromWatchlist = 0;
+  let creatorFromProfiles = 0;
+  const wlScan = await scanWatchlistUploads(undefined, publishedAfter, 3);
+  trackGeneral(wlScan.playlistCalls + wlScan.channelCalls + Math.ceil(wlScan.videos.length / 50));
+  scanState.creatorChannelsChecked = wlScan.channelsChecked;
+  for (const v of wlScan.videos) {
+    if (!seen.has(v.videoId)) { seen.add(v.videoId); (v as any).discoveryMethod = 'channel_scan'; allVids.push(v); creatorFrom++; creatorFromWatchlist++; }
+  }
+
+  // 补充：creator_profiles（历史积累的所有博主）——playlist 扫描复用同一入口
+  const { data: creators } = await db.from('youtube_creator_profiles').select('channel_id').limit(200);
   if (creators?.length) {
-    scanState.creatorChannelsChecked = creators.length;
     const ids = creators.map((c: any) => c.channel_id);
-    trackGeneral(Math.ceil(ids.length / 50) + ids.length);
-    const chVids = await getChannelsRecentVideos(ids, publishedAfter, 5);
-    for (const v of chVids) { if (!seen.has(v.videoId)) { seen.add(v.videoId); (v as any).discoveryMethod = 'channel_scan'; allVids.push(v); creatorFrom++; } }
+    const profVids = await getChannelsRecentVideos(ids, publishedAfter, 5);
+    trackGeneral(Math.ceil(ids.length / 50) + ids.length + Math.ceil(profVids.length / 50));
+    for (const v of profVids) {
+      if (!seen.has(v.videoId)) { seen.add(v.videoId); (v as any).discoveryMethod = 'channel_scan'; allVids.push(v); creatorFrom++; creatorFromProfiles++; }
+    }
   }
   scanState.discoveredFromCreators = creatorFrom;
+  console.log(`[Monitor] Channel scan: watchlist=${creatorFromWatchlist} profiles=${creatorFromProfiles} (${wlScan.channelsChecked} channels, ${wlScan.playlistCalls} playlist calls)`);
   scanState.discoveredCount = allVids.length;
 
   // Log Supabase target
@@ -390,7 +442,8 @@ export async function runDiscoveryPipeline(options?: {
       return {
         videoId: r.videoId,
         title: orig?.video.title || '', description: orig?.video.description || '',
-        channelName: orig?.video.channelTitle || '', publishedAt: orig?.video.publishedAt || '',
+        channelName: orig?.video.channelTitle || '', channelId: orig?.video.channelId || '',
+        publishedAt: orig?.video.publishedAt || '',
         tags: orig?.video.tags || [], hasPaidPlacementTag: orig?.video.hasPaidPlacementTag || false,
       };
     });
@@ -512,7 +565,7 @@ export async function retryClassification(limit: number = 0): Promise<{ classifi
     const result = aiQueue.length > 0
       ? await batchClassifyVideos(aiQueue.map(r => {
           const orig = batch.find((v: any) => v.video_id === r.videoId);
-          return { videoId: r.videoId, title: orig?.title || '', description: orig?.description || '', channelName: orig?.channel_name || '', publishedAt: orig?.published_at || '', tags: orig?.tags || [], hasPaidPlacementTag: orig?.has_paid_placement_tag || false };
+          return { videoId: r.videoId, title: orig?.title || '', description: orig?.description || '', channelName: orig?.channel_name || '', channelId: orig?.channel_id || '', publishedAt: orig?.published_at || '', tags: orig?.tags || [], hasPaidPlacementTag: orig?.has_paid_placement_tag || false };
         }))
       : { classified: 0, likely: 0, errors: [] as string[] };
 

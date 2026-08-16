@@ -64,62 +64,157 @@ function isYouTubeShort(duration: string): boolean {
   return totalSeconds <= 60 && totalSeconds > 0;
 }
 
-/** Search for videos matching a query, with incremental date filtering */
+/**
+ * 2026-08-16 Discovery 层重构（用户 P0-1）：
+ * Search 只负责发现新博主，Playlist 负责监控，batchGetStats 负责复查。
+ * search.list 每翻一页算一次调用 —— maxPages 控制页数上限，quotaBudget 控制总调用数。
+ */
+
+export interface SearchPageResult {
+  videos: YouTubeVideoResult[];
+  /** 实际消耗的 search.list 调用数（页数） */
+  pagesUsed: number;
+  /** 还有更多页没拉（超出 maxPages）—— 调用方应拆时间窗口 */
+  hadMore: boolean;
+}
+
+/** 分页搜索：pageToken 翻页 + publishedBefore 时间窗口闭合。
+ *  注意 regionCode 只是"可观看区域"约束，不是博主市场标签（用户口径）。 */
+export async function searchVideosPaged(
+  query: BrandQuery,
+  publishedAfter: string,   // ISO
+  publishedBefore?: string, // ISO，可省略（不闭合右边界）
+  maxPages = 1,
+  maxResultsPerPage = 50,
+): Promise<SearchPageResult> {
+  const out: YouTubeVideoResult[] = [];
+  if (!API_KEY) { console.error('[YouTube] No API key configured'); return { videos: out, pagesUsed: 0, hadMore: false }; }
+
+  let pageToken = '';
+  let pagesUsed = 0;
+  let hadMore = false;
+  const allVideoIds: string[] = [];
+  const seen = new Set<string>();
+
+  for (;;) {
+    try {
+      const params: Record<string, string | number> = {
+        part: 'snippet',
+        q: query.queryText,
+        type: 'video',
+        maxResults: maxResultsPerPage,
+        order: 'date',
+        publishedAfter,
+        regionCode: query.targetMarket,
+        relevanceLanguage: query.targetLanguage,
+        key: API_KEY,
+      };
+      if (publishedBefore) params.publishedBefore = publishedBefore;
+      if (pageToken) params.pageToken = pageToken;
+
+      const { data } = await axios.get(`${YT_BASE}/search`, { params, timeout: 15000 });
+      pagesUsed++;
+      const items = data?.items || [];
+      for (const i of items) {
+        const id = i.id?.videoId;
+        if (id && !seen.has(id)) { seen.add(id); allVideoIds.push(id); }
+      }
+      hadMore = !!data?.nextPageToken;
+      if (!data?.nextPageToken || pagesUsed >= maxPages) break;
+      pageToken = data.nextPageToken;
+    } catch (err) {
+      const ae = err as { response?: { status?: number; data?: any; headers?: any } };
+      const status = ae.response?.status;
+      const data = ae.response?.data;
+      const reason = data?.error?.errors?.[0]?.reason || data?.error?.message || 'unknown';
+      const retryAfter = ae.response?.headers?.['retry-after'];
+      console.error(`[YouTube] search ${status||'ERR'} for "${query.queryText}": reason=${reason} retryAfter=${retryAfter||'none'} body=${JSON.stringify(data).slice(0,400)}`);
+      if (status === 429 || status === 403 || reason === 'quotaExceeded' || reason === 'rateLimitExceeded') {
+        throw new Error(`YT_QUOTA_EXHAUSTED:${reason}`);
+      }
+      break; // 非配额错误：放弃剩余页，保留已拿到的
+    }
+  }
+
+  console.log(`[YouTube] search "${query.queryText}" [${publishedAfter.slice(0,10)} → ${publishedBefore?.slice(0,10) || 'now'}] → ${allVideoIds.length} videos in ${pagesUsed} page(s)${hadMore ? ' (more available)' : ''}`);
+
+  if (allVideoIds.length) {
+    const videos = await getVideosByIds(allVideoIds);
+    out.push(...videos.map(v => ({ ...v, discoveryQuery: query.queryText, discoveryMethod: 'keyword_search' as const })));
+  }
+  return { videos: out, pagesUsed, hadMore };
+}
+
+/** Search for videos matching a query, with incremental date filtering（单页兼容入口） */
 export async function searchVideos(
   query: BrandQuery,
   publishedAfter: string, // ISO date string
   maxResults = 20,
 ): Promise<YouTubeVideoResult[]> {
-  if (!API_KEY) {
-    console.error('[YouTube] No API key configured');
-    return [];
-  }
+  const res = await searchVideosPaged(query, publishedAfter, undefined, 1, maxResults);
+  return res.videos;
+}
 
-  try {
-    const params: Record<string, string | number> = {
-      part: 'snippet',
-      q: query.queryText,
-      type: 'video',
-      maxResults,
-      order: 'date',
-      publishedAfter,
-      regionCode: query.targetMarket,
-      relevanceLanguage: query.targetLanguage,
-      key: API_KEY,
-    };
+export interface TimeSliceResult {
+  videos: YouTubeVideoResult[];
+  searchCalls: number;
+  windows: Array<{ from: string; to: string; count: number; split: boolean }>;
+}
 
-    const { data } = await axios.get(`${YT_BASE}/search`, { params, timeout: 15000 });
-    const items = data?.items || [];
-    const videoIds: string[] = items.map((i: any) => i.id?.videoId).filter(Boolean);
+/**
+ * 动态时间分片回填（用户 P0-1 核心）：
+ * 不做"搜 LagZapper → Top 50"，而是把 [startIso, endIso] 切成窗口：
+ *   7 天窗口 → 首页满 50 且有下一页 → 先翻页（maxPages 内）→ 仍 hadMore → 窗口拆半递归
+ *   → 3 天 → 1 天（minWindowDays 下限）。
+ * 每个窗口 order=date + publishedAfter/publishedBefore 闭合，翻页拉全。
+ * search.list 每翻一页算一次调用 —— 由 quotaBudget 上限保护。
+ */
+export async function searchBackfillTimeSliced(
+  query: BrandQuery,
+  startIso: string,
+  endIso: string,
+  opts: {
+    initialWindowDays?: number;
+    minWindowDays?: number;
+    maxPages?: number;
+    quotaBudget?: number;      // 该品牌 search.list 调用上限（0 = 不限）
+    onSearchCall?: () => void; // 每次 search 调用回调（用于 quota 记账/中止检查）
+  } = {},
+): Promise<TimeSliceResult> {
+  const initialWindowDays = opts.initialWindowDays ?? 7;
+  const minWindowDays = opts.minWindowDays ?? 1;
+  const maxPages = opts.maxPages ?? 3;
+  const budget = opts.quotaBudget ?? 0;
+  const out: YouTubeVideoResult[] = [];
+  const seen = new Set<string>();
+  const windows: TimeSliceResult['windows'] = [];
+  let searchCalls = 0;
 
-    if (!videoIds.length) {
-      console.log(`[YouTube] No results for "${query.queryText}" since ${publishedAfter}`);
-      return [];
+  const startMs = new Date(startIso).getTime();
+  const endMs = new Date(endIso).getTime();
+
+  const processWindow = async (wStartMs: number, wEndMs: number, windowDays: number): Promise<void> => {
+    for (let s = wStartMs; s < wEndMs; s += windowDays * 86400000) {
+      if (budget > 0 && searchCalls >= budget) return;
+      const from = new Date(s).toISOString();
+      const to = new Date(Math.min(s + windowDays * 86400000, wEndMs)).toISOString();
+      opts.onSearchCall?.();
+      const res = await searchVideosPaged(query, from, to, maxPages, 50);
+      searchCalls += res.pagesUsed;
+      const fresh = res.videos.filter(v => !seen.has(v.videoId));
+      fresh.forEach(v => seen.add(v.videoId));
+      out.push(...fresh);
+      windows.push({ from, to, count: res.videos.length, split: false });
+      // 满页且仍有更多 → 拆半递归重扫该窗口（父窗口已搜过，seen 去重；代价是重复 search 调用，受预算保护）
+      if ((res.hadMore || res.videos.length >= 50) && windowDays > minWindowDays) {
+        const half = Math.max(minWindowDays, Math.floor(windowDays / 2));
+        await processWindow(s, Math.min(s + windowDays * 86400000, wEndMs), half);
+      }
     }
+  };
 
-    console.log(`[YouTube] search "${query.queryText}" → ${videoIds.length} videos found`);
-
-    // Batch get full video details
-    const videos = await getVideosByIds(videoIds);
-
-    // Tag with discovery metadata
-    return videos.map(v => ({
-      ...v,
-      discoveryQuery: query.queryText,
-      discoveryMethod: 'keyword_search' as const,
-    }));
-  } catch (err) {
-    const ae = err as { response?: { status?: number; data?: any; headers?: any } };
-    const status = ae.response?.status;
-    const data = ae.response?.data;
-    const reason = data?.error?.errors?.[0]?.reason || data?.error?.message || 'unknown';
-    const retryAfter = ae.response?.headers?.['retry-after'];
-    console.error(`[YouTube] search ${status||'ERR'} for "${query.queryText}": reason=${reason} retryAfter=${retryAfter||'none'} body=${JSON.stringify(data).slice(0,400)}`);
-    if (status === 429 || status === 403 || reason === 'quotaExceeded' || reason === 'rateLimitExceeded') {
-      throw new Error(`YT_QUOTA_EXHAUSTED:${reason}`);
-    }
-    return [];
-  }
+  await processWindow(startMs, endMs, initialWindowDays);
+  return { videos: out, searchCalls, windows };
 }
 
 /** Search for videos marked as containing paid promotion */

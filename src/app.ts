@@ -397,6 +397,56 @@ app.post('/api/admin/perf-refresh', async (req, res) => {
   } catch (err) { res.status(500).json({ ok: false, error: (err as Error).message }); }
 });
 
+// ── Admin: 90 天历史回填（动态时间分片 + 全分页，用户 P0-1）──
+// backfillDays 默认 90；Search 预算 ≤70/天保护在 runDiscoveryPipeline 内部。
+app.post('/api/admin/backfill', async (req, res) => {
+  const { pin, days } = req.body || {};
+  if (pin !== ADMIN_PIN) { res.status(401).json({ ok: false, error: '未授权' }); return; }
+  if (scanState.running) return res.json({ ok: false, error: 'Scan already running' });
+  res.json({ ok: true, message: `Backfill started (${days || 90}d)` });
+  try {
+    await runDiscoveryPipeline({ backfillDays: parseInt(String(days ?? 90), 10) || 90, mode: 'backfill' });
+    await detectCampaigns();
+  } catch (err) { console.error('[Backfill] Failed:', (err as Error).message); }
+});
+
+// ── Discovery Coverage（用户 P0-4 核心 KPI）：基准样本召回率 ──
+// recall_benchmark 表 = 人工确认的投放视频（Ground Truth）。
+// Recall = 基准样本中已被系统判为竞品投放的比例。
+// Search Found / Watchlist Found = 最近一次 scan 的发现来源拆分。
+app.get('/api/discovery-coverage', async (_req, res) => {
+  try {
+    const db = getSupabase();
+    const { data: bench } = await db.from('recall_benchmark').select('video_id,brand,market,expected');
+    const total = (bench || []).filter((b: any) => b.expected !== false).length;
+
+    // 已入库且 Layer 3 判定为竞品投放 = hit
+    const { data: placements } = await db.from('youtube_competitor_videos')
+      .select('video_id')
+      .in('placement_type', ['confirmed_paid_placement', 'likely_sponsored']);
+    const placementIds = new Set((placements || []).map((p: any) => p.video_id));
+    let hit = 0;
+    const missed: any[] = [];
+    for (const b of bench || []) {
+      if (b.expected === false) continue;
+      if (placementIds.has(b.video_id)) hit++;
+      else missed.push({ video_id: b.video_id, brand: b.brand, market: b.market });
+    }
+
+    res.json({
+      benchmarkTotal: total,
+      benchmarkHit: hit,
+      recallPct: total ? Math.round((hit / total) * 1000) / 10 : null,
+      missed,
+      lastScan: {
+        searchFound: scanState.discoveredFromSearch,
+        watchlistFound: scanState.discoveredFromCreators,
+        totalCandidates: scanState.discoveredCount,
+      },
+    });
+  } catch (err) { res.status(500).json({ error: (err as Error).message }); }
+});
+
 app.post('/api/hotspot/start', async (req, res) => {
   const { games, brands, durationDays } = req.body || {};
   const db = getSupabase();
