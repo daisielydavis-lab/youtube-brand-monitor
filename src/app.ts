@@ -447,16 +447,30 @@ app.get('/api/discovery-coverage', async (_req, res) => {
     } catch (err) { console.warn('[Coverage] watchlist 表不可用（migration 未跑？）：', (err as Error).message); }
 
     // 用户 2026-08-16 验收点 #4/#5：来源拆分去重 + miss_reason 数据驱动 P1
+    // 2026-08-16 三品牌核对：byBrand 各自 total/hit/recallPct（用户：不代表 ExitLag/GearUP 数据是对的）
     const sourceSplit = { searchOnly: 0, watchlistOnly: 0, both: 0, uniqueTotal: 0 };
     let hit = 0;
     const missed: any[] = [];
     const missReasonDist: Record<string, number> = {};
     const REASON_ORDER = ['search_not_returned', 'unknown_creator', 'creator_not_in_watchlist', 'query_language_gap', 'pagination_gap', 'classification_false_negative', 'deleted_private', 'other'];
+    const BRAND_ORDER = ['GearUP', 'ExitLag', 'LagZapper'];
+    const normBrand = (raw: string | null | undefined): string => {
+      const key = (raw || '').trim().toLowerCase();
+      if (key === 'gearup' || key === 'gearup booster') return 'GearUP';
+      if (key === 'exitlag' || key === 'exit lag') return 'ExitLag';
+      if (key === 'lagzapper' || key === 'lag zapper') return 'LagZapper';
+      return key || 'unknown';
+    };
+    const byBrand: Record<string, { total: number; hit: number }> = {};
     for (const b of bench) {
       if (b.expected === false) continue;
+      const bn = normBrand(b.brand);
+      byBrand[bn] = byBrand[bn] || { total: 0, hit: 0 };
+      byBrand[bn].total++;
       const p = placementMap.get(b.video_id);
       if (p) {
         hit++;
+        byBrand[bn].hit++;
         const inWl = wlChannels.has(p.channel_id);
         const bySearch = p.discovery_method === 'keyword_search';
         // Both = Search 先发现 + 频道现在在 Watchlist（playlist 监控也会覆盖它）
@@ -480,6 +494,13 @@ app.get('/api/discovery-coverage', async (_req, res) => {
     // 固定顺序输出 miss_reason 分布（含 0 计数，P1 排期直接看这里）
     const missReasonDistOrdered: Record<string, number> = {};
     for (const r of REASON_ORDER) missReasonDistOrdered[r] = missReasonDist[r] || 0;
+    // 固定三品牌顺序输出，其余品牌归 other
+    const byBrandOrdered: Array<{ brand: string; total: number; hit: number; recallPct: number | null; missing: number }> = [];
+    for (const b of BRAND_ORDER) {
+      const s = byBrand[b] || { total: 0, hit: 0 };
+      byBrandOrdered.push({ brand: b, total: s.total, hit: s.hit, recallPct: s.total ? Math.round((s.hit / s.total) * 1000) / 10 : null, missing: s.total - s.hit });
+    }
+    const other = Object.keys(byBrand).filter(k => !BRAND_ORDER.includes(k)).map(k => ({ brand: k, ...byBrand[k], recallPct: null, missing: 0 }));
 
     res.json({
       benchmarkTotal: total,
@@ -487,6 +508,7 @@ app.get('/api/discovery-coverage', async (_req, res) => {
       recallPct: total ? Math.round((hit / total) * 1000) / 10 : null,
       missingCount: total - hit,
       sourceSplit,
+      byBrand: byBrandOrdered.concat(other as any),
       missReasonDist: missReasonDistOrdered,
       missed,
       lastScan: {

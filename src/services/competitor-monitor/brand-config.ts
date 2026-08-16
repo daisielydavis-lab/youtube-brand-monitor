@@ -41,14 +41,29 @@ export const BRANDS: BrandConfig[] = [
   },
 ];
 
-/** Normal mode queries — 6 combined searches/day using OR operators */
+/**
+ * Normal mode queries — 13 combined searches/day using OR operators.
+ * 2026-08-16: 新增 RU/PT 市场 query（用户验收：LagZapper 90 天俄区投放 100+，
+ * 全英文 query 是漏抓根因）。俄语商业词：скидка(折扣)/промокод(促销码)/обзор(评测)。
+ * regionCode=targetMarket 只是可观看区域约束，relevanceLanguage=targetLanguage 影响召回。
+ */
 export const NORMAL_QUERIES: BrandQuery[] = [
+  // ——— EN/US（原有 6 条）———
   { brandName: 'GearUP', queryText: 'GearUP | GearUP Booster', queryType: 'branded', targetLanguage: 'en', targetMarket: 'US' },
   { brandName: 'ExitLag', queryText: 'ExitLag', queryType: 'branded', targetLanguage: 'en', targetMarket: 'US' },
   { brandName: 'LagZapper', queryText: 'LagZapper | Lag Zapper', queryType: 'branded', targetLanguage: 'en', targetMarket: 'US' },
   { brandName: 'GearUP', queryText: 'GearUP sponsored | GearUP review | GearUP promo code', queryType: 'sponsored', targetLanguage: 'en', targetMarket: 'US' },
   { brandName: 'ExitLag', queryText: 'ExitLag sponsored | ExitLag review | ExitLag promo code', queryType: 'sponsored', targetLanguage: 'en', targetMarket: 'US' },
   { brandName: 'LagZapper', queryText: 'LagZapper review | LagZapper free | LagZapper promo code', queryType: 'sponsored', targetLanguage: 'en', targetMarket: 'US' },
+  // ——— RU（俄区，LagZapper 主市场；西里尔变体 ЛагЗаппер 也搜）———
+  { brandName: 'LagZapper', queryText: 'LagZapper скидка | LagZapper промокод | LagZapper обзор', queryType: 'sponsored', targetLanguage: 'ru', targetMarket: 'RU' },
+  { brandName: 'LagZapper', queryText: 'ЛагЗаппер | ЛАГЗАППЕР', queryType: 'branded', targetLanguage: 'ru', targetMarket: 'RU' },
+  { brandName: 'ExitLag', queryText: 'ExitLag скидка | ExitLag промокод | ExitLag обзор', queryType: 'sponsored', targetLanguage: 'ru', targetMarket: 'RU' },
+  { brandName: 'GearUP', queryText: 'GearUP скидка | GearUP промокод | GearUP обзор', queryType: 'sponsored', targetLanguage: 'ru', targetMarket: 'RU' },
+  // ——— PT（巴西）———
+  { brandName: 'LagZapper', queryText: 'LagZapper desconto | LagZapper cupom | LagZapper review', queryType: 'sponsored', targetLanguage: 'pt', targetMarket: 'BR' },
+  { brandName: 'ExitLag', queryText: 'ExitLag desconto | ExitLag cupom | ExitLag review', queryType: 'sponsored', targetLanguage: 'pt', targetMarket: 'BR' },
+  { brandName: 'GearUP', queryText: 'GearUP desconto | GearUP cupom | GearUP review', queryType: 'sponsored', targetLanguage: 'pt', targetMarket: 'BR' },
 ];
 
 /** Build hotspot queries for a specific game */
