@@ -946,6 +946,19 @@ cron.schedule('0 6 * * *', async () => {
   } catch (err) { console.error('[Cron] Daily failed:', (err as Error).message); }
 });
 
+// ── Cron: 90 天回填自动续跑（07:30 UTC，用户 2026-08-16 验收点 #3）──
+// 断点续跑：只处理未完成窗口（pending/quota_paused/partial/failed），
+// 全部完成后空转（0 search 调用，仅查表比对窗口状态）。
+// 排在 06:00 normal 之后：normal 先跑完，剩多少预算回填用多少（全局 ≤70/天）。
+cron.schedule('30 7 * * *', async () => {
+  if (scanState.running) { console.log('[Cron] Backfill skip — scan already running'); return; }
+  console.log('[Cron] Auto backfill resume');
+  try {
+    await runDiscoveryPipeline({ mode: 'backfill' });
+    await detectCampaigns();
+  } catch (err) { console.error('[Cron] Backfill failed:', (err as Error).message); }
+});
+
 // ── Cron: Hotspot every 4h ──
 cron.schedule('0 */4 * * *', async () => {
   const db = getSupabase();
