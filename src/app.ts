@@ -417,26 +417,77 @@ app.post('/api/admin/backfill', async (req, res) => {
 app.get('/api/discovery-coverage', async (_req, res) => {
   try {
     const db = getSupabase();
-    const { data: bench } = await db.from('recall_benchmark').select('video_id,brand,market,expected');
-    const total = (bench || []).filter((b: any) => b.expected !== false).length;
+    // 分页工具：PostgREST 不带 range 会静默截断为 1000 行（坑 #1/#8）
+    const allRows = async (q: any) => {
+      const rows: any[] = [];
+      for (let from = 0; ; from += 1000) {
+        const { data, error } = await q.range(from, from + 999);
+        if (error) throw error;
+        if (!data || !data.length) break;
+        rows.push(...data);
+        if (data.length < 1000) break;
+      }
+      return rows;
+    };
 
-    // 已入库且 Layer 3 判定为竞品投放 = hit
-    const { data: placements } = await db.from('youtube_competitor_videos')
-      .select('video_id')
-      .in('placement_type', ['confirmed_paid_placement', 'likely_sponsored']);
-    const placementIds = new Set((placements || []).map((p: any) => p.video_id));
+    const bench = await allRows(db.from('recall_benchmark').select('video_id,brand,market,expected,miss_reason'));
+    const total = bench.filter((b: any) => b.expected !== false).length;
+
+    // 已入库且 Layer 3 判定为竞品投放 = hit（带 channel_id/discovery_method 供来源拆分）
+    const placements = await allRows(db.from('youtube_competitor_videos')
+      .select('video_id,channel_id,discovery_method')
+      .in('placement_type', ['confirmed_paid_placement', 'likely_sponsored']));
+    const placementMap = new Map<string, any>(placements.map((p: any) => [p.video_id, p]));
+
+    // Watchlist 频道集合（表未建时降级为空集）
+    let wlChannels = new Set<string>();
+    try {
+      const wl = await allRows(db.from('youtube_creator_watchlist').select('channel_id'));
+      wlChannels = new Set(wl.map((w: any) => w.channel_id));
+    } catch (err) { console.warn('[Coverage] watchlist 表不可用（migration 未跑？）：', (err as Error).message); }
+
+    // 用户 2026-08-16 验收点 #4/#5：来源拆分去重 + miss_reason 数据驱动 P1
+    const sourceSplit = { searchOnly: 0, watchlistOnly: 0, both: 0, uniqueTotal: 0 };
     let hit = 0;
     const missed: any[] = [];
-    for (const b of bench || []) {
+    const missReasonDist: Record<string, number> = {};
+    const REASON_ORDER = ['search_not_returned', 'unknown_creator', 'creator_not_in_watchlist', 'query_language_gap', 'pagination_gap', 'classification_false_negative', 'deleted_private', 'other'];
+    for (const b of bench) {
       if (b.expected === false) continue;
-      if (placementIds.has(b.video_id)) hit++;
-      else missed.push({ video_id: b.video_id, brand: b.brand, market: b.market });
+      const p = placementMap.get(b.video_id);
+      if (p) {
+        hit++;
+        const inWl = wlChannels.has(p.channel_id);
+        const bySearch = p.discovery_method === 'keyword_search';
+        // Both = Search 先发现 + 频道现在在 Watchlist（playlist 监控也会覆盖它）
+        if (inWl && bySearch) sourceSplit.both++;
+        else if (inWl) sourceSplit.watchlistOnly++;
+        else sourceSplit.searchOnly++;
+      } else {
+        // 未标注 miss_reason 的漏抓 → 自动标注（幂等：只写 NULL 的行）
+        let reason = b.miss_reason;
+        if (!reason) {
+          const { data: row } = await db.from('youtube_competitor_videos')
+            .select('video_id,channel_id,discovery_method,placement_type').eq('video_id', b.video_id).maybeSingle();
+          reason = row ? 'classification_false_negative' : 'search_not_returned';
+          try { await db.from('recall_benchmark').update({ miss_reason: reason }).eq('video_id', b.video_id); } catch (err) { console.warn('[Coverage] miss_reason 写回失败：', (err as Error).message); }
+        }
+        missReasonDist[reason] = (missReasonDist[reason] || 0) + 1;
+        missed.push({ video_id: b.video_id, brand: b.brand, market: b.market, miss_reason: reason });
+      }
     }
+    sourceSplit.uniqueTotal = hit;
+    // 固定顺序输出 miss_reason 分布（含 0 计数，P1 排期直接看这里）
+    const missReasonDistOrdered: Record<string, number> = {};
+    for (const r of REASON_ORDER) missReasonDistOrdered[r] = missReasonDist[r] || 0;
 
     res.json({
       benchmarkTotal: total,
       benchmarkHit: hit,
       recallPct: total ? Math.round((hit / total) * 1000) / 10 : null,
+      missingCount: total - hit,
+      sourceSplit,
+      missReasonDist: missReasonDistOrdered,
       missed,
       lastScan: {
         searchFound: scanState.discoveredFromSearch,

@@ -8,7 +8,7 @@
  */
 import { config, validateConfig } from '../../config';
 import { getSupabase } from '../../db/supabase';
-import { getActiveQueries, buildHotspotQueries, BRANDS } from './brand-config';
+import { getActiveQueries, buildHotspotQueries, BRANDS, type BrandQuery } from './brand-config';
 import { searchVideosPaged, searchBackfillTimeSliced, getChannelsRecentVideos, getChannelsByIds, fetchStatsBatch, getStatsBatchQuotaUsed, type YouTubeVideoResult } from './youtube-discovery';
 import { upsertWatchlistCreator, scanWatchlistUploads } from './creator-watchlist';
 import { fetchVideoComments, hasExistingComments, saveComments } from './video-enrichment';
@@ -230,31 +230,132 @@ export async function runDiscoveryPipeline(options?: {
   scanState.searchQueriesTotal = queries.length;
 
   if (mode === 'backfill') {
-    // 90 天历史回填：每个 query 按 7 天窗口切片 → 满页拆半 → 翻页拉全
+    // 90 天历史回填（断点续跑，用户 2026-08-16 验收点 #3）
+    // backfill_windows 表记录每个 query × 7 天窗口的状态：
+    //   pending / running / completed / partial / quota_paused / failed
+    // 每次运行只处理未完成窗口（pending/quota_paused/partial/failed + 崩溃残留的
+    // running），从上次断点继续，绝不从 90 天起点重扫。
+    // 窗口锚定 ISO 周（周一 UTC 零点）→ 跨天续跑时窗口边界不漂移。
     const backfillDays = options?.backfillDays || 90;
     const backfillStart = new Date(Date.now() - backfillDays * 86400000).toISOString();
     const backfillEnd = new Date().toISOString();
     console.log(`[Monitor] Backfill mode — ${backfillDays}d since ${backfillStart.slice(0,10)}, ${queries.length} queries (Search budget ≤ ${Math.max(0, SEARCH_DAILY_BUDGET - dailySearchUsed)})`);
-    let queriesLeft = queries.length;
-    for (const q of queries) {
-      if (searchCircuitOpen) { scanState.searchQueriesFailed++; queriesLeft--; continue; }
-      try {
-        // 预算按剩余 query 均分——防止第一个 query（GearUP）独占 70 次，LagZapper 分不到
-        const budgetLeft = Math.max(1, Math.floor((SEARCH_DAILY_BUDGET - dailySearchUsed) / queriesLeft));
-        const res = await searchBackfillTimeSliced(q, backfillStart, backfillEnd, {
-          initialWindowDays: 7, minWindowDays: 1, maxPages: 3,
-          quotaBudget: budgetLeft,
-          onSearchCall: () => { if (dailySearchUsed >= SEARCH_DAILY_BUDGET) searchCircuitOpen = true; trackSearch(); },
-        });
-        scanState.searchQueriesSucceeded++;
-        for (const r of res.videos) { if (!seen.has(r.videoId)) { seen.add(r.videoId); allVids.push(r); searchFrom++; } }
-        console.log(`[Monitor] backfill "${q.queryText}" → ${res.videos.length} videos in ${res.searchCalls} search calls`);
-        await db.from('competitor_queries').upsert({ query_text: q.queryText, last_run_at: new Date().toISOString() }, { onConflict: 'query_text' });
-      } catch (err) {
-        scanState.searchQueriesFailed++;
-        if ((err as Error).message.startsWith('YT_QUOTA_EXHAUSTED')) { searchCircuitOpen = true; scanState.errorCode = 'SEARCH_QUOTA_EXHAUSTED'; }
+    const WINDOW_MS = 7 * 86400000;
+    const weekStart = (ms: number): number => {
+      const d = new Date(ms);
+      const dow = (d.getUTCDay() + 6) % 7; // 周一=0
+      return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - dow);
+    };
+    const winStarts: string[] = [];
+    for (let s = weekStart(new Date(backfillStart).getTime()); s < Date.now(); s += WINDOW_MS) {
+      winStarts.push(new Date(s).toISOString());
+    }
+    const winTo = (fromIso: string) => new Date(new Date(fromIso).getTime() + WINDOW_MS).toISOString();
+
+    // 读取现有窗口（migration 未跑 → 表不存在 → 降级为整段老行为）
+    let windowsReady = false;
+    let existingWindows: Array<Record<string, any>> = [];
+    try {
+      const { data: ew, error: ewErr } = await db.from('backfill_windows')
+        .select('query_text, window_from, window_to, status')
+        .order('window_from', { ascending: true });
+      if (!ewErr) { existingWindows = ew || []; windowsReady = true; }
+    } catch (err) {
+      console.warn('[Monitor] backfill_windows 不可用（先跑 supabase-migration-watchlist.sql？）→ 降级整段扫描：', (err as Error).message);
+    }
+
+    if (!windowsReady) {
+      // 降级路径：query 级整段扫描（无断点，仅 migration 前兜底）
+      let queriesLeft = queries.length;
+      for (const q of queries) {
+        if (searchCircuitOpen) { scanState.searchQueriesFailed++; queriesLeft--; continue; }
+        try {
+          // 预算按剩余 query 均分——防止第一个 query（GearUP）独占 70 次，LagZapper 分不到
+          const budgetLeft = Math.max(1, Math.floor((SEARCH_DAILY_BUDGET - dailySearchUsed) / queriesLeft));
+          const res = await searchBackfillTimeSliced(q, backfillStart, backfillEnd, {
+            initialWindowDays: 7, minWindowDays: 1, maxPages: 3,
+            quotaBudget: budgetLeft,
+            onSearchCall: () => { if (dailySearchUsed >= SEARCH_DAILY_BUDGET) searchCircuitOpen = true; trackSearch(); },
+          });
+          scanState.searchQueriesSucceeded++;
+          for (const r of res.videos) { if (!seen.has(r.videoId)) { seen.add(r.videoId); allVids.push(r); searchFrom++; } }
+          console.log(`[Monitor] backfill "${q.queryText}" → ${res.videos.length} videos in ${res.searchCalls} search calls`);
+          await db.from('competitor_queries').upsert({ query_text: q.queryText, last_run_at: new Date().toISOString() }, { onConflict: 'query_text' });
+        } catch (err) {
+          scanState.searchQueriesFailed++;
+          if ((err as Error).message.startsWith('YT_QUOTA_EXHAUSTED')) { searchCircuitOpen = true; scanState.errorCode = 'SEARCH_QUOTA_EXHAUSTED'; }
+        }
+        queriesLeft--;
       }
-      queriesLeft--;
+    } else {
+      // ── 断点续跑主路径 ──
+      const RESUME_STATUSES = new Set(['pending', 'quota_paused', 'partial', 'failed', 'running']); // running=上次崩溃残留
+      const byQuery: Record<string, Map<string, string>> = {};
+      for (const w of existingWindows) {
+        (byQuery[w.query_text] = byQuery[w.query_text] || new Map()).set(w.window_from, w.status);
+      }
+      // 平铺所有 query 的未完成窗口，按时间从旧到新（三品牌同时推进，预算死后各品牌都有进度）
+      const toDo: Array<{ q: BrandQuery; from: string; to: string; inserted: boolean }> = [];
+      for (const q of queries) {
+        const statusMap = byQuery[q.queryText] || new Map<string, string>();
+        for (const from of winStarts) {
+          const st = statusMap.get(from);
+          if (!st || RESUME_STATUSES.has(st)) toDo.push({ q, from, to: winTo(from), inserted: !st });
+        }
+      }
+      toDo.sort((a, b) => a.from < b.from ? -1 : a.from > b.from ? 1 : (a.q.queryText < b.q.queryText ? -1 : 1));
+      // 崩溃残留的 running 行标回 pending（scanState.running 保证不会与并发扫描冲突）
+      try { await db.from('backfill_windows').update({ status: 'pending' }).in('status', ['running']); } catch (err) { console.warn('[Monitor] running→pending 重置失败：', (err as Error).message); }
+      // 补缺新窗口行（断点续跑时多数已有，只补新增的）
+      for (const w of toDo) {
+        if (w.inserted) {
+          try {
+            await db.from('backfill_windows').insert({ query_text: w.q.queryText, window_from: w.from, window_to: w.to, status: 'pending' });
+          } catch (err) { console.warn(`[Monitor] backfill_windows 插入失败（${w.q.queryText} ${w.from}）：`, (err as Error).message); }
+        }
+      }
+      console.log(`[Monitor] Backfill resume: ${toDo.length} 个未完成窗口待处理（预算按剩余窗口均分）`);
+      let winLeft = toDo.length;
+      const doneQueries = new Set<string>();
+      const failedQueries = new Set<string>();
+      for (const w of toDo) {
+        if (searchCircuitOpen) break; // 全局 Search 熔断：剩余窗口保持 pending，下次续跑
+        const budgetWin = Math.max(1, Math.floor((SEARCH_DAILY_BUDGET - dailySearchUsed) / winLeft));
+        winLeft--;
+        try {
+          await db.from('backfill_windows').update({ status: 'running' })
+            .eq('query_text', w.q.queryText).eq('window_from', w.from).eq('window_to', w.to);
+          const res = await searchBackfillTimeSliced(w.q, w.from, w.to, {
+            initialWindowDays: 7, minWindowDays: 1, maxPages: 3,
+            quotaBudget: budgetWin,
+            onSearchCall: () => { if (dailySearchUsed >= SEARCH_DAILY_BUDGET) searchCircuitOpen = true; trackSearch(); },
+          });
+          for (const r of res.videos) { if (!seen.has(r.videoId)) { seen.add(r.videoId); allVids.push(r); searchFrom++; } }
+          // 熔断→quota_paused；窗口预算耗尽→partial；否则→completed
+          const status = searchCircuitOpen ? 'quota_paused' : (res.stoppedByBudget ? 'partial' : 'completed');
+          await db.from('backfill_windows').update({
+            status, videos_found: res.videos.length, search_calls: res.searchCalls,
+            last_error: null, updated_at: new Date().toISOString(),
+          }).eq('query_text', w.q.queryText).eq('window_from', w.from).eq('window_to', w.to);
+          doneQueries.add(w.q.queryText);
+          console.log(`[Monitor] backfill "${w.q.queryText}" [${w.from.slice(5,10)}→${w.to.slice(5,10)}] → ${res.videos.length} vids / ${res.searchCalls} calls → ${status}（预算 ${budgetWin}）`);
+        } catch (err) {
+          const msg = (err as Error).message;
+          try {
+            await db.from('backfill_windows').update({ status: 'failed', last_error: msg.slice(0, 500), updated_at: new Date().toISOString() })
+              .eq('query_text', w.q.queryText).eq('window_from', w.from).eq('window_to', w.to);
+          } catch {}
+          failedQueries.add(w.q.queryText);
+          if (msg.startsWith('YT_QUOTA_EXHAUSTED')) { searchCircuitOpen = true; scanState.errorCode = 'SEARCH_QUOTA_EXHAUSTED'; break; }
+          console.error(`[Monitor] backfill 窗口失败 "${w.q.queryText}" ${w.from}: ${msg}`);
+        }
+      }
+      scanState.searchQueriesSucceeded = doneQueries.size;
+      scanState.searchQueriesFailed = failedQueries.size;
+      for (const q of queries) {
+        await db.from('competitor_queries').upsert({ query_text: q.queryText, last_run_at: new Date().toISOString() }, { onConflict: 'query_text' });
+      }
+      console.log(`[Monitor] Backfill done: ${doneQueries.size}/${queries.length} queries 有完成窗口, 本次处理 ${toDo.length - winLeft}/${toDo.length} 窗口, ${searchCircuitOpen ? 'Search 熔断（剩余下次续跑）' : '预算未耗尽'}`);
     }
   } else {
     for (const q of queries) {

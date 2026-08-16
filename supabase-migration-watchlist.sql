@@ -57,13 +57,49 @@ where exists (
 -- ============================================================
 -- recall_benchmark：人工确认投放样本（Ground Truth）
 -- /api/discovery-coverage 用它算 Recall（用户 P0-4）
+-- miss_reason（用户 2026-08-16 验收点）：漏抓原因标注，指导 P1 优先级
+--   search_not_returned       Search 没返回这条视频
+--   unknown_creator           博主完全没见过
+--   creator_not_in_watchlist  见过但没进 Watchlist（漏了监控）
+--   query_language_gap        query 语言/市场不覆盖（如俄语投放 vs 英文 query）
+--   pagination_gap            分页/时间片截断
+--   classification_false_negative 抓到了但 AI/规则误判为非投放
+--   deleted_private           视频已删除/私密（天然漏失，不追责）
+--   other
 -- ============================================================
 create table if not exists public.recall_benchmark (
   video_id text primary key,
   brand text not null,
   market text,
   expected boolean not null default true,   -- true=应被系统抓到；false=已知非投放（反例）
+  miss_reason text,                         -- 人工/自动标注的漏抓原因（见上枚举）
   note text,
   added_by text default 'manual',
   added_at timestamptz not null default now()
 );
+create index if not exists idx_benchmark_brand on public.recall_benchmark(brand);
+
+-- ============================================================
+-- backfill_windows：90 天历史回填断点状态（用户 2026-08-16 验收点）
+-- 每个 query × 7 天窗口一行；第二天续跑只处理未完成窗口，
+-- 绝不清库重扫 90 天。
+--   status: pending / running / completed / partial / quota_paused / failed
+-- ============================================================
+create table if not exists public.backfill_windows (
+  id uuid primary key default gen_random_uuid(),
+  query_text text not null,
+  window_from timestamptz not null,
+  window_to timestamptz not null,
+  status text not null default 'pending',
+  videos_found int not null default 0,
+  search_calls int not null default 0,
+  last_error text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (query_text, window_from, window_to)
+);
+create index if not exists idx_backfill_status on public.backfill_windows(status);
+create index if not exists idx_backfill_query on public.backfill_windows(query_text);
+
+-- watchlist 补索引：channel_id 单独索引（频道维度查询）
+create index if not exists idx_watchlist_channel on public.youtube_creator_watchlist(channel_id);

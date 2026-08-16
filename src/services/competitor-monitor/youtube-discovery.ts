@@ -158,6 +158,7 @@ export async function searchVideos(
 export interface TimeSliceResult {
   videos: YouTubeVideoResult[];
   searchCalls: number;
+  stoppedByBudget: boolean; // true = 预算耗尽提前停止（断点续跑标 partial）
   windows: Array<{ from: string; to: string; count: number; split: boolean }>;
 }
 
@@ -179,6 +180,7 @@ export async function searchBackfillTimeSliced(
     maxPages?: number;
     quotaBudget?: number;      // 该品牌 search.list 调用上限（0 = 不限）
     onSearchCall?: () => void; // 每次 search 调用回调（用于 quota 记账/中止检查）
+    onWindowComplete?: (from: string, to: string, videos: number, calls: number) => void; // 每个初始窗口完成后回调（断点续跑状态落库）
   } = {},
 ): Promise<TimeSliceResult> {
   const initialWindowDays = opts.initialWindowDays ?? 7;
@@ -189,15 +191,17 @@ export async function searchBackfillTimeSliced(
   const seen = new Set<string>();
   const windows: TimeSliceResult['windows'] = [];
   let searchCalls = 0;
+  let stoppedByBudget = false;
 
   const startMs = new Date(startIso).getTime();
   const endMs = new Date(endIso).getTime();
 
-  const processWindow = async (wStartMs: number, wEndMs: number, windowDays: number): Promise<void> => {
+  const processWindow = async (wStartMs: number, wEndMs: number, windowDays: number, isInitialWindow: boolean): Promise<void> => {
     for (let s = wStartMs; s < wEndMs; s += windowDays * 86400000) {
-      if (budget > 0 && searchCalls >= budget) return;
+      if (budget > 0 && searchCalls >= budget) { stoppedByBudget = true; return; }
       const from = new Date(s).toISOString();
       const to = new Date(Math.min(s + windowDays * 86400000, wEndMs)).toISOString();
+      const callsBefore = searchCalls;
       opts.onSearchCall?.();
       const res = await searchVideosPaged(query, from, to, maxPages, 50);
       searchCalls += res.pagesUsed;
@@ -208,13 +212,17 @@ export async function searchBackfillTimeSliced(
       // 满页且仍有更多 → 拆半递归重扫该窗口（父窗口已搜过，seen 去重；代价是重复 search 调用，受预算保护）
       if ((res.hadMore || res.videos.length >= 50) && windowDays > minWindowDays) {
         const half = Math.max(minWindowDays, Math.floor(windowDays / 2));
-        await processWindow(s, Math.min(s + windowDays * 86400000, wEndMs), half);
+        await processWindow(s, Math.min(s + windowDays * 86400000, wEndMs), half, false);
+      }
+      // 初始窗口（7 天粒度）完成 → 回调（断点续跑状态落库）
+      if (isInitialWindow) {
+        opts.onWindowComplete?.(from, to, res.videos.length, searchCalls - callsBefore);
       }
     }
   };
 
-  await processWindow(startMs, endMs, initialWindowDays);
-  return { videos: out, searchCalls, windows };
+  await processWindow(startMs, endMs, initialWindowDays, true);
+  return { videos: out, searchCalls, stoppedByBudget, windows };
 }
 
 /** Search for videos marked as containing paid promotion */
