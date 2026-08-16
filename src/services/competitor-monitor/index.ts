@@ -454,12 +454,24 @@ export async function runDiscoveryPipeline(options?: {
   }
 
   // ── VERIFY: query DB for actual count ──
-  const { count: dbCount, error: countErr } = await db
-    .from('youtube_competitor_videos')
-    .select('video_id', { count: 'exact', head: true })
-    .in('video_id', allVids.map(v => v.videoId));
+  // 坑 #9 变体：in() 塞 1900+ video_id ≈ 40KB URL → Railway proxy 拒绝 →
+  // count 静默 null → 误报 VIDEO_PERSISTENCE_FAILED（2026-08-16 实锤：
+  // 1934 条已入库却报 0 入库）。分块验证（200/批），块错误仅警告不误报。
+  const verifyIds = allVids.map(v => v.videoId);
+  let dbCount = 0;
+  let verifyErr: string | null = null;
+  for (let i = 0; i < verifyIds.length; i += 200) {
+    const chunk = verifyIds.slice(i, i + 200);
+    const { count, error } = await db
+      .from('youtube_competitor_videos')
+      .select('video_id', { count: 'exact', head: true })
+      .in('video_id', chunk);
+    if (error) { verifyErr = error.message; break; }
+    dbCount += (count ?? 0);
+  }
+  if (verifyErr) console.warn(`[Monitor] Verify partial error: ${verifyErr}（count 可能偏低，不误报 FATAL）`);
 
-  scanState.persistedCount = dbCount ?? 0;
+  scanState.persistedCount = dbCount;
 
   console.log(`[Monitor] Persist result: attempted=${scored.length} persisted=${persistedCount} dbConfirmed=${dbCount} saveErrors=${saveErrors.length}`);
 

@@ -323,7 +323,7 @@ export function renderDashboard(
   </header>
   <div class="ctrls">
     <select onchange="applyFilter('brand',this.value)"><option value="all" ${sel('brand','all')}>全部竞品</option><option value="GearUP" ${sel('brand','GearUP')}>GearUP</option><option value="ExitLag" ${sel('brand','ExitLag')}>ExitLag</option><option value="LagZapper" ${sel('brand','LagZapper')}>LagZapper</option></select>
-    <select id="mkt-select" onchange="applyFilter('market',this.value)"><option value="all" ${sel('market','all')}>全球</option><option value="US" ${sel('market','US')}>US</option><option value="RU" ${sel('market','RU')}>俄罗斯</option><option value="BR" ${sel('market','BR')}>巴西</option></select>
+    <select id="mkt-select" onchange="applyFilter('market',this.value)"><option value="all" ${sel('market','all')}>全球</option><option value="US" ${sel('market','US')}>US</option></select>
     <select onchange="applyFilter('range',this.value)"><option value="1d" ${(filter.range||'7d')==='1d'?'selected':''}>过去24小时</option><option value="7d" ${(filter.range||'7d')==='7d'?'selected':''}>过去7天</option><option value="30d" ${(filter.range||'7d')==='30d'?'selected':''}>过去30天</option><option value="90d" ${(filter.range||'7d')==='90d'?'selected':''}>过去90天</option></select>
     <span class="chip" style="margin-left:8px">${rangeLabel} · ${fmtScopeDate(kpi.windowStart ?? '')} → ${fmtScopeDate(kpi.windowEnd ?? '')}</span>
   </div>
