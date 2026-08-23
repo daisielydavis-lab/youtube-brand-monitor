@@ -6,13 +6,13 @@
  *   reasoning: thinking=enabled, effort=high   — briefs, analysis, QA
  *   max_reasoning: thinking=enabled, effort=max — complex diagnosis
  *
- * Never auto-upgrades to pro. deepseek-v4-pro is explicit fallback only.
+ * Model pinned to deepseek-v4-flash — no pro fallback.
  */
 
 import axios from 'axios';
 import { config } from '../../config';
 import {
-  MODEL_PRESETS, FALLBACK_MODEL, type AIMode, type ModelConfig,
+  MODEL_PRESETS, type AIMode, type ModelConfig,
 } from '../../config/deepseek-models';
 
 const BASE_URL = config.deepseek.baseUrl;
@@ -23,8 +23,6 @@ export interface CallOptions {
   maxTokens?: number;
   timeout?: number;
   jsonMode?: boolean;
-  /** Allow fallback to pro on failure — default false */
-  allowFallback?: boolean;
 }
 
 export interface CallResult {
@@ -112,31 +110,8 @@ export async function chatJSON<T>(
     result = await chat(messages, { ...opts, jsonMode: true });
   } catch (err) {
     const msg = (err as Error).message;
-    // Try fallback to pro
-    if (opts.allowFallback && (msg.includes('timeout') || msg.includes('TIMEOUT'))) {
-      console.warn(`[DS] Attempting fallback to ${FALLBACK_MODEL}`);
-      const fallbackBody: Record<string, unknown> = {
-        model: FALLBACK_MODEL, messages,
-        temperature: 0, max_tokens: opts.maxTokens || 4096,
-        thinking: { type: 'disabled' as const },
-      };
-      const fbResp = await axios.post(`${BASE_URL}/chat/completions`, fallbackBody, {
-        headers: { Authorization: `Bearer ${API_KEY}`, 'Content-Type': 'application/json' },
-        timeout: opts.timeout || 60_000,
-      });
-      result = {
-        content: fbResp.data?.choices?.[0]?.message?.content?.trim() || '',
-        finishReason: fbResp.data?.choices?.[0]?.finish_reason || 'unknown',
-        requestedModel: FALLBACK_MODEL, returnedModel: fbResp.data?.model || '?',
-        mode: 'fast', thinkingEnabled: false, reasoningContent: '',
-        promptTokens: fbResp.data?.usage?.prompt_tokens || 0,
-        completionTokens: fbResp.data?.usage?.completion_tokens || 0,
-        reasoningTokens: 0,
-        latencyMs: 0,
-      };
-    } else {
-      return { success: false, data: null, error: `API_CALL_FAILED: ${msg}`, diagnostic: { contentPreview: '', requestedModel: opts.mode||'fast', returnedModel: '?', mode: opts.mode||'fast', thinkingEnabled: false, finishReason: 'error', reasoningContent: '', promptTokens:0, completionTokens:0, reasoningTokens:0, latencyMs:0 } };
-    }
+    // 模型固定 flash，不做 pro fallback —— 直接把错误上抛给调用方。
+    return { success: false, data: null, error: `API_CALL_FAILED: ${msg}`, diagnostic: { contentPreview: '', requestedModel: opts.mode || 'fast', returnedModel: '?', mode: opts.mode || 'fast', thinkingEnabled: false, finishReason: 'error', reasoningContent: '', promptTokens: 0, completionTokens: 0, reasoningTokens: 0, latencyMs: 0 } };
   }
 
   if (!result.content) {

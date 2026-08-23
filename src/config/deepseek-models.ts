@@ -12,10 +12,8 @@ export interface ModelConfig {
   temperature: number;
 }
 
+/** 模型固定为 flash。如需切换 pro，改这一处即可。 */
 const MODEL = 'deepseek-v4-flash';
-
-/** Fallback model — only for explicit use, never auto-selected */
-export const FALLBACK_MODEL = 'deepseek-v4-pro';
 
 export const MODEL_PRESETS: Record<AIMode, ModelConfig> = {
   fast: {
