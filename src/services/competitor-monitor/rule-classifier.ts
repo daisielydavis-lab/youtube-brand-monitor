@@ -50,6 +50,17 @@ const BRAND_RULES: BrandRule[] = [
     promoCodePrefixes: ['LAGZAPPER', 'ZAPPER', 'LAGZAP', 'LZ'],
     channelNamePatterns: ['lagzapper', 'lag zapper', 'lag-zapper'],
   },
+  {
+    // 2026-08-24：Lagofast 第 4 品牌（RU 加速器 affiliate 生态，与 LagZapper 同池 creator）
+    // 域名: lagofast.com / lagofastbooster.ru / lagobooster.ru / lago-fast.com
+    brandName: 'Lagofast',
+    brandKeywords: ['lagofast', 'lago fast', 'lago-fast', 'lagofast.', 'lagobooster'],
+    brandWeakKeywords: ['lagofast', 'lago fast', 'lagobooster', 'lago-fast'],
+    brandHashtags: ['#lagofast', '#lagofastpartner', '#lagofastreview'],
+    domainPatterns: ['lagofast.com', 'lagofastbooster.ru', 'lagobooster.ru', 'lago-fast.com'],
+    promoCodePrefixes: ['LAGOFAST', 'LAGO', 'LF'],
+    channelNamePatterns: ['lagofast', 'lago fast', 'lago-fast'],
+  },
 ];
 
 // ── Game detection ──
@@ -111,9 +122,9 @@ const SPONSOR_PATTERNS = {
     /\bdiscount\s*[:\s]\s*[A-Za-z0-9_-]{3,20}/i,
   ],
   affiliateLink: [
-    /\b(?:get|try|use|download)\b.{0,30}\b(?:exitlag|gearup|lagzapper)\b/i,
-    /(?:exitlag\.com|gearupbooster\.com|lagzapper\.com)/i,
-    /\bhttps?:\/\/[^\s]*(?:exitlag|gearup|lagzapper)[^\s]*/i,
+    /\b(?:get|try|use|download)\b.{0,30}\b(?:exitlag|gearup|lagzapper|lagofast)\b/i,
+    /(?:exitlag\.com|gearupbooster\.com|lagzapper\.com|lagofast\.com|lagofastbooster\.ru|lagobooster\.ru|lago-fast\.com)/i,
+    /\bhttps?:\/\/[^\s]*(?:exitlag|gearup|lagzapper|lagofast)[^\s]*/i,
   ],
   commercialIntent: [
     /\b(?:free trial|free to use|try free|no cost|giveaway|gratis)\b/i,
