@@ -17,6 +17,7 @@ import { saveSnapshot } from './performance-snapshot';
 import { chatJSON } from '../ai/deepseek-client';
 import { batchClassify as ruleClassify, detectLanguage, type RuleClassification } from './rule-classifier';
 import { evaluateIndustryGate } from './industry-gate';
+import { canonicalBrand } from './brand-normalization';
 
 // ── Types ──
 export interface ScanState {
@@ -151,6 +152,9 @@ Videos: ${JSON.stringify(items.map(({ description, ...aiItem }) => aiItem))}`;
           aiBrand = null;
         }
         const finalBrand = aiBrand;
+        // P0-1: 品牌归一化 —— 落 raw_brand/canonical_brand/brand_confidence 列，
+        // 统计走 SQL 列不再解析 classification_raw JSON（对账 Δ=0，纯基建）。
+        const canonical = canonicalBrand(aiBrand);
         if (pt === 'confirmed_paid_placement' || pt === 'likely_sponsored') likely++;
 
         // AI 写回必须补 market/language（2026-08-16 坑 #20）：此前 AI update
@@ -161,6 +165,8 @@ Videos: ${JSON.stringify(items.map(({ description, ...aiItem }) => aiItem))}`;
 
         await getSupabase().from('youtube_competitor_videos').update({
           placement_type: pt, sponsor_confidence: (item.confidence || 50) / 100,
+          raw_brand: aiBrand, canonical_brand: canonical,
+          brand_confidence: canonical ? Math.min((item.confidence || 50) / 100, 1) : null,
           game_name: industryBlocked ? null : (item.game || null),
           topic_category: industryBlocked ? 'game_integration' : (item.theme || 'game_integration'),
           content_type: item.format || 'integrated_placement',
@@ -422,30 +428,52 @@ export async function runDiscoveryPipeline(options?: {
 
   console.log(`[Monitor] Attempting to persist ${scored.length} videos...`);
 
+  // ── Preserve discovery_method / first_seen_at on re-upsert（2026-08-24 坑 #25）──
+  // 同一视频可被多条发现路径再次命中（搜索→channel_scan、keyword_search→domain_search）。
+  // 已存在行只更新内容、不覆盖归因与首次发现时间——否则 domain_search 会被后续
+  // channel_scan upsert 冲掉，造成"落库丢失"的误判（数据其实在，归因漂移了）。
+  const existingVideoIds = new Set<string>();
+  for (let i = 0; i < scored.length; i += 200) {
+    const chunk = scored.slice(i, i + 200).map(s => s.video.videoId);
+    const { data: exist } = await db.from('youtube_competitor_videos').select('video_id').in('video_id', chunk);
+    (exist || []).forEach((r: any) => existingVideoIds.add(r.video_id));
+  }
+
   let persistedCount = 0;
   const persistedIds: string[] = [];
   const saveErrors: Array<{ videoId: string; error: string }> = [];
+  let skippedEmptyPub = 0;
 
   for (const { video: v } of scored) {
     try {
+      // published_at NOT NULL —— 空值跳过（正常流程已被 videos.list 补全，此为空网兜底）
+      if (!v.publishedAt) { skippedEmptyPub++; continue; }
       if (!knownIds.has(v.channelId)) {
         const ch = await getChannelsByIds([v.channelId]);
         if (ch[0]) await getOrCreateCreatorProfile(ch[0].channelId, ch[0].channelName);
       }
 
-      const { error } = await db.from('youtube_competitor_videos').upsert({
+      const isExisting = existingVideoIds.has(v.videoId);
+      const payload: Record<string, any> = {
         video_id: v.videoId, channel_id: v.channelId, channel_name: v.channelTitle,
         title: v.title, description: v.description || '', published_at: v.publishedAt,
         duration: v.duration, is_short: v.isShort, thumbnail_url: v.thumbnailUrl || null,
         tags: v.tags, category_id: v.categoryId,
-        discovery_method: (v as any).discoveryMethod || 'keyword_search',
         has_paid_placement_tag: v.hasPaidPlacementTag,
         view_count: v.viewCount, like_count: v.likeCount, comment_count: v.commentCount,
         workflow_status: 'discovered',
         brand_id: null,
         performance_stage: performanceStageFor(v.publishedAt),
-        first_seen_at: new Date().toISOString(), last_updated_at: new Date().toISOString(),
-      }, { onConflict: 'video_id' });
+        last_updated_at: new Date().toISOString(),
+      };
+      if (!isExisting) {
+        // 新行：写入归因 + first_seen_at
+        payload.discovery_method = (v as any).discoveryMethod || 'keyword_search';
+        payload.first_seen_at = new Date().toISOString();
+      }
+      // 已存在行：不写 discovery_method/first_seen_at → merge-duplicates 只更新提供的列，归因保留
+
+      const { error } = await db.from('youtube_competitor_videos').upsert(payload, { onConflict: 'video_id' });
 
       if (error) {
         saveErrors.push({ videoId: v.videoId, error: `${error.code}: ${error.message}` });
@@ -460,6 +488,7 @@ export async function runDiscoveryPipeline(options?: {
       saveErrors.push({ videoId: v.videoId, error: (err as Error).message });
     }
   }
+  if (skippedEmptyPub > 0) console.warn(`[Monitor] Skipped ${skippedEmptyPub} videos with empty publishedAt`);
 
   // ── VERIFY: query DB for actual count ──
   // 坑 #9 变体：in() 塞 1900+ video_id ≈ 40KB URL → Railway proxy 拒绝 →
@@ -516,6 +545,8 @@ export async function runDiscoveryPipeline(options?: {
     await db.from('youtube_competitor_videos').update({
       placement_type: r.placementType !== 'unknown' ? r.placementType : 'unknown',
       sponsor_confidence: r.brandConfidence,
+      raw_brand: r.brand, canonical_brand: canonicalBrand(r.brand),
+      brand_confidence: r.brand ? r.brandConfidence : null,
       game_name: r.game || null,
       topic_category: r.topicCategory,
       content_type: r.contentCategory,

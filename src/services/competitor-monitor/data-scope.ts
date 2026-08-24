@@ -9,8 +9,10 @@
  * Creators, Comments, Campaigns) MUST use Layer 3 as default scope.
  */
 
+import { canonicalBrand } from './brand-normalization';
+
 /** Brands we actively monitor — the ONLY valid competitor targets */
-export const COMPETITOR_BRANDS = ['ExitLag', 'GearUP', 'LagZapper'] as const;
+export const COMPETITOR_BRANDS = ['ExitLag', 'GearUP', 'LagZapper', 'Lagofast'] as const;
 export type CompetitorBrand = typeof COMPETITOR_BRANDS[number];
 
 /** Placement types that indicate an actual competitor sponsorship */
@@ -24,10 +26,15 @@ const PLACEMENT_TYPES = ['confirmed_paid_placement', 'likely_sponsored'] as cons
 // what rule/AI guessed — a food video with an affiliate link is NOT a placement.
 export function resolveBrand(v: any): string {
   if (v?.classification_raw?.industryGate?.blocked) return 'unknown';
-  return v?.classification_raw?.ai?.brand
-    || v?.classification_raw?.final?.brand
-    || v?.classification_raw?.rule?.brand
-    || 'unknown';
+  // P0-1: 优先读 canonical_brand 列(backfill 已落库),统计走 SQL 列。
+  if (v?.canonical_brand) return v.canonical_brand;
+  // 兜底:未回填的旧行,从 raw 链取原始值动态归一(兼容变体)。
+  return canonicalBrand(
+    v?.classification_raw?.ai?.brand
+      || v?.classification_raw?.final?.brand
+      || v?.classification_raw?.rule?.brand
+      || null,
+  ) || 'unknown';
 }
 
 export function resolveGame(v: any): string {
@@ -104,6 +111,27 @@ export function filterCompetitorPlacements(videos: any[]): any[] {
 
 export function filterUnresolvedCandidates(videos: any[]): any[] {
   return videos.filter(isUnresolvedCandidate);
+}
+
+// ── Confidence bucket (低置信度视图, 2026-08-24) ──
+// brand_confidence 列 = 品牌证据强度 (AI confidence/100 或域名规则 0.85), 直接编码证据可信度。
+// 高 = 强信号 (cid/ref/promo_code → 0.9+, AI 高置信); 中 = 域名规则命中 (0.7-0.9);
+// 低 = 弱信号 / 未验证 (<0.7 或 null)。Lagofast 新品牌 52 条全是 0.7-0.9 (规则命中) → 「高」= 0,
+// 切「中」才看得到全部 —— 防止新品牌数据膨胀。
+export type ConfidenceBucket = 'high' | 'medium' | 'low';
+
+export function placementConfidence(v: any): ConfidenceBucket {
+  const c = v?.brand_confidence ?? v?.sponsor_confidence ?? null;
+  if (c == null) return 'low';
+  if (c >= 0.9) return 'high';
+  if (c >= 0.7) return 'medium';
+  return 'low';
+}
+
+/** 置信度过滤 (conf='all'|undefined 不过滤)。应用于所有 dashboard 分析层。 */
+export function matchesConfidence(v: any, conf?: string | null): boolean {
+  if (!conf || conf === 'all') return true;
+  return placementConfidence(v) === conf;
 }
 
 // ── Public performance score (no proprietary metrics) ──
