@@ -36,7 +36,7 @@ export interface YouTubeVideoResult {
   hasPaidPlacementTag: boolean;
   /** The query that discovered this video */
   discoveryQuery?: string;
-  discoveryMethod: 'keyword_search' | 'paid_placement_tag';
+  discoveryMethod: 'keyword_search' | 'paid_placement_tag' | 'domain_search';
 }
 
 export interface YouTubeChannelResult {
@@ -151,7 +151,10 @@ export async function searchVideosPaged(
 
   if (allVideoIds.length) {
     const videos = await getVideosByIds(allVideoIds);
-    out.push(...videos.map(v => ({ ...v, discoveryQuery: query.queryText, discoveryMethod: 'keyword_search' as const })));
+    // 2026-08-24：domain query（lagzapper.com）→ domain_search，其余 → keyword_search。
+    // queryType 只做归因，不改变搜索行为。
+    const discoveryMethod: YouTubeVideoResult['discoveryMethod'] = query.queryType === 'domain' ? 'domain_search' : 'keyword_search';
+    out.push(...videos.map(v => ({ ...v, discoveryQuery: query.queryText, discoveryMethod })));
   }
   return { videos: out, pagesUsed, hadMore };
 }

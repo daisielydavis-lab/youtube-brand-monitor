@@ -8,7 +8,8 @@ import { marketMatches } from './data-scope';
 import { getChannelById, type YouTubeChannelResult } from './youtube-discovery';
 import type { TopicResult } from './topic-classifier';
 import type { SponsorshipResult } from './sponsorship-detector';
-import { resolveBrand, isCompetitorPlacement, COMPETITOR_BRANDS } from './data-scope';
+import { resolveBrand, isCompetitorPlacement, COMPETITOR_BRANDS, matchesConfidence } from './data-scope';
+import { loadCreatorSourceMap, resolveChannelSource, type CreatorSource } from './creator-source';
 
 export interface CreatorProfile {
   channelId: string;
@@ -225,12 +226,15 @@ export interface CreatorRow {
   firstSeenAt: string;
   lastSeenAt: string;
   relationType: 'new' | 'recurring' | 'long_term' | 'multi_brand';
+  /** 发现来源 (搜索/频道扫描/联盟簇/回溯源/种子/AI确认/相似博主) — Creator 来源透明化 */
+  source: CreatorSource;
 }
 
 export async function getCreatorsFromVideos(options?: {
   rangeDays?: number;
   brand?: string;
   market?: string;
+  confidence?: string; // 置信度过滤 (high/medium/low) — 低置信度视图
   competitorOnly?: boolean; // default false — when true, only show creators with competitor placements
 }): Promise<CreatorRow[]> {
   const db = getSupabase();
@@ -239,7 +243,7 @@ export async function getCreatorsFromVideos(options?: {
   const sinceTs = Date.now() - days * 86400000;
 
   // Get all confirmed/likely videos in window (paged — REST caps at 1000/query)
-  const videos: any[] = [];
+  let videos: any[] = [];
   for (let from = 0; ; from += 1000) {
     const { data } = await db
       .from('youtube_competitor_videos')
@@ -253,7 +257,16 @@ export async function getCreatorsFromVideos(options?: {
     if (data.length < 1000) break;
   }
 
-  if (!videos?.length) return [];
+  // ── 置信度过滤 (低置信度视图): 先于 Layer 3 聚合生效 ──
+  if (options?.confidence && options.confidence !== 'all') {
+    const before = videos.length;
+    videos = videos.filter(v => matchesConfidence(v, options!.confidence));
+    if (!videos.length) return [];
+    if (videos.length < before) console.log(`[Creators] 置信度过滤 ${options.confidence}: ${before} → ${videos.length}`);
+  }
+
+  // 来源 map (Creator 来源透明化): 供每行 source 列
+  const sourceMap = await loadCreatorSourceMap(db);
 
   // ── Baseline (Vs Baseline column) ──
   // Baseline = creator's own NON-placement videos in the window (organic/
@@ -388,6 +401,7 @@ export async function getCreatorsFromVideos(options?: {
       firstSeenAt: sorted[sorted.length - 1].first_seen_at,
       lastSeenAt: new Date(Math.max(...timestamps)).toISOString(),
       relationType,
+      source: resolveChannelSource(sourceMap, channelId),
     });
   }
 

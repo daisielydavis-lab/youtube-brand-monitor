@@ -15,7 +15,7 @@ export interface BrandConfig {
 export interface BrandQuery {
   brandName: string;
   queryText: string;
-  queryType: 'branded' | 'sponsored';
+  queryType: 'branded' | 'sponsored' | 'domain';
   targetLanguage: string;
   targetMarket: string;
 }
@@ -38,6 +38,12 @@ export const BRANDS: BrandConfig[] = [
     trackedDomains: ['lagzapper.com'],
     promoCodePatterns: [/LAGZAPPER\d+/i, /zapper/i],
     brandKeywords: ['lagzapper', 'lag zapper'],
+  },
+  {
+    brandName: 'Lagofast', displayName: 'Lagofast', websiteDomain: 'lagofast.com',
+    trackedDomains: ['lagofast.com', 'lagofastbooster.ru', 'lagobooster.ru', 'lago-fast.com'],
+    promoCodePatterns: [/LAGOFAST\d+/i, /lagofast/i, /lago-fast/i],
+    brandKeywords: ['lagofast', 'lago fast', 'lagobooster', 'лагофаст'],
   },
 ];
 
@@ -64,6 +70,12 @@ export const NORMAL_QUERIES: BrandQuery[] = [
   { brandName: 'LagZapper', queryText: 'LagZapper desconto | LagZapper cupom | LagZapper review', queryType: 'sponsored', targetLanguage: 'pt', targetMarket: 'BR' },
   { brandName: 'ExitLag', queryText: 'ExitLag desconto | ExitLag cupom | ExitLag review', queryType: 'sponsored', targetLanguage: 'pt', targetMarket: 'BR' },
   { brandName: 'GearUP', queryText: 'GearUP desconto | GearUP cupom | GearUP review', queryType: 'sponsored', targetLanguage: 'pt', targetMarket: 'BR' },
+  // ——— Domain（2026-08-24：YouTube search 索引 description → 搜域名直接捞
+  // description-only 投放。lagzapper.com 是 LagZapper 90 天 174 条突破的来源，
+  // 不写 www. 前缀——search 做子串匹配，www.lagzapper.com 的 URL 必含 lagzapper.com）———
+  { brandName: 'LagZapper', queryText: 'lagzapper.com', queryType: 'domain', targetLanguage: 'en', targetMarket: 'US' },
+  { brandName: 'LagZapper', queryText: 'lagzapper.com', queryType: 'domain', targetLanguage: 'ru', targetMarket: 'RU' },
+  { brandName: 'LagZapper', queryText: 'lagzapper.com', queryType: 'domain', targetLanguage: 'pt', targetMarket: 'BR' },
 ];
 
 /** Build hotspot queries for a specific game */

@@ -12,8 +12,9 @@ import { runDiscoveryPipeline, getMonitorStatus, scanState, retryClassification,
 import { detectCampaigns } from './services/competitor-monitor/campaign-detector';
 import { generateDailyReport, generateWeeklyReport, generateQuarterlyReport } from './services/competitor-monitor/competitor-report';
 import { getCreatorsFromVideos } from './services/competitor-monitor/creator-profiler';
+import { creatorSourceBuckets } from './services/competitor-monitor/creator-source';
 import { analyzePendingComments } from './services/competitor-monitor/topic-classifier';
-import { marketMatches, resolveBrand, resolveGame, resolveMarket, COMPETITOR_BRANDS, filterCompetitorPlacements, filterUnresolvedCandidates, needsAIVerification, isCompetitorPlacement } from './services/competitor-monitor/data-scope';
+import { marketMatches, resolveBrand, resolveGame, resolveMarket, COMPETITOR_BRANDS, filterCompetitorPlacements, filterUnresolvedCandidates, needsAIVerification, isCompetitorPlacement, matchesConfidence } from './services/competitor-monitor/data-scope';
 import { getSupabase } from './db/supabase';
 import { renderDashboard } from './ui/dashboard';
 
@@ -70,7 +71,7 @@ app.get('/status', async (_req, res) => { res.json(await getMonitorStatus()); })
 // ── Campaigns (Stage ⑧: 运行时聚合 — Scope 内 placements 分簇, 不读历史表) ──
 app.get('/api/campaigns', async (req, res) => {
   const rangeDays = parseInt((req.query.range as string) || '7', 10);
-  const data = await queryDashboardData(rangeDays, req.query.brand as string, req.query.market as string);
+  const data = await queryDashboardData(rangeDays, req.query.brand as string, req.query.market as string, req.query.conf as string);
   res.json(data.hasData ? ((data as any).campaignClusters || []) : []);
 });
 
@@ -82,8 +83,61 @@ app.get('/api/creators', async (req, res) => {
     rangeDays,
     brand: req.query.brand as string,
     market: req.query.market as string,
+    confidence: req.query.conf as string,
     competitorOnly: !showAll,
   }));
+});
+
+// ── Affiliate Identity (① 联盟身份 Dashboard) ──
+// 每品牌 affiliate_identities → Creator | CID | Code | Domain | 信号 | Videos
+// Videos = 池内该 creator 的 description 含其 code/cid/domain 信号的视频数。
+app.get('/api/affiliate-identities', async (_req, res) => {
+  const db = getSupabase();
+  const { data: identities } = await db.from('affiliate_identities').select('*').order('brand', { ascending: true });
+  if (!identities?.length) return res.json([]);
+
+  const byBrand = new Map<string, any[]>();
+  for (const id of identities) {
+    if (!byBrand.has(id.brand)) byBrand.set(id.brand, []);
+    byBrand.get(id.brand)!.push(id);
+  }
+
+  const out: any[] = [];
+  for (const [brand, rows] of byBrand) {
+    const channelIds = [...new Set(rows.map(r => r.channel_id))];
+    // 分批 in() (≤100/chunk, Railway 拒绝超长 URL) + 每 chunk 内分页
+    const videos: any[] = [];
+    for (let i = 0; i < channelIds.length; i += 100) {
+      const chunk = channelIds.slice(i, i + 100);
+      for (let from = 0; ; from += 1000) {
+        const { data } = await db.from('youtube_competitor_videos')
+          .select('channel_id,description').in('channel_id', chunk).range(from, from + 999);
+        if (!data?.length) break;
+        videos.push(...data);
+        if (data.length < 1000) break;
+      }
+    }
+    const identitiesRows = rows.map((r: any) => {
+      const sigs = [r.domain, r.promo_code, r.affiliate_cid, r.ref_id].filter(Boolean).map((s: any) => String(s).toLowerCase());
+      const n = sigs.length
+        ? videos.filter(v => v.channel_id === r.channel_id && sigs.some(s => (v.description || '').toLowerCase().includes(s))).length
+        : 0;
+      return {
+        channelId: r.channel_id, channelName: r.channel_name || '?',
+        cid: r.affiliate_cid || null, code: r.promo_code || null,
+        domain: r.domain || null, signalType: r.signal_type, confidence: r.confidence,
+        videos: n,
+      };
+    }).sort((a: any, b: any) => b.videos - a.videos);
+    out.push({ brand, identityCount: rows.length, videos: identitiesRows.reduce((s, r) => s + r.videos, 0), identities: identitiesRows });
+  }
+  res.json(out);
+});
+
+// ── Creator 来源分布 (② 来源透明化) ──
+app.get('/api/creator-sources', async (_req, res) => {
+  const db = getSupabase();
+  res.json(await creatorSourceBuckets(db));
 });
 
 // ── Comments ──
@@ -128,7 +182,7 @@ app.get('/api/comments', async (req, res) => {
   for (let from = 0; from < 5000; from += 999) {
     const { data } = await db.from('youtube_competitor_videos')
       // 必须含 isCompetitorPlacement 依赖的全部字段 (placement_type/has_paid_placement_tag)
-      .select('video_id, classification_raw, market, placement_type, has_paid_placement_tag')
+      .select('video_id, classification_raw, market, placement_type, has_paid_placement_tag, brand_confidence')
       .in('placement_type', ['confirmed_paid_placement', 'likely_sponsored'])
       .gte('published_at', since)
       .order('video_id', { ascending: true })
@@ -137,10 +191,12 @@ app.get('/api/comments', async (req, res) => {
     cpVids.push(...data);
     if (data.length < 1000) break;
   }
+  const confFilter = req.query.conf as string | undefined;
   let competitorVideoIds = (cpVids || [])
     .filter((v: any) => isCompetitorPlacement(v))
     .filter((v: any) => !brandFilter || brandFilter === 'all' || resolveBrand(v) === brandFilter)
     .filter((v: any) => marketMatches(v, marketFilter))
+    .filter((v: any) => matchesConfidence(v, confFilter))
     .map((v: any) => v.video_id);
 
   // Stage ③ fallback: no competitor-specific comments this window — show
@@ -207,7 +263,7 @@ app.get('/api/comments/summary', async (req, res) => {
   for (let from = 0; from < 5000; from += 999) {
     const { data } = await db.from('youtube_competitor_videos')
       // 必须含 isCompetitorPlacement 依赖的全部字段 (placement_type/has_paid_placement_tag)
-      .select('video_id, classification_raw, market, placement_type, has_paid_placement_tag')
+      .select('video_id, classification_raw, market, placement_type, has_paid_placement_tag, brand_confidence')
       .in('placement_type', ['confirmed_paid_placement', 'likely_sponsored'])
       .gte('published_at', since)
       .order('video_id', { ascending: true })
@@ -216,10 +272,12 @@ app.get('/api/comments/summary', async (req, res) => {
     cpVids.push(...data);
     if (data.length < 1000) break;
   }
+  const confFilter = req.query.conf as string | undefined;
   let competitorVideoIds = (cpVids || [])
     .filter(isCompetitorPlacement)
     .filter((v: any) => !brandFilter || brandFilter === 'all' || resolveBrand(v) === brandFilter)
     .filter((v: any) => marketMatches(v, marketFilter))
+    .filter((v: any) => matchesConfidence(v, confFilter))
     .map((v: any) => v.video_id);
   // Stage ⑧: placementTotal 始终 = Current Scope 内投放视频数。
   // fallback 只换评论数据来源 (候选视频), 绝不覆盖口径数字。
@@ -665,14 +723,14 @@ function clusterScopeCampaigns(placements: any[], rangeDays: number): { campaign
 
 // ── Shared dashboard query (used by both / and /api/dashboard) ──
 // 3-layer data model: all analytics derived from Layer 3 (Competitor Placements)
-async function queryDashboardData(rangeDays: number, brandFilter?: string, marketFilter?: string) {
+async function queryDashboardData(rangeDays: number, brandFilter?: string, marketFilter?: string, confFilter?: string) {
   const since = new Date(Date.now() - rangeDays * 86400000).toISOString();
   const db = getSupabase();
 
   // ── Layer 1: Fetch ALL discovered videos in time window (paged — REST caps at 1000/query) ──
-  const videos: any[] = [];
+  let videos: any[] = [];
   let vidErr: Error | null = null;
-  const cols = 'video_id,title,channel_id,channel_name,published_at,is_short,thumbnail_url,game_name,content_type,placement_type,sponsor_confidence,topic_category,promo_code,view_count,like_count,comment_count,classification_raw,workflow_status,first_seen_at,market,language,campaign_id';
+  const cols = 'video_id,title,channel_id,channel_name,published_at,is_short,thumbnail_url,game_name,content_type,placement_type,sponsor_confidence,topic_category,promo_code,view_count,like_count,comment_count,classification_raw,workflow_status,first_seen_at,market,language,campaign_id,raw_brand,canonical_brand,brand_confidence';
   for (let from = 0; ; from += 1000) {
     const { data, error } = await db.from('youtube_competitor_videos')
       .select(cols)
@@ -693,6 +751,16 @@ async function queryDashboardData(rangeDays: number, brandFilter?: string, marke
 
   if (!videos || !videos.length) {
     return { hasData: false as const, kpis: {} as any, brands: [], games: [], themes: [], creators: [], recentVideos: [], scanStatus: {} as any };
+  }
+
+  // ── 置信度过滤 (低置信度视图 ③): 先于 Layer 3 聚合生效, 贯穿全部业务页 ──
+  if (confFilter && confFilter !== 'all') {
+    const before = videos.length;
+    videos = videos.filter(v => matchesConfidence(v, confFilter));
+    if (!videos.length) {
+      return { hasData: false as const, kpis: {} as any, brands: [], games: [], themes: [], creators: [], recentVideos: [], scanStatus: {} as any };
+    }
+    console.log(`[Dashboard] 置信度过滤 ${confFilter}: ${before} → ${videos.length}`);
   }
 
   // ── Layer 1 counts ──
@@ -854,7 +922,8 @@ app.get('/', async (_req, res) => {
     const range = parseInt((_req.query.range as string) || '7', 10);
     const brandFilter = _req.query.brand as string | undefined;
     const marketFilter = _req.query.market as string | undefined;
-    const data = await queryDashboardData(range, brandFilter, marketFilter);
+    const confFilter = _req.query.conf as string | undefined;
+    const data = await queryDashboardData(range, brandFilter, marketFilter, confFilter);
     console.log(`[Dashboard:${requestId}] Step1 videos done: hasData=${data.hasData}`);
 
     // Step 2: Campaigns — 运行时聚合 (queryDashboardData 内完成), 不读历史
