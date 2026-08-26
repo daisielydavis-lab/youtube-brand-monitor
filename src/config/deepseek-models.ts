@@ -13,7 +13,7 @@ export interface ModelConfig {
 }
 
 /** 模型固定为 flash。如需切换 pro，改这一处即可。 */
-const MODEL = 'deepseek-v4-flash';
+export const MODEL = 'deepseek-v4-flash';
 
 export const MODEL_PRESETS: Record<AIMode, ModelConfig> = {
   fast: {

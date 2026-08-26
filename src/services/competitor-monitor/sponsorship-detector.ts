@@ -11,6 +11,7 @@
 
 import axios from 'axios';
 import { config } from '../../config';
+import { MODEL } from '../../config/deepseek-models';
 import { BRANDS, type BrandConfig } from './brand-config';
 import { evaluateIndustryGate } from './industry-gate';
 
@@ -190,7 +191,7 @@ Output JSON:
   "reasoning": "Brief explanation of why this classification was chosen (1-2 sentences)"
 }`;
 
-  const model = config.gemini.apiKey ? 'gemini-2.0-flash' : 'deepseek-v4-flash';
+  const model = config.gemini.apiKey ? 'gemini-2.0-flash' : MODEL;
   const isGemini = model.startsWith('gemini');
 
   try {
