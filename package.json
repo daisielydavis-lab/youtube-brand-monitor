@@ -22,6 +22,10 @@
     "affiliate:lagofast": "ts-node src/cli-lagofast-backfill.ts",
     "validate:chain": "ts-node src/cli-validate-chain.ts",
     "consistency": "ts-node src/cli-consistency.ts",
+    "audit:discovery": "ts-node src/cli-discovery-audit.ts",
+    "recall:diag": "ts-node src/cli-recall-diagnostics.ts",
+    "brand:counts": "ts-node src/cli-brand-counts.ts",
+    "crossover:multibrand": "ts-node src/cli-multibrand-crossover.ts",
     "test:ai": "ts-node src/services/ai/deepseek-test.ts"
   },
   "dependencies": {
