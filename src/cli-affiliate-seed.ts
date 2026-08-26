@@ -140,7 +140,9 @@ async function runSeed() {
 // ─────────────────────────── Phase 4: SCAN + VALIDATE ───────────────────────────
 async function runScan() {
   const db = getSupabase();
-  const NEW_SOURCES = ['video_backtrace', 'affiliate_cluster', 'similar_creator'];
+  // similar_creator 已暂停（round-1 0/60 + b1 0/9 无效，2026-08-26 拍板）。
+  // 只保留身份驱动来源。存量 similar_creator 频道均已置 paused（可逆，历史保留）。
+  const NEW_SOURCES = ['video_backtrace', 'affiliate_cluster'];
   const { data: newWatch } = await db.from('youtube_creator_watchlist')
     .select('channel_id,channel_name,discovered_via')
     .eq('brand', 'LagZapper').in('discovered_via', NEW_SOURCES);
