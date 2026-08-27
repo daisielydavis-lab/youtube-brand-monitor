@@ -184,7 +184,7 @@ export function renderDashboard(
 
   <h2>🔍 竞品投放分布</h2>
   <div class="brand-grid">
-    ${data.brandComparison.slice(0, 3).map(b=>`
+    ${data.brandComparison.map(b=>`
     <div class="brand-card" style="border-top:3px solid ${bc(b.brandName)}">
       <div class="bc-n" style="color:${bc(b.brandName)}">${esc(b.brandName)}</div>
       <div class="bc-s"><span>${b.newVideos}</span> 条投放 · <span>${b.creators}</span> 位博主</div>
@@ -426,7 +426,7 @@ function emptyState(sys: any): string {
     <p class="card-desc">Your monitor is ready for its first discovery scan.</p>
 
     <div class="metrics-row">
-      <div class="metric-block"><div class="metric-val">3</div><div class="metric-lbl">Brands</div></div>
+      <div class="metric-block"><div class="metric-val">4</div><div class="metric-lbl">Brands</div></div>
       <div class="metric-block"><div class="metric-val">${creatorCount}</div><div class="metric-lbl">Tracked Creators</div></div>
       <div class="metric-block"><div class="metric-val">6</div><div class="metric-lbl">Queries</div></div>
     </div>
