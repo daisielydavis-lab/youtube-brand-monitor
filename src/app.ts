@@ -9,6 +9,7 @@ import express from 'express';
 import cron from 'node-cron';
 import { config, validateConfig } from './config';
 import { runDiscoveryPipeline, getMonitorStatus, scanState, retryClassification, refreshPerformanceData } from './services/competitor-monitor';
+import { EXPERIMENTAL_QUERIES } from './services/competitor-monitor/brand-config';
 import { detectCampaigns } from './services/competitor-monitor/campaign-detector';
 import { generateDailyReport, generateWeeklyReport, generateQuarterlyReport } from './services/competitor-monitor/competitor-report';
 import { getCreatorsFromVideos } from './services/competitor-monitor/creator-profiler';
@@ -1077,6 +1078,15 @@ cron.schedule('0 */4 * * *', async () => {
 cron.schedule('0 8 * * 1', async () => {
   try { await generateWeeklyReport(); console.log('[Cron] Weekly report done'); }
   catch (err) { console.error('[Cron] Weekly failed:', (err as Error).message); }
+});
+
+// ── Cron: Experimental queries Monday 09:00（TW 探针弱 → weekly 观察，不进日常）──
+cron.schedule('0 9 * * 1', async () => {
+  if (!EXPERIMENTAL_QUERIES.length) return;
+  try {
+    const res = await runDiscoveryPipeline({ mode: 'manual', backfillDays: 7, queries: EXPERIMENTAL_QUERIES });
+    console.log(`[Cron] Experimental queries done: +${res.videosDiscovered} videos`);
+  } catch (err) { console.error('[Cron] Experimental queries failed:', (err as Error).message); }
 });
 
 // ── Cron: Quarterly report — 2nd day of each quarter at 08:00 UTC ──

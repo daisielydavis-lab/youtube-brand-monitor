@@ -28,10 +28,10 @@ function hasLzSignal(v: any): boolean {
 }
 
 function hasCode(desc: string, codes: Set<string>): string | null {
-  // 词边界匹配（前后为非字母数字），避免 everyday/mvp/gop 等短码在无关文本里子串命中
+  // 词边界匹配，且排除 hashtag（前驱非 #）—— nightfv 误报根因：频道标签 #nightfv 被当 code
   const d = (desc || '').toLowerCase();
   for (const c of codes) {
-    const pat = new RegExp(`(^|[^a-z0-9])${c}([^a-z0-9]|$)`);
+    const pat = new RegExp(`(^|[^a-z0-9#])${c}([^a-z0-9]|$)`);
     if (pat.test(d)) return c;
   }
   return null;
@@ -71,19 +71,34 @@ async function main() {
   const code2cid = new Map<string, Set<string>>();
   const cid2code = new Map<string, Set<string>>();
   const cid2chan = new Map<string, Set<string>>();
+  // 证据表：每 code/cid 聚合 次数/频道/示例视频/描述片段/共现域名（供 §④ 人工判断）
+  interface Evidence { count: number; chans: Set<string>; vid: string; desc: string; doms: Set<string>; }
+  const evCode = new Map<string, Evidence>();
+  const evCid = new Map<string, Evidence>();
+  const addEv = (m: Map<string, Evidence>, key: string, v: any, s: any) => {
+    const e = m.get(key) || { count: 0, chans: new Set(), vid: v.video_id, desc: '', doms: new Set() };
+    e.count++; e.chans.add(v.channel_name || v.channel_id);
+    if (!e.desc) e.desc = (v.description || '').replace(/\s+/g, ' ').slice(0, 90);
+    for (const d of s.domains) e.doms.add(d);
+    m.set(key, e);
+  };
   for (const v of lz) {
     const s = extractAffiliateSignals(v.description);
     for (const c of s.promoCodes) {
-      if (!code2cid.has(c)) code2cid.set(c, new Set());
-      s.cids.forEach(x => code2cid.get(c)!.add(x));
-      knownCodes.add(c.toLowerCase());
+      const k = c.toLowerCase();
+      if (!code2cid.has(k)) code2cid.set(k, new Set());
+      s.cids.forEach(x => code2cid.get(k)!.add(x));
+      knownCodes.add(k);
+      addEv(evCode, k, v, s);
     }
     for (const c of s.cids) {
-      if (!cid2code.has(c)) cid2code.set(c, new Set());
-      s.promoCodes.forEach(x => cid2code.get(c)!.add(x));
-      knownCids.add(c.toLowerCase());
-      if (!cid2chan.has(c)) cid2chan.set(c, new Set());
-      cid2chan.get(c)!.add(v.channel_name || v.channel_id);
+      const k = c.toLowerCase();
+      if (!cid2code.has(k)) cid2code.set(k, new Set());
+      s.promoCodes.forEach(x => cid2code.get(k)!.add(x));
+      knownCids.add(k);
+      if (!cid2chan.has(k)) cid2chan.set(k, new Set());
+      cid2chan.get(k)!.add(v.channel_name || v.channel_id);
+      addEv(evCid, k, v, s);
     }
   }
   console.log(`信号视频 ${lz.length} | 身份库 ${ids.length} | 已知 code ${knownCodes.size} | 已知 cid ${knownCids.size}`);
@@ -127,9 +142,31 @@ async function main() {
   const newCodes = [...knownCodes].filter(c => !dbCodes.has(c));
   const newCids = [...knownCids].filter(c => !dbCids.has(c));
   console.log(`\n── ④ 新身份候选(信号视频 → 身份库外)──`);
-  console.log(`新 code ${newCodes.length} 个: ${newCodes.join(', ')}`);
-  console.log(`新 cid ${newCids.length} 个: ${newCids.join(', ')}`);
-  console.log(`→ 人工确认后插入 affiliate_identities，形成 identity → creator → channel_scan 增量`);
+  console.log(`新 code ${newCodes.length} 个 | 新 cid ${newCids.length} 个`);
+  // 判断口径（2026-08-26 拍板入库标准）：
+  //   lagzapper 域名 + code/cid        → HIGH  （域名归属 + 身份参数）
+  //   code 由推广文案前缀提取（必然）   → HIGH  （明确推广文案 + code）
+  //   cid 仅出现在非 lagzapper 域名     → MEDIUM（可能属 Lagofast 等，勿入库 LZ）
+  //   无域名无推广文案                 → 待确认
+  const judge = (doms: Set<string>, kind: 'code' | 'cid'): string => {
+    if ([...doms].some(d => d.includes('lagzapper'))) return 'HIGH (lagzapper域名)';
+    if (kind === 'code') return 'HIGH (推广文案)';
+    if (doms.size > 0) return 'MEDIUM (非LZ域名,可能属Lagofast)';
+    return '待确认';
+  };
+  const printEv = (m: Map<string, Evidence>, kind: 'code' | 'cid', only: string[]) => {
+    for (const k of only) {
+      const e = m.get(k);
+      if (!e) continue;
+      console.log(`  ${kind.padEnd(4)} ${k.padEnd(12)} ×${e.count} 域名:[${[...e.doms].join(',') || '-'}] 判断:${judge(e.doms, kind)}`);
+      console.log(`        频道:[${[...e.chans].slice(0, 4).join(', ')}]`);
+      console.log(`        ${e.vid} || ${e.desc}`);
+    }
+  };
+  if (newCodes.length) { console.log(`\n【新 code 证据 (${newCodes.length})】`); printEv(evCode, 'code', newCodes); }
+  if (newCids.length) { console.log(`\n【新 cid 证据 (${newCids.length})】`); printEv(evCid, 'cid', newCids); }
+  console.log(`\n→ 仅 HIGH 可批量入库 affiliate_identities（形成 identity → creator → channel_scan 增量）;`);
+  console.log(`   MEDIUM/待确认 人工复核后再定；nightfv 等 hashtag 误报已从反向扫描与提取中排除。`);
 
   // 唯一 code 数量 = 唯一 creator 数（一人一码）
   console.log(`\n已知唯一 code ${knownCodes.size} 个(≈唯一 affiliate creator,一人一码)`);

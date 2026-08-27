@@ -38,9 +38,20 @@ const SIGNAL_CONFIDENCE: Record<SignalType, number> = {
   discount: 0.3,
 };
 
+// 高频英文/俄文填充词 —— "use code all the time" 会把 "all" 误当 code。
+// 已知真实 code(THERION/KEKING/DROPZ/FORIT/mvp/everyday 等)均不与常见词碰撞,加白即可。
+// 注意:mvp / everyday 是真实 LZ code(字典词但已确认),不在此列。
 const STOP_CODES = new Set([
   'code', 'promo', 'http', 'www', 'com', 'the', 'and', 'you', 'your', 'with',
   'для', 'при', 'game', 'free', 'this', 'use', 'new', 'click', 'link', 'discount',
+  // 高频填充词(2026-08-27 硬化,防 prose 误提)
+  'all', 'for', 'now', 'off', 'today', 'from', 'have', 'been', 'that', 'when',
+  'what', 'more', 'some', 'will', 'get', 'work', 'way', 'make', 'just', 'like',
+  'good', 'know', 'look', 'need', 'come', 'want', 'take', 'give', 'find', 'back',
+  'even', 'still', 'well', 'into', 'over', 'also', 'then', 'them', 'where', 'which',
+  'such', 'than', 'how', 'why', 'out', 'about', 'after', 'before', 'not', 'but',
+  'can', 'could', 'would', 'should', 'their', 'there', 'they', 'was', 'were', 'has',
+  'had', 'did', 'does', 'other', 'only', 'same', 'very', 'most', 'many', 'much', 'right',
 ]);
 
 /** 从 URL 提取 cid / ref / refid / aff / partner 参数 */
@@ -94,12 +105,13 @@ export function extractAffiliateSignals(description: string | null | undefined):
   }
 
   // ── promo code(含俄语 промокод)──
+  // (?<!#) 排除 hashtag 前缀（#code/#промокод 是频道标签，不是推广码）
   const codePats: RegExp[] = [
-    /промокод[а-яё]*\s*[:—-]?\s*["'«]?([A-Za-z0-9_-]{3,18})/gi,
-    /по\s+промокоду\s*["'«]?([A-Za-z0-9_-]{3,18})/gi,
-    /use\s+my\s+code\s*["'«]?([A-Za-z0-9_-]{3,18})/gi,
-    /\bcod[eo]\s*["'«]?([A-Za-z0-9_-]{3,18})/gi,
-    /\bcode\s*["'«]?([A-Za-z0-9_-]{3,18})/gi,
+    /(?<!#)промокод[а-яё]*\s*[:—-]?\s*["'«]?([A-Za-z0-9_-]{3,18})/gi,
+    /(?<!#)по\s+промокоду\s*["'«]?([A-Za-z0-9_-]{3,18})/gi,
+    /(?<!#)use\s+my\s+code\s*["'«]?([A-Za-z0-9_-]{3,18})/gi,
+    /(?<!#)\bcod[eo]\s*["'«]?([A-Za-z0-9_-]{3,18})/gi,
+    /(?<!#)\bcode\s*["'«]?([A-Za-z0-9_-]{3,18})/gi,
   ];
   for (const re of codePats) {
     let m: RegExpExecArray | null;

@@ -214,7 +214,7 @@ Videos: ${JSON.stringify(items.map(({ description, ...aiItem }) => aiItem))}`;
 // ── Main Pipeline ──
 export async function runDiscoveryPipeline(options?: {
   backfillDays?: number; mode?: 'normal' | 'hotspot' | 'manual' | 'backfill'; hotspotGame?: string;
-  skipAI?: boolean; skipComments?: boolean;
+  queries?: BrandQuery[]; skipAI?: boolean; skipComments?: boolean;
 }): Promise<{ videosDiscovered: number; videosClassified: number }> {
   const mode = options?.mode || 'normal';
   const backfillDays = mode === 'manual' ? (options?.backfillDays || 7) : 1;
@@ -231,8 +231,9 @@ export async function runDiscoveryPipeline(options?: {
   // Phase 1: Search (with circuit breaker) — 2026-08-16 重构：分页 + 时间闭合
   // 原则：Search 只负责发现新博主（用户 P0-1），单 query 翻 ≤2 页（100 条），
   // Search 预算 ≤70/天。backfill 模式走动态时间分片（searchBackfillTimeSliced）。
+  // options.queries 覆盖默认（供 weekly 实验 query 用）。
   let searchFrom = 0;
-  const queries = mode === 'hotspot' && options?.hotspotGame ? buildHotspotQueries(options.hotspotGame) : getActiveQueries();
+  const queries = options?.queries || (mode === 'hotspot' && options?.hotspotGame ? buildHotspotQueries(options.hotspotGame) : getActiveQueries());
   scanState.searchQueriesTotal = queries.length;
 
   if (mode === 'backfill') {

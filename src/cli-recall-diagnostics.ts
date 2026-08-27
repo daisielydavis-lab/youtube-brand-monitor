@@ -11,9 +11,11 @@
  * 用法：
  *   npm run recall:diag                    # LagZapper 默认探针（含 RU 泛内容 creator 池评估）
  *   npm run recall:diag -- --brand GearUP  # GearUP 亚洲探针（TW/TH/VI/ID/MY）
+ *   npm run recall:diag -- --brand GearUP --persist  # 回填候选落库（discovery_method=regional_query，仅作候选不设 placement）
  *
  * 由 diag-tmp.ts 重构而来（2026-08-24）。决策原则（2026-08-26 拍板）：
  * 有增量证据的 query 才正式进 NORMAL_QUERIES，禁止拍脑袋加 query。
+ * 回填的候选只进入 Rule + sponsorship-detector + AI 流程，不得直接计为 placement。
  */
 
 import { getSupabase } from './db/supabase';
@@ -59,6 +61,7 @@ const GEARUP_ASIA_PROBES: Probe[] = [
 async function main() {
   const args = process.argv.slice(2);
   const brandArg = (args.find(a => a.startsWith('--brand=')) || '').split('=')[1] || 'LagZapper';
+  const persist = args.includes('--persist');
   const brand = BRANDS.find(b => b.brandName === brandArg) || BRANDS[0];
   const probes = brandArg === 'GearUP' ? GEARUP_ASIA_PROBES : LZ_PROBES;
   const extra = brandArg === 'LagZapper' ? CYC : [];
@@ -93,6 +96,7 @@ async function main() {
   // ── ② 探针实测 ──
   console.log(`\n② ${brandArg} 探针(90天,每条 1 页):`);
   const totals = { candidates: 0, signal: 0, newCreators: 0 };
+  let persisted = 0;
   const perMarket: Record<string, { candidates: number; signal: number; newCreators: number; queries: number }> = {};
   for (const t of probes) {
     const r = await searchVideosPaged(
@@ -101,6 +105,22 @@ async function main() {
     );
     const vids = r.videos || [];
     const candidates = vids.filter(v => !knownIds.has(v.videoId));
+    if (persist) {
+      // 回填候选：只作 candidate，不设 placement_type（workflow_status=discovered 进入正式分类队列）
+      for (const v of candidates) {
+        const { error } = await db.from('youtube_competitor_videos').upsert({
+          video_id: v.videoId, channel_id: v.channelId, channel_name: v.channelTitle,
+          title: v.title, description: v.description || '', published_at: v.publishedAt,
+          duration: v.duration, is_short: v.isShort, thumbnail_url: v.thumbnailUrl || null,
+          tags: v.tags, category_id: v.categoryId, has_paid_placement_tag: v.hasPaidPlacementTag,
+          view_count: v.viewCount, like_count: v.likeCount, comment_count: v.commentCount,
+          discovery_method: 'regional_query', workflow_status: 'discovered',
+          brand_id: null, performance_stage: 't0',
+          first_seen_at: new Date().toISOString(), last_updated_at: new Date().toISOString(),
+        }, { onConflict: 'video_id' });
+        if (!error) persisted++;
+      }
+    }
     const signalVids = candidates.filter(v => brandSignal(v, brand, extra));
     const creators = new Set(signalVids.map(v => v.channelId));
     const newCreators = [...creators].filter(c => !knownChans.has(c));
@@ -119,6 +139,7 @@ async function main() {
   }
   console.log(`\n── 汇总(共 ${probes.length} 次 search)──`);
   console.log(`总候选 ${totals.candidates} | 信号命中 ${totals.signal} | 新creator ${totals.newCreators} | 每 search 信号 ${(totals.signal / probes.length).toFixed(2)}`);
+  if (persist) console.log(`已回填候选 ${persisted} 条(discovery_method=regional_query, 仅作候选, 不设 placement)`);
   console.log(`按市场:`);
   for (const [mkt, m] of Object.entries(perMarket).sort((a, b) => b[1].signal - a[1].signal)) {
     const eff = (m.signal / m.queries).toFixed(2);

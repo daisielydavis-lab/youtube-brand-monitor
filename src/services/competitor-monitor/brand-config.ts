@@ -76,6 +76,20 @@ export const NORMAL_QUERIES: BrandQuery[] = [
   { brandName: 'LagZapper', queryText: 'lagzapper.com', queryType: 'domain', targetLanguage: 'en', targetMarket: 'US' },
   { brandName: 'LagZapper', queryText: 'lagzapper.com', queryType: 'domain', targetLanguage: 'ru', targetMarket: 'RU' },
   { brandName: 'LagZapper', queryText: 'lagzapper.com', queryType: 'domain', targetLanguage: 'pt', targetMarket: 'BR' },
+  // ——— GearUP 亚洲（2026-08-26 recall 探针验证：ID/TH/MY/VI 各 20-37 新候选、14-23 新 creator，
+  // 召回缺口真实存在。query 文本取探针最强项。正式跑一轮后按 confirmed/search call 决定长期频率）———
+  { brandName: 'GearUP', queryText: 'GearUP booster | GearUP gratis', queryType: 'sponsored', targetLanguage: 'id', targetMarket: 'ID' },
+  { brandName: 'GearUP', queryText: 'GearUP | GearUP เกม', queryType: 'branded', targetLanguage: 'th', targetMarket: 'TH' },
+  { brandName: 'GearUP', queryText: 'GearUP | GearUP tăng tốc', queryType: 'sponsored', targetLanguage: 'vi', targetMarket: 'VI' },
+  { brandName: 'GearUP', queryText: 'GearUP | GearUP booster', queryType: 'branded', targetLanguage: 'ms', targetMarket: 'MY' },
+];
+
+/**
+ * Experimental queries — 每周试跑，不进日常（探针弱，先积累样本再决定去留）。
+ * 2026-08-26: TW 探针仅 7 候选 / 3 新 creator，不足以证明无价值，放 weekly 观察。
+ */
+export const EXPERIMENTAL_QUERIES: BrandQuery[] = [
+  { brandName: 'GearUP', queryText: 'GearUP 加速器 | GearUP booster', queryType: 'sponsored', targetLanguage: 'zh-TW', targetMarket: 'TW' },
 ];
 
 /** Build hotspot queries for a specific game */
