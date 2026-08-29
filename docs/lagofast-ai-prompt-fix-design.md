@@ -82,4 +82,36 @@ Lagofast(第 4 品牌,2026-08-24 加入 rule/BRANDS/extractor)**从未同步进 
 ## 5. 部署
 commit → push master → Railway 自动部署。AI_BACKLOG_DAILY_LIMIT=300 已在跑,修复后存量 36 条 Lagofast + 其余 backlog 会逐渐修正。
 
+---
+
+## 6. 执行结果(2026-08-29,已上线)
+
+**用户拍板**:P1=A(只重跑 4 条确证)、P2 纳入、P3 不纳入;并按序「暂停旧 prompt → 修 prompt → 部署 → pending 用新 prompt → 回填 4 条 → 对账」。
+
+**代码改动**(commit `9dd9b69`,已 push 上线):
+- **P0 架构化**:`buildClassificationPrompt()`(index.ts)品牌列表/枚举由 `COMPETITOR_BRANDS` 统一生成(`brandList`/`brandEnum`/`brandSlash`),新增品牌自动同步,不再硬编码第 4 个字符串;加 `matchedBrand` 规则提示(规则层提示字段,防 AI 漏认)。`sponsorship-detector.ts:136/146/185` 同源枚举。`batchClassifyVideos` 已导出(供回填/复用)。
+- **P2**:extractor `TRACKED_DOMAINS` 加裸 `'lago-fast'`(防 lago-fast.其他 TLD);brand-config `BRANDS` Lagofast keywords 加 `'lago-fast'`(修 matchedBrand 漏 hyphen 形式)。
+- **回归测试**:`src/regression-lagofast.ts` + `npm run test:lagofast`(7 项,全过)——纯 Lagofast(lagofast.com+cid+promo)/lago-fast.com/纯 LZ 不被抢/多品牌不强制改历史/无品牌 null/prompt 枚举含全品牌。
+
+**执行顺序落实**:
+1. `AI_BACKLOG_DAILY_LIMIT=-1` 暂停 backlog cron(10:00 UTC 前,防旧 prompt 消费 36 条 pending)→ 已暂停。
+2. 修 prompt(代码)→ tsc 0 错误 + 回归 7/7。
+3. push `9dd9b69` → Railway 自动部署 → 服务 Online(新容器)。
+4. `AI_BACKLOG_DAILY_LIMIT=300` 恢复 backlog → 今日 10:00 UTC cron 起,36 条 pending 用新 prompt 首析。
+5. 回填 4 条(本地 `railway run` 注入环境,不落盘 key):`4FQCC-G1yxo`/`jby_IYzp1mw`(null→Lagofast)、`KJ_IVAQ72yk`/`xrUe6yniGxM`(LagZapper→Lagofast;dropz 那条含 #ad 升级 confirmed 0.95)。AI 一次成功,无错误。
+6. 对账(_tmp_compare.ts 90 天 Layer3):
+
+| 品牌 | 回填前 | 回填后 | 预期 | 结果 |
+|---|---:|---:|---:|---:|
+| Lagofast | 7 | **11** | +4 | ✅ +4 |
+| LagZapper | 162 | **160** | −2 | ✅ −2 |
+| GearUP | 821 | 820 | 不变 | ⚠️ −1(非本次回填所致,见下) |
+| ExitLag | 2541 | **2541** | 不变 | ✅ 不变 |
+
+**GearUP −1 说明**:回填只触碰 4 条(全 Lagofast),不可能影响 GearUP。90 天行数 13257→13256(−1)与「一条视频滑出 90 天窗口」吻合;且 06:09–06:15 UTC 有一次 650 条旧 prompt 大规模重分类(早于部署)。两者其一或叠加导致,属存量噪声,非本次修复副作用。按用户原则「不对就停下来查」已排查:GearUP 信号翻转的 14 条均为 `gear up` 普通词组误匹配、placement=unknown,非 Layer3。
+
+**watchlist 附注**:4 条回填频道的 watchlist 条目显示 Gaming Mobile/keking/dropz 为**真多品牌创作者**(LZ/GearUP/Lagofast 各有 ai_confirmed 条目)。dropz 遗留 LZ 条目为 stale(其视频已改判 Lagofast),不自动删——watchlist 清理并入冻结的 Multi-brand 任务。
+
+**待验证**:backlog 消化后重跑 `_tmp_compare.ts`,Lagofast 应随 36 条 pending 首析进一步上升。
+
 相关:[[production-live-status]] [[b-phase-identity-evidence]] [[boost-affiliate-ecosystem]]
