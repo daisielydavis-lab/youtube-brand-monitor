@@ -10,10 +10,10 @@
 | 指标(90 天) | 基线 08-27 | 后测 08-29 | Δ |
 |---|---|---|---|
 | rows 全量 / 90 天 | — / — | 13510 / 13257 | — |
-| **Layer3 投放** | | | |
-| LagZapper | 24 | **65** | **+41** |
-| GearUP | 608 | **760** | **+152** |
-| ExitLag | 1994 | **2431** | **+437** |
+| **Layer3 投放**(校正后,见 §7) | | | |
+| LagZapper | 24(校正 ≈116) | **162** | **+46**(校正后真实增量) |
+| GearUP | 608(校正 ≈644) | **821** | **+177** |
+| ExitLag | 1994(校正 ≈2024) | **2541** | **+517** |
 | Lagofast | 11 | **7** | **−4** ⚠️ |
 | **watchlist(总 / paused)** | | | |
 | LagZapper | 113 | 117 / 68 | +4 |
@@ -34,8 +34,8 @@
 
 ## 2. 逐品牌归因
 
-### LagZapper 24 → 65(+41)—— 主线奏效
-最大增量来自 **08-27 批量入库的 21 条 HIGH 身份**(LZ 身份库 24→32)配合每日 channel_scan 从扩大后的 watchlist 频道反查投放。domain_search 只 +5(5→10),说明域名 query **有增量但量小**——它承担的是「补充召回」角色,符合 Query Matrix §5 定位(不堆 query,扩身份路径)。
+### LagZapper ≈116 → 162(+46,校正后)—— 主线奏效
+最大增量来自 **08-27 批量入库的 21 条 HIGH 身份**(LZ 身份库 24→32)配合每日 channel_scan 从扩大后的 watchlist 频道反查投放。domain_search 只 +5(5→10),说明域名 query **有增量但量小**——它承担的是「补充召回」角色,符合 Query Matrix §5 定位(不堆 query,扩身份路径)。⚠️ 原始列口径「24→65」高估了增长,校正后真实增量 ≈46(见 §7)。
 
 ### GearUP 608 → 760(+152)—— 亚洲 query 已进 cron
 GearUP 亚洲 4 query(ID/TH/VI/MY)已入 NORMAL_QUERIES,每日 cron 持续跑 → keyword_search 增量(85)主体来自此。regional_query 未动(64),符合预期。
@@ -106,8 +106,30 @@ ExitLag 没有新 query,增量全部来自每日 cron 的 channel_scan 回填。
 
 ## 6. 结论
 
-1. **Discovery 方向正确**:LZ 24→65 追上 ground truth 的 1/3;domain/亚洲 query 有增量但小,cron 是主力。
-2. **生产验证稳定,可解除部分冻结**:LZ 域名变体(§5b)、Multi-brand Crossover(§6)可考虑重启设计——但先处理 AI 积压,否则任何投放结论都建立在滞后的 Layer3 上。
+1. **Discovery 方向正确**:LZ 校正后 116→162(+46)继续逼近 ground truth;domain/亚洲 query 有增量但小,cron 是主力。
+2. **生产验证稳定,可解除部分冻结**:LZ 域名变体(§5b,已确认无需改动)、Multi-brand Crossover(§6)可考虑重启设计——但先处理 AI 积压,否则任何投放结论都建立在滞后的 Layer3 上。
 3. **Lagofast 数据不可用**,需先消化 pending + 定归属规则。
+
+---
+
+## 7. 校正:canonical_brand 回填缺口(2026-08-29)
+
+**发现**:158 条 confirmed/likely 投放视频(LZ 92 / GearUP 36 / ExitLag 30)`canonical_brand` 列为空(有 `classification_raw.ai.brand`,但 `raw_brand`/`canonical_brand` 两列未回填)——历史 AI 写回路径未落列。`data-scope.resolveBrand` 有 ai 回退兜底所以 **dashboard 一直是对的,只有按列统计的脚本低估**。
+
+**处置(用户已拍板「定向回填」)**:只补 null、不碰已有归属(含 8 条 Lagofast/LagZapper 冲突行)。已执行 158 条全部写库成功,残差 0。
+
+**口径修正**(列口径 → resolveBrand 等效口径):
+| 品牌 | 基线列口径 | 基线校正 | 后测(回填后) | 真实增量 |
+|---|---|---|---|---|
+| LagZapper | 24 | ≈116 | **162** | **+46** |
+| GearUP | 608 | ≈644 | **821** | **+177** |
+| ExitLag | 1994 | ≈2024 | **2541** | **+517** |
+| Lagofast | 11 | 11 | **7** | −4 |
+
+> 基线校正 = 08-27 列口径 + 回填的存量行(全在更宽的基线窗口内)。LZ 原始「24→65」是高估口径的假增量,真实增量 ≈46。
+
+**§5b 结论(顺带)**:lagzapper.gg/.net/.io/.app/.ru 全库 0 命中,只有 lagzapper.com 真实使用 → extractor 已内置变体,无需改动。
+
+**遗留**:16 条 confirmed/likely 但 AI 无品牌(真正 unresolved,非回填范围)。
 
 相关:`_tmp_compare.ts`(采集脚本,保留)、[[production-live-status]] [[affiliate-discovery-validation]] [[b-phase-identity-evidence]]
