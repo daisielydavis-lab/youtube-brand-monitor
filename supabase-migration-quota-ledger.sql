@@ -73,8 +73,10 @@ begin
      where quota_period_date = v_period and api_key_id = p_key;
     if v_total + 1 <= p_hard_budget and not v_he then
       return query select true, 'ok', v_total, v_period, v_reset_ts;
+      return; -- return query 只追加行，必须 return 退出，否则落到 UPDATE 递增
     end if;
     return query select false, case when v_he then 'hard_exhausted' else 'budget' end, v_total, v_period, v_reset_ts;
+    return; -- 同上：dry_run 分支必须在返回行后立即退出
   end if;
 
   -- 原子 reserve：guard 在 WHERE，绝不可能并发突破硬门
@@ -93,6 +95,7 @@ begin
 
   if v_used is not null then
     return query select true, 'ok', v_used, v_period, v_reset_ts;
+    return; -- 成功分支同样必须退出，否则底部再吐一行 (false,...) 干扰调用方
   end if;
 
   select hard_exhausted into v_he
