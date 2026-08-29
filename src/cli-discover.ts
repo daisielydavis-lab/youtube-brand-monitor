@@ -7,7 +7,12 @@ async function main() {
     console.log(JSON.stringify(await getMonitorStatus(), null, 2));
     return;
   }
-  const mode = args.includes('--hotspot') ? 'hotspot' : args.includes('--manual') ? 'manual' : 'normal';
+  // --mode backfill|normal|hotspot|manual（--hotspot/--manual 简写兼容）
+  const modeIdx = args.indexOf('--mode');
+  const modeArg = modeIdx >= 0 ? args[modeIdx + 1] : undefined;
+  const mode = args.includes('--hotspot') ? 'hotspot'
+    : args.includes('--manual') ? 'manual'
+    : (modeArg === 'backfill' || modeArg === 'normal' || modeArg === 'hotspot' || modeArg === 'manual' ? modeArg : 'normal');
   const gameIdx = args.indexOf('--game');
   const game = gameIdx >= 0 ? args[gameIdx + 1] : undefined;
   const daysIdx = args.indexOf('--days');

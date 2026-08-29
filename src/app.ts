@@ -9,7 +9,7 @@ import express from 'express';
 import cron from 'node-cron';
 import { config, validateConfig } from './config';
 import { runDiscoveryPipeline, getMonitorStatus, scanState, retryClassification, refreshPerformanceData } from './services/competitor-monitor';
-import { EXPERIMENTAL_QUERIES } from './services/competitor-monitor/brand-config';
+import { EXPERIMENTAL_QUERIES, getActiveQueries } from './services/competitor-monitor/brand-config';
 import { detectCampaigns } from './services/competitor-monitor/campaign-detector';
 import { generateDailyReport, generateWeeklyReport, generateQuarterlyReport } from './services/competitor-monitor/competitor-report';
 import { getCreatorsFromVideos } from './services/competitor-monitor/creator-profiler';
@@ -1045,9 +1045,19 @@ cron.schedule('0 6 * * *', async () => {
 // 排在 06:00 normal 之后：normal 先跑完，剩多少预算回填用多少（全局 ≤70/天）。
 cron.schedule('30 7 * * *', async () => {
   if (scanState.running) { console.log('[Cron] Backfill skip — scan already running'); return; }
-  console.log('[Cron] Auto backfill resume');
+  // BACKFILL_BRANDS=Lagofast → 回填窗口内只续跑指定品牌（Lagofast Discovery 专项,2026-08-29）
+  // 不设则续跑全部品牌（原行为）。多个品牌逗号分隔。用完解除变量即恢复。
+  const brandFilter = (process.env.BACKFILL_BRANDS || '').split(',').map(s => s.trim()).filter(Boolean);
+  const queries = brandFilter.length
+    ? getActiveQueries().filter(q => brandFilter.includes(q.brandName))
+    : undefined;
+  if (brandFilter.length && !queries?.length) {
+    console.warn(`[Cron] BACKFILL_BRANDS=${brandFilter.join(',')} 过滤后 0 条 query,跳过本次续跑`);
+    return;
+  }
+  console.log(`[Cron] Auto backfill resume${queries ? ` (brands=${brandFilter.join(',')})` : ''}`);
   try {
-    await runDiscoveryPipeline({ mode: 'backfill' });
+    await runDiscoveryPipeline({ mode: 'backfill', queries });
     await detectCampaigns();
   } catch (err) { console.error('[Cron] Backfill failed:', (err as Error).message); }
 });
