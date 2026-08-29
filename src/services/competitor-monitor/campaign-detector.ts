@@ -51,6 +51,15 @@ function topTheme(vids: any[]): string {
   return sps.sort((a, b) => sps.filter(x => x === b).length - sps.filter(x => x === a).length)[0] || 'General';
 }
 
+/** 语言多数票 (P2 2026-08-29): 取代硬编码 primary_language:'en' — 用组内视频 content_language 多数票, 空则 'en' */
+function topLanguage(vids: any[]): string {
+  const langs = (vids || []).map((v: any) => v.language).filter((l: any) => !!l) as string[];
+  if (!langs.length) return 'en';
+  const counts: Record<string, number> = {};
+  for (const l of langs) counts[l] = (counts[l] || 0) + 1;
+  return Object.entries(counts).sort((a, b) => b[1] - a[1])[0][0];
+}
+
 function calcStatus(lastPlacementAt: string): 'active' | 'cooling' | 'ended' {
   const hours = (Date.now() - new Date(lastPlacementAt).getTime()) / 3600000;
   if (hours <= 72) return 'active';
@@ -165,7 +174,7 @@ export async function detectCampaigns(): Promise<number> {
       creator_count: creators.size,
       primary_selling_point: `${clusterType}::${topSP}`, // cluster_type prefix in selling_point
       primary_market: topMarket,
-      primary_language: 'en',
+      primary_language: topLanguage(gv),
       landing_domain: clusterType, // reuse unused field for cluster_type
       total_estimated_views: totalViews,
       avg_performance_score: 50,
