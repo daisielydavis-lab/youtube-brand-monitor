@@ -3,6 +3,7 @@
  * Tabs: Overview | Campaigns | Videos | Creators | Comments | System
  */
 import type { DashboardData } from '../services/competitor-monitor/dashboard-data';
+import { safeJsonForInlineScript } from './inline-script-json';
 
 /** Shell: renders instantly, no DB access. JS fetches /api/dashboard. */
 export function renderDashboardShell(): string {
@@ -220,7 +221,7 @@ export function renderDashboard(
   <div style="font-size:11px;color:#8490A6;margin-bottom:12px;padding:6px 10px;background:#F8FAFD;border-radius:6px;border:1px solid #E3E8F1" title="范围 = 当前顶部筛选器组合（品牌 · 区域 · 时间窗口）；集中投放覆盖率 = 集中投放项目内的视频数 ÷ 全部竞品投放视频数（如 513÷588≈87%）">
     范围: <b>${kpi.activeCampaigns ?? 0} 个集中投放项目</b> · ${(kpi.campaignPlacements ?? 0).toLocaleString()} 条集中投放 · ${(kpi.uniqueCreators ?? 0).toLocaleString()} 位博主 · 覆盖 ${(kpi.totalPlacements ?? kpi.competitorPlacements ?? 0).toLocaleString()} 条竞品投放视频的 ${campCoveragePct}%（${scopeBrandZh} · ${scopeLangZh} · ${rangeLabel}）
   </div><div style="text-align:right;margin:8px 0"><button onclick="exportCampaigns()" style="background:#3568e8;color:#fff;border:none;padding:6px 16px;border-radius:6px;font-size:12px;cursor:pointer">⬇ 导出 CSV</button></div>
-<script>var __campaigns = ${JSON.stringify(campaigns).replace(/</g,'<')};</script>
+<script>var __campaigns = ${safeJsonForInlineScript(campaigns)};</script>
 ` + (campaigns.length ? campaigns.map((c:any)=>{
     const brandColor = ({GearUP:'#f59e0b',ExitLag:'#3b82f6',LagZapper:'#22c55e',Lagofast:'#a855f7'} as any)[c.brand]||'#94a3b8';
     const statusColor = c.status === 'active' ? '#19A974' : c.status === 'cooling' ? '#F59E0B' : '#8490A6';
@@ -274,9 +275,9 @@ export function renderDashboard(
   <div style="text-align:center;margin-top:10px"><button onclick="exportVideos()" style="background:#3568e8;color:#fff;border:none;padding:6px 16px;border-radius:6px;font-size:12px;cursor:pointer">⬇ 导出 CSV</button> <button onclick="vidMore()" id="vid-more" style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;padding:6px 16px;border-radius:6px;font-size:12px;cursor:pointer;display:none">加载更多</button></div>
   <script>
   // Pre-cache video data for view switching
-  var competitorVids = ${JSON.stringify(data.recentVideos.map((v:any)=>({videoId:v.videoId,title:v.title,thumbnailUrl:v.thumbnailUrl,channelName:v.channelName,brand:v.brand,game:v.game,viewCount:v.viewCount,placementType:v.placementType,contentCategory:(v as any).contentCategory,publishedAt:v.publishedAt,reasonCodes:v.reasonCodes,discoveryEvidence:v.discoveryEvidence}))).replace(/</g,'\\u003c')};
-  var unresolvedVids = ${JSON.stringify(unresolvedVids.map((v:any)=>({videoId:v.videoId,title:v.title,thumbnailUrl:v.thumbnailUrl,channelName:v.channelName,brand:v.brand,game:v.game,viewCount:v.viewCount,placementType:v.placementType,contentCategory:(v as any).contentCategory,publishedAt:v.publishedAt,reasonCodes:v.reasonCodes,discoveryEvidence:v.discoveryEvidence}))).replace(/</g,'\\u003c')};
-  var allVids = ${JSON.stringify(allVids.map((v:any)=>({videoId:v.videoId,title:v.title,thumbnailUrl:v.thumbnailUrl,channelName:v.channelName,brand:v.brand,game:v.game,viewCount:v.viewCount,placementType:v.placementType,contentCategory:(v as any).contentCategory,publishedAt:v.publishedAt,reasonCodes:v.reasonCodes,discoveryEvidence:v.discoveryEvidence}))).replace(/</g,'\\u003c')};
+  var competitorVids = ${safeJsonForInlineScript(data.recentVideos.map((v:any)=>({videoId:v.videoId,title:v.title,thumbnailUrl:v.thumbnailUrl,channelName:v.channelName,brand:v.brand,game:v.game,viewCount:v.viewCount,placementType:v.placementType,contentCategory:(v as any).contentCategory,publishedAt:v.publishedAt,reasonCodes:v.reasonCodes,discoveryEvidence:v.discoveryEvidence})))};
+  var unresolvedVids = ${safeJsonForInlineScript(unresolvedVids.map((v:any)=>({videoId:v.videoId,title:v.title,thumbnailUrl:v.thumbnailUrl,channelName:v.channelName,brand:v.brand,game:v.game,viewCount:v.viewCount,placementType:v.placementType,contentCategory:(v as any).contentCategory,publishedAt:v.publishedAt,reasonCodes:v.reasonCodes,discoveryEvidence:v.discoveryEvidence})))};
+  var allVids = ${safeJsonForInlineScript(allVids.map((v:any)=>({videoId:v.videoId,title:v.title,thumbnailUrl:v.thumbnailUrl,channelName:v.channelName,brand:v.brand,game:v.game,viewCount:v.viewCount,placementType:v.placementType,contentCategory:(v as any).contentCategory,publishedAt:v.publishedAt,reasonCodes:v.reasonCodes,discoveryEvidence:v.discoveryEvidence})))};
   </script>`;
 
   // ── TAB 4: Creators (loaded via JS, defaults to Active in period) ──
@@ -360,11 +361,11 @@ export function renderDashboard(
 </div>
 <script>
 // Stage ⑧: 顶部三筛选器注入 JS — Creator/Comments 页必须用同一 Current Scope
-var curRange=${JSON.stringify(filter.range || '7d')};
-var curBrand=${JSON.stringify(filter.brand || 'all')};
-var curLang=${JSON.stringify(filter.lang || 'all')};
-var MARKET_LABELS_SRV=${JSON.stringify(MARKET_LABELS_SRV)};
-var LANGUAGE_LABELS_SRV=${JSON.stringify(LANGUAGE_LABELS_SRV)};
+var curRange=${safeJsonForInlineScript(filter.range || '7d')};
+var curBrand=${safeJsonForInlineScript(filter.brand || 'all')};
+var curLang=${safeJsonForInlineScript(filter.lang || 'all')};
+var MARKET_LABELS_SRV=${safeJsonForInlineScript(MARKET_LABELS_SRV)};
+var LANGUAGE_LABELS_SRV=${safeJsonForInlineScript(LANGUAGE_LABELS_SRV)};
 function fmtMk(m){if(m==null||m==='')return'地区未知';if(Object.prototype.toString.call(m)==='[object Array]'){var a=[];for(var i=0;i<m.length;i++){var x=m[i];if(!x||x==='Unknown')continue;a.push(MARKET_LABELS_SRV[x]||x)}return a.length?a.join(' / '):'地区未知'}var parts=String(m).split('|');var out=[];for(var j=0;j<parts.length;j++){var p=parts[j].trim();if(!p||p==='Unknown')continue;out.push(MARKET_LABELS_SRV[p]||p)}return out.length?out.join(' / '):'地区未知'}
 var creatorView='active';
 function applyFilter(k,v){const u=new URL(location);v==='all'?u.searchParams.delete(k):u.searchParams.set(k,v);location=u.toString()}
