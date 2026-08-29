@@ -73,7 +73,7 @@ app.get('/status', async (_req, res) => { res.json(await getMonitorStatus()); })
 // ── Campaigns (Stage ⑧: 运行时聚合 — Scope 内 placements 分簇, 不读历史表) ──
 app.get('/api/campaigns', async (req, res) => {
   const rangeDays = parseInt((req.query.range as string) || '7', 10);
-  const data = await queryDashboardData(rangeDays, req.query.brand as string, req.query.market as string, req.query.conf as string, req.query.lang as string);
+  const data = await queryDashboardData(rangeDays, req.query.brand as string, req.query.conf as string, req.query.lang as string);
   res.json(data.hasData ? ((data as any).campaignClusters || []) : []);
 });
 
@@ -84,7 +84,6 @@ app.get('/api/creators', async (req, res) => {
   res.json(await getCreatorsFromVideos({
     rangeDays,
     brand: req.query.brand as string,
-    market: req.query.market as string,
     language: req.query.lang as string,
     confidence: req.query.conf as string,
     competitorOnly: !showAll,
@@ -428,34 +427,20 @@ async function getMarketOptions(db: any): Promise<any[]> {
   _mktCache = { at: Date.now(), list };
   return list;
 }
-let _langCache: { at: number; list: any[] } | null = null;
-async function getLanguageOptions(db: any): Promise<any[]> {
-  if (_langCache && Date.now() - _langCache.at < 60000) return _langCache.list;
-  const rows: any[] = [];
-  for (let from = 0; ; from += 1000) {
-    const { data, error } = await db
-      .from('youtube_competitor_videos')
-      .select('language')
-      .order('video_id', { ascending: true })
-      .range(from, from + 999);
-    if (error) throw error;
-    if (!data?.length) break;
-    rows.push(...data);
-    if (data.length < 1000) break;
-  }
+/** 语言下拉选项 (2026-08-29): 从当前 scope 内 confirmed/likely placements 计数 —
+ *  与看板主体同一口径 (brand+lang+time+conf 过滤后的 placements)。
+ *  旧 getLanguageOptions 全表扫 language 列 (含 discovered/pending/organic/全历史),
+ *  导致下拉 "未识别(1552)" 等计数与页面分析范围不一致 — 已废弃。 */
+function computeLanguageOptions(placements: any[]): any[] {
   const counts: Record<string, number> = {};
-  let none = 0;
-  for (const v of rows) {
-    const l = (v.language as string) || '';
-    if (!l) { none++; continue; }
-    counts[l] = (counts[l] || 0) + 1;
+  for (const v of placements) {
+    const l = (v.language || '').trim();
+    if (l) counts[l] = (counts[l] || 0) + 1;
+    else counts['__none__'] = (counts['__none__'] || 0) + 1;
   }
-  const list = Object.entries(counts)
-    .map(([code, count]) => ({ code, label: LANGUAGE_LABELS[code] || code, count }))
+  return Object.entries(counts)
+    .map(([code, count]) => ({ code, label: code === '__none__' ? '未识别' : (LANGUAGE_LABELS[code] || code), count }))
     .sort((a, b) => b.count - a.count);
-  if (none > 0) list.push({ code: '__none__', label: '未识别', count: none });
-  _langCache = { at: Date.now(), list };
-  return list;
 }
 
 app.get('/api/markets', async (_req: any, res: any) => {
@@ -467,9 +452,17 @@ app.get('/api/markets', async (_req: any, res: any) => {
     res.status(500).json({ error: (err as Error).message });
   }
 });
-app.get('/api/languages', async (_req: any, res: any) => {
+app.get('/api/languages', async (req: any, res: any) => {
   try {
-    res.json(await getLanguageOptions(getSupabase()));
+    // 2026-08-29: 改为 scope 内 placements 计数 (默认 90 天), 与看板下拉同口径。
+    // 旧行为返回全表 language 计数, 混入 discovered/pending, 已废弃。
+    const rangeDays = parseInt((req.query.range as string) || '90', 10);
+    const brand = req.query.brand as string | undefined;
+    const conf = req.query.conf as string | undefined;
+    const lang = req.query.lang as string | undefined;
+    const data = await queryDashboardData(rangeDays, brand, conf, lang);
+    const placements: any[] = data.hasData ? ((data as any).recentVideos || []) : [];
+    res.json(computeLanguageOptions(placements));
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
   }
@@ -782,7 +775,7 @@ function clusterScopeCampaigns(placements: any[], rangeDays: number): { campaign
 // ── Shared dashboard query (used by both / and /api/dashboard) ──
 // 3-layer data model: all analytics derived from Layer 3 (Competitor Placements)
 // P1 (2026-08-29): 增加 langFilter —— 独立语言筛选维度, 与 market 同属 Analytics 层。
-async function queryDashboardData(rangeDays: number, brandFilter?: string, marketFilter?: string, confFilter?: string, langFilter?: string) {
+async function queryDashboardData(rangeDays: number, brandFilter?: string, confFilter?: string, langFilter?: string) {
   const since = new Date(Date.now() - rangeDays * 86400000).toISOString();
   const db = getSupabase();
 
@@ -837,9 +830,6 @@ async function queryDashboardData(rangeDays: number, brandFilter?: string, marke
   const unresolvedCandidates = filterUnresolvedCandidates(videos);
   if (brandFilter && brandFilter !== 'all') {
     competitorPlacements = competitorPlacements.filter(v => resolveBrand(v) === brandFilter);
-  }
-  if (marketFilter && marketFilter !== 'all') {
-    competitorPlacements = competitorPlacements.filter(v => marketMatches(v, marketFilter));
   }
   if (langFilter && langFilter !== 'all') {
     competitorPlacements = competitorPlacements.filter(v => langMatches(v, langFilter));
@@ -983,10 +973,9 @@ app.get('/', async (_req, res) => {
     // Current Scope = 顶部三筛选器; 所有业务页从 Scope 内 placements 往下算。
     const range = parseInt((_req.query.range as string) || '7', 10);
     const brandFilter = _req.query.brand as string | undefined;
-    const marketFilter = _req.query.market as string | undefined;
     const confFilter = _req.query.conf as string | undefined;
     const langFilter = _req.query.lang as string | undefined;
-    const data = await queryDashboardData(range, brandFilter, marketFilter, confFilter, langFilter);
+    const data = await queryDashboardData(range, brandFilter, confFilter, langFilter);
     console.log(`[Dashboard:${requestId}] Step1 videos done: hasData=${data.hasData}`);
 
     // Step 2: Campaigns — 运行时聚合 (queryDashboardData 内完成), 不读历史
@@ -1010,13 +999,12 @@ app.get('/', async (_req, res) => {
     const filter = {
       range: /^\d+$/.test(rawRange) ? rawRange + 'd' : rawRange,
       brand: brandFilter || 'all',
-      market: marketFilter || 'all',
       lang: langFilter || 'all',
     };
-    const [marketOptions, languageOptions] = await Promise.all([
-      getMarketOptions(getSupabase()),
-      getLanguageOptions(getSupabase()),
-    ]);
+    // 语言下拉数量 = 当前 scope (brand+lang+time+conf) 内 confirmed/likely placements
+    // 的语言分布 — 与看板主体同一数据集, 不混入 discovered/pending/organic 全库。
+    const marketOptions = await getMarketOptions(getSupabase());
+    const languageOptions = computeLanguageOptions((data as any).recentVideos || []);
     const html = renderDashboard({
       hasData: data.hasData,
       scanStatus: data.scanStatus,
@@ -1029,7 +1017,7 @@ app.get('/', async (_req, res) => {
       allRecentVideos: ('allRecentVideos' in data ? data.allRecentVideos : []) || [],
       unresolvedVideos: ('unresolvedVideos' in data ? data.unresolvedVideos : []) || [],
       anomalies: [],
-    } as any, filter, campaigns, { ...status, creatorProfiles: [] }, { marketOptions, languageOptions });
+    } as any, filter, campaigns, { ...status, creatorProfiles: [] }, { marketOptions, languageOptions, languageLabelMap: LANGUAGE_LABELS });
 
     console.log(`[Dashboard:${requestId}] Done: ${data.recentVideos.length} videos, HTML=${html.length}chars, totalMs: ${Date.now() - startedAt}`);
     res.type('html').send(html);
@@ -1055,7 +1043,7 @@ app.get('/api/dashboard', async (req, res) => {
 
   try {
     const rangeDays = parseInt((req.query.range as string) || '7', 10);
-    const data = await queryDashboardData(rangeDays, req.query.brand as string, req.query.market as string, req.query.conf as string, req.query.lang as string);
+    const data = await queryDashboardData(rangeDays, req.query.brand as string, req.query.conf as string, req.query.lang as string);
 
     if (!data.hasData) {
       return res.json({ ok: true, hasData: false, kpis: {}, brands: [], games: [], themes: [], creators: [], recentVideos: [], scanStatus: {} });

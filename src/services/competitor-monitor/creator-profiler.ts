@@ -4,7 +4,7 @@
  */
 
 import { getSupabase } from '../../db/supabase';
-import { marketMatches, langMatches } from './data-scope';
+import { langMatches } from './data-scope';
 import { getChannelById, type YouTubeChannelResult } from './youtube-discovery';
 import type { TopicResult } from './topic-classifier';
 import type { SponsorshipResult } from './sponsorship-detector';
@@ -32,7 +32,7 @@ export interface CreatorProfile {
   videoCount: number;
   thumbnailUrl: string;
   country?: string;
-  primaryLanguage: string;
+  primaryLanguage: string | null;
   primaryGames: string[];
   pastBrandMentions: Record<string, number>;
   hasPromoCodeHistory: boolean;
@@ -77,7 +77,7 @@ export async function getOrCreateCreatorProfile(
     video_count: channel.videoCount,
     thumbnail_url: channel.thumbnailUrl,
     country: channel.country,
-    primary_language: 'en',
+    primary_language: null,
     primary_games: [] as string[],
     past_brand_mentions: {} as Record<string, number>,
     has_promo_code_history: false,
@@ -167,8 +167,9 @@ export async function updateCreatorFromVideo(
     }
   }
 
-  // Update language if detected
-  if (topicResult.language && topicResult.language !== 'en') {
+  // Update language if detected (2026-08-29: 去掉 !== 'en' 守卫 — 旧逻辑让 en 创作者永远
+  // 停留在 insert 默认值; 该字段只是存储近似, 看板展示口径走聚合层多数票, 见 getCreatorsFromVideos)
+  if (topicResult.language) {
     updates.primary_language = topicResult.language;
   }
 
@@ -224,7 +225,8 @@ export interface CreatorRow {
   thumbnailUrl: string;
   subscriberCount: number | null;
   country: string | null;
-  primaryLanguage: string;
+  /** 博主主要语言 (2026-08-29): 当前 scope 内 confirmed/likely 投放视频 language 多数票; 无 → null (前端显示"未识别") */
+  primaryLanguage: string | null;
   videosInWindow: number;   // = Current Scope 内该 creator 的竞品投放数 (Sponsored Videos)
   lifetimeCount: number;    // 全历史累计投放数 (独立展示, 不混入当前周期)
   confirmedCount: number;
@@ -249,8 +251,7 @@ export interface CreatorRow {
 export async function getCreatorsFromVideos(options?: {
   rangeDays?: number;
   brand?: string;
-  market?: string;
-  language?: string; // P1 (2026-08-29): 独立语言筛选维度 — 与市场共用同一 scope
+  language?: string; // P1 (2026-08-29): 独立语言筛选维度 — 博主主要语言筛选用它; 市场筛选已从 dashboard 移除
   confidence?: string; // 置信度过滤 (high/medium/low) — 低置信度视图
   competitorOnly?: boolean; // default false — when true, only show creators with competitor placements
 }): Promise<CreatorRow[]> {
@@ -353,7 +354,6 @@ export async function getCreatorsFromVideos(options?: {
     // Layer 3 filter: competitor placements only (brand ∈ valid AND placement ∈ confirmed/likely)
     if (options?.competitorOnly && !isCompetitorPlacement(v)) continue;
     if (options?.brand && options.brand !== 'all' && brand !== options.brand) continue;
-    if (options?.market && !marketMatches(v, options.market)) continue;
     if (options?.language && !langMatches(v, options.language)) continue;
     if (!channelMap.has(v.channel_id)) channelMap.set(v.channel_id, []);
     channelMap.get(v.channel_id)!.push(v);
@@ -435,13 +435,26 @@ export async function getCreatorsFromVideos(options?: {
       return top ? top[0] : '未知';
     })();
 
+    // ── 博主主要语言 (2026-08-29): 当前 scope 内 confirmed/likely 投放视频的 language
+    //    多数票。无有效语言 → null (前端显示"未识别")。绝不默认 'en' — 旧逻辑
+    //    (profile 默认 'en' + || 'en' 兜底 + 只取第一条视频) 导致 99% 博主被标成英语。
+    const primaryLanguage = (() => {
+      const votes: Record<string, number> = {};
+      for (const v of sorted) {
+        const l = v.language;
+        if (l && l.trim()) votes[l] = (votes[l] || 0) + 1;
+      }
+      const top = Object.entries(votes).sort((a, b) => b[1] - a[1])[0];
+      return top ? top[0] : null;
+    })();
+
     creators.push({
       channelId,
       channelName: profile?.channel_name || sorted[0].channel_name || 'Unknown',
       thumbnailUrl: profile?.thumbnail_url || sorted[0].thumbnail_url || '',
       subscriberCount: profile?.subscriber_count || null,
       country: profile?.country || null,
-      primaryLanguage: profile?.primary_language || sorted[0].language || 'en',
+      primaryLanguage,
       videosInWindow: vids.length,
       lifetimeCount: (lifetimeByChannel.get(channelId) || 0) + vids.length,
       confirmedCount: sorted.filter((v: any) => v.placement_type === 'confirmed_paid_placement').length,
@@ -509,7 +522,7 @@ function mapProfileFromDb(row: any): CreatorProfile {
     videoCount: row.video_count || 0,
     thumbnailUrl: row.thumbnail_url || '',
     country: row.country,
-    primaryLanguage: row.primary_language || 'en',
+    primaryLanguage: row.primary_language || null,
     primaryGames: row.primary_games || [],
     pastBrandMentions: row.past_brand_mentions || {},
     hasPromoCodeHistory: row.has_promo_code_history || false,
