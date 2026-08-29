@@ -119,16 +119,49 @@ backfill 的视频经规则/AI 确认后,creator **自动**进 Lagofast watchlis
 
 ## 6. 实施状态(2026-08-29 已部署)
 
-**代码改动**(待提交):
+**代码改动**(已提交 c8794a7 + 9387180):
 - `brand-config.ts`:BrandQuery 加 `global?: boolean`,targetLanguage/targetMarket 改可选;
   NORMAL_QUERIES 加 4 条 Lagofast 全局 query(LagoFast / "Lago Fast" / lagofast.com / lago-fast.com)。
 - `youtube-discovery.ts`:新增 `global_brand_search` discovery_method;抽 `buildSearchParams` 纯函数
   (global → 不带 regionCode/relevanceLanguage);域名/全局/关键词三分归因。
 - `creator-source.ts`:METHOD_TO_SOURCE 加 `global_brand_search: 'search'`。
 - `index.ts` insert:workflow_status 移入新行分支(已存在行不重置 workflow/classification,防重命中覆盖)。
-- `cli-discover.ts`:`--brands` 过滤(Lagofast-only backfill 入口)。
-- `app.ts`:bySearch 搜索系含 global_brand_search/domain_search。
+- `cli-discover.ts`:`--brands` 过滤(Lagofast-only backfill 入口)+ `--mode backfill` 解析
+  (此前只认 --hotspot/--manual,导致 backfill 实际跑成 normal 1-day 扫描)。
+- `app.ts`:bySearch 搜索系含 global_brand_search/domain_search;
+  07:30 auto-backfill cron 加 `BACKFILL_BRANDS=Lagofast` env 门控(回填窗口内只续跑 Lagofast,
+  不动其他品牌 pending 窗口;解除变量即恢复全品牌续跑)。
 - 回归测试 16 项全绿(hostname 规范化 6 项 + typosquat 误报有界 + 全局 query 参数 + NORMAL_QUERIES 4 条)。
+
+**backfill 现状(2026-08-29):**
+- 4 条 Lagofast query 窗口已创建,各 14 pending(共 56,90 天按 7 天切片)。
+- Railway 已设 `BACKFILL_BRANDS=Lagofast`,07:30 auto-backfill cron 只续跑 Lagofast。
+- 今日 YT quota 被 probe 耗尽的教训:06:00 normal(全品牌 ~44 calls)占用后剩 ~26 calls 给 07:30,
+  56 窗口按剩余预算均分 → 预计 2-3 天摊完(与"按 2-3 天 batch 自然摊开"一致)。
+
+## 8. 429 可靠性修复 + completion-gate 漏斗(用户 2026-08-29 追加重申)
+
+**429 修复(最小 infra,已随本次部署):**
+- `youtube-discovery.ts`:HTTP 429 + reason=rateLimitExceeded/quotaExceeded(或 403)统一映射为
+  `YT_QUOTA_EXHAUSTED`,立即熔断、不重试。此前 429 rateLimitExceeded 被当瞬时 QPS 重试 3 次后
+  抛 `YT_RATE_LIMITED`(不打熔断)→ 窗口 mark failed + ~14 分钟重试风暴,次日不自动 resume。
+  非配额类 429(瞬时 QPS)保留短退避(坑 #23 兜底)。
+- `index.ts`:backfill 窗口 catch 中 `YT_QUOTA_EXHAUSTED` → 窗口 mark `quota_paused`(非 failed),
+  quota reset 后由现有 resume 机制次日续跑。其余错误仍 mark failed。
+- 不改其他 discovery 逻辑。
+
+**completion-gate + 漏斗对账(不用固定日期):**
+- 门槛:56 窗口全部离开 pending/running,且 failed/quota_paused/partial = 0 才跑漏斗。
+  门槛未满足只输出窗口状态,不产出"看似完整实则没收完"的结果。
+- `src/audit-lagofast-funnel.ts`(提交版):`--gate` 只查门槛 / 默认全量漏斗:
+  candidates → enriched → rule classified → AI reviewed → confirmed/likely
+  → unique creators → watchlist additions;title-signal / description-only 两组转化率;
+  验收加项 = Discovery source contribution(global_brand_search/domain_search/channel_scan…)
+  + 90 天最终 unique placements + unique creators。
+- 精确归属:insert 新行新增 `discovery_query_id` 落库(按 query_text 查 competitor_queries.id),
+  漏斗按 discovery_query_id 区分 global_brand_search/domain_search 归属,避免与 LagZapper
+  domain_search 混淆。
+- PostgREST 坑:`in()` 对含引号的 query_text("Lago Fast")解析少行 → 全量拉取 + JS 过滤。
 
 ## 7. 预期对账(backfill 后 90 天)
 

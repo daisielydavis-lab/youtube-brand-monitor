@@ -376,12 +376,16 @@ export async function runDiscoveryPipeline(options?: {
           console.log(`[Monitor] backfill "${w.q.queryText}" [${w.from.slice(5,10)}→${w.to.slice(5,10)}] → ${res.videos.length} vids / ${res.searchCalls} calls → ${status}（预算 ${budgetWin}）`);
         } catch (err) {
           const msg = (err as Error).message;
+          // 2026-08-29：quota 耗尽 → quota_paused（次日 resume 续跑），不是 failed。
+          // 之前 429 rateLimitExceeded 被当瞬时 QPS 重试后抛 YT_RATE_LIMITED → 不打熔断
+          // → 窗口 mark failed，重试风暴 14 分钟（见 youtube-discovery 注释）。
+          const isQuota = msg.startsWith('YT_QUOTA_EXHAUSTED');
           try {
-            await db.from('backfill_windows').update({ status: 'failed', last_error: msg.slice(0, 500), updated_at: new Date().toISOString() })
+            await db.from('backfill_windows').update({ status: isQuota ? 'quota_paused' : 'failed', last_error: msg.slice(0, 500), updated_at: new Date().toISOString() })
               .eq('query_text', w.q.queryText).eq('window_from', w.from).eq('window_to', w.to);
           } catch {}
           failedQueries.add(w.q.queryText);
-          if (msg.startsWith('YT_QUOTA_EXHAUSTED')) { searchCircuitOpen = true; scanState.errorCode = 'SEARCH_QUOTA_EXHAUSTED'; break; }
+          if (isQuota) { searchCircuitOpen = true; scanState.errorCode = 'SEARCH_QUOTA_EXHAUSTED'; break; }
           console.error(`[Monitor] backfill 窗口失败 "${w.q.queryText}" ${w.from}: ${msg}`);
         }
       }
@@ -460,6 +464,15 @@ export async function runDiscoveryPipeline(options?: {
     (exist || []).forEach((r: any) => existingVideoIds.add(r.video_id));
   }
 
+  // 2026-08-29：来源 query 落库（discovery_query_id）——支撑 Lagofast Discovery 漏斗对账，
+  // 按 discovery_query_id 精确区分 global_brand_search/domain_search 归属（避免与 LagZapper
+  // 的 domain_search 混淆）。查不到 id 留 NULL，不阻断入库。
+  const queryIdByText = new Map<string, string>();
+  try {
+    const { data: qs } = await db.from('competitor_queries').select('id, query_text').in('query_text', queries.map(q => q.queryText));
+    (qs || []).forEach((r: any) => queryIdByText.set(r.query_text, r.id));
+  } catch (err) { console.warn('[Monitor] discovery_query_id 映射构建失败（跳过，不阻断）:', (err as Error).message); }
+
   let persistedCount = 0;
   const persistedIds: string[] = [];
   const saveErrors: Array<{ videoId: string; error: string }> = [];
@@ -491,6 +504,8 @@ export async function runDiscoveryPipeline(options?: {
         payload.discovery_method = (v as any).discoveryMethod || 'keyword_search';
         payload.first_seen_at = new Date().toISOString();
         payload.workflow_status = 'discovered';
+        const dq = (v as any).discoveryQuery;
+        if (dq && queryIdByText.has(dq)) payload.discovery_query_id = queryIdByText.get(dq);
       }
       // 已存在行：不写 discovery_method/first_seen_at/workflow_status → merge-duplicates 只更新
       // 提供的列，归因保留。2026-08-29：workflow_status 移入新行分支——否则已分类视频被重命中时

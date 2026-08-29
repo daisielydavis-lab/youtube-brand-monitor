@@ -121,12 +121,16 @@ export async function searchVideosPaged(
       const reason = data?.error?.errors?.[0]?.reason || data?.error?.message || 'unknown';
       const retryAfter = ae.response?.headers?.['retry-after'];
       console.error(`[YouTube] search ${status||'ERR'} for "${query.queryText}": reason=${reason} retryAfter=${retryAfter||'none'} body=${JSON.stringify(data).slice(0,400)}`);
-      // 坑 #23：429/rateLimitExceeded 是瞬时 QPS 限速（非每日配额），退避重试最多 3 次；
-      // 只有 quotaExceeded/403 才是每日配额耗尽 → 熔断。
-      if (reason === 'quotaExceeded' || status === 403) {
+      // 2026-08-29（用户确认）：YT 现以 HTTP 429 + reason=rateLimitExceeded 返回"每日配额耗尽"
+      // （不再是 403 quotaExceeded）。统一映射为 quota exhausted → 立即熔断、不重试——
+      // 否则窗口被 mark failed 并触发 ~14 分钟重试风暴，次日 quota reset 后也不自动 resume。
+      // 非 rateLimitExceeded/quotaExceeded 的 429（瞬时 QPS）保留短退避重试（坑 #23）。
+      const isQuotaExhausted = status === 403
+        || (status === 429 && (reason === 'rateLimitExceeded' || reason === 'quotaExceeded'));
+      if (isQuotaExhausted) {
         throw new Error(`YT_QUOTA_EXHAUSTED:${reason}`);
       }
-      if (status === 429 || reason === 'rateLimitExceeded') {
+      if (status === 429) {
         if (++rateRetries >= 3) throw new Error(`YT_RATE_LIMITED:${reason}`);
         await sleep(2500 * rateRetries);
         continue;
