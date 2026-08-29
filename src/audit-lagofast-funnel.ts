@@ -144,6 +144,18 @@ async function main() {
   const conf90Title = all90.filter(v => hasTitleSignal(v.title)).length;
   const conf90Desc = all90.filter(v => !hasTitleSignal(v.title)).length;
 
+  // ── Step 5: 二次补量链（用户验收:Search/Domain → confirmed → watchlist → channel_scan 补回）──
+  // Creator Network 闭环:backfill 发现 → rule/AI 确认 → ai_confirmed 自动进 watchlist
+  // → 下次扫描 Phase2 scanWatchlistUploads 补回 uploads → 额外 placement（discovery_method=channel_scan）。
+  const searchDomainConfirmed = confirmed.filter(v => ['global_brand_search', 'domain_search', 'keyword_search'].includes(v.discovery_method)).length;
+  const chanScanConfirmed = all90.filter(v => v.discovery_method === 'channel_scan').length;
+  const chanScanFromWatchlist = all90.filter(v => v.discovery_method === 'channel_scan' && watchIds.has(v.channel_id)).length;
+  console.log('\n== 二次补量链（Creator Network 闭环）==');
+  console.log(`  Search/Domain 回填新增 confirmed: ${searchDomainConfirmed}`);
+  console.log(`  confirmed unique creators:        ${confirmedCreators.size}`);
+  console.log(`  watchlist additions:              ${watchAdditions}`);
+  console.log(`  channel_scan 二次补回（90d 总）:     ${chanScanConfirmed}（其中来自 watchlist creator: ${chanScanFromWatchlist}）`);
+
   console.log('\n== 90 天 Lagofast 最终量（验收加项）==');
   console.log(`  unique placements: ${all90.length}（原 11 → 现 ${all90.length}）`);
   console.log(`  unique creators:   ${uniqueCreators90}`);
