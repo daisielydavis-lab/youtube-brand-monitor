@@ -118,6 +118,30 @@ export async function markSearchHardExhausted(): Promise<void> {
   }
 }
 
+/**
+ * 首日 bootstrap / 运维控制：设置或解除当前 PT 期的 hard_exhausted。
+ * 见 supabase-migration-quota-ledger.sql 的 set_youtube_quota_day_exhausted RPC。
+ * 幂等；对「当前 PT 日」生效，下个 PT 午夜自动开新 period（used=0, hard_exhausted=false）。
+ */
+export async function setQuotaDayExhausted(exhaust: boolean): Promise<{
+  periodDate: string | null; resetAt: string | null; used: number; hardExhausted: boolean; error?: string;
+}> {
+  const db = getSupabase();
+  try {
+    const { data, error } = await db.rpc('set_youtube_quota_day_exhausted', { p_key: API_KEY_ID, p_exhaust: exhaust });
+    if (error) throw error;
+    const row = Array.isArray(data) ? data[0] : data;
+    if (!row) throw new Error('RPC 未返回行');
+    ledgerReady = true;
+    cachedUsed = Number(row.search_calls_used) || 0;
+    cachedPeriod = row.quota_period_date ? String(row.quota_period_date) : cachedPeriod;
+    cachedResetAt = row.reset_at ? String(row.reset_at) : cachedResetAt;
+    return { periodDate: cachedPeriod, resetAt: cachedResetAt, used: cachedUsed, hardExhausted: !!row.hard_exhausted };
+  } catch (err) {
+    return { periodDate: null, resetAt: null, used: getSearchUsed(), hardExhausted: false, error: (err as Error).message.slice(0, 160) };
+  }
+}
+
 /** 当前期用量（dashboard / hydrate 共用；与 hard ledger 同源）。 */
 export async function getQuotaToday(): Promise<QuotaToday> {
   const db = getSupabase();
@@ -146,28 +170,34 @@ export async function getQuotaToday(): Promise<QuotaToday> {
 }
 
 /**
- * 上线前 readiness check：表存在 + status RPC 可调 + reserve 原子路径守卫通过。
- * 全部通过才允许启用 Search jobs。
+ * 上线前 readiness check。**三态**，避免把「infra 不可用」和「当前期已熔断」混为一谈：
+ *  - ready=true    —— ledger 基础设施可用（表存在 / RPC 可调 / dry-run 路径通）。
+ *  - gated=true    —— 基础设施可用，但当前 PT 期 Search 被守卫拒绝（hard_exhausted 或
+ *                     内部硬门满）。首日 bootstrap 熔断后这是**预期状态**，非故障。
+ *  - ready=false   —— 基础设施不可用（migration 未跑）→ Search fail-closed，不发请求。
  */
-export async function checkLedgerReady(): Promise<{ ready: boolean; detail: string[] }> {
+export async function checkLedgerReady(): Promise<{ ready: boolean; gated: boolean; gateReason?: string; detail: string[] }> {
   const detail: string[] = [];
   const db = getSupabase();
   try {
     const st = await db.rpc('get_youtube_quota_status', { p_key: API_KEY_ID });
-    if (st.error) { ledgerReady = false; return { ready: false, detail: [`get_youtube_quota_status 失败: ${st.error.message}`] }; }
+    if (st.error) { ledgerReady = false; return { ready: false, gated: false, detail: [`get_youtube_quota_status 失败: ${st.error.message}`] }; }
     detail.push('status RPC ok（表存在）');
 
     const dry = await db.rpc('reserve_youtube_search_quota', {
       p_key: API_KEY_ID, p_category: 'manual', p_hard_budget: SEARCH_HARD_BUDGET, p_dry_run: true,
     });
-    if (dry.error) { ledgerReady = false; return { ready: false, detail: [...detail, `reserve dry-run 失败: ${dry.error.message}`] }; }
+    if (dry.error) { ledgerReady = false; return { ready: false, gated: false, detail: [...detail, `reserve dry-run 失败: ${dry.error.message}`] }; }
     const row = Array.isArray(dry.data) ? dry.data[0] : dry.data;
-    if (row && row.reserved === false) { ledgerReady = false; return { ready: false, detail: [...detail, `reserve 守卫已满/熔断: ${row.reason}`] }; }
-    detail.push(`reserve dry-run ok（used=${row?.used_after ?? 0}, 守卫通过）`);
     ledgerReady = true;
-    return { ready: true, detail };
+    if (row && row.reserved === false) {
+      detail.push(`reserve dry-run ok（RPC 可用）；当前期守卫=${row.reason}（${row.reason === 'hard_exhausted' ? '已熔断/bootstrapped' : '已达硬门'}，dry-run 不递增）`);
+      return { ready: true, gated: true, gateReason: row.reason, detail };
+    }
+    detail.push(`reserve dry-run ok（used=${row?.used_after ?? 0}, 守卫通过）`);
+    return { ready: true, gated: false, detail };
   } catch (err) {
     ledgerReady = false;
-    return { ready: false, detail: [...detail, String((err as Error).message).slice(0, 200)] };
+    return { ready: false, gated: false, detail: [...detail, String((err as Error).message).slice(0, 200)] };
   }
 }

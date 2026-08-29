@@ -1,4 +1,4 @@
-# P0：Persistent Global Search Quota Ledger — 设计（2026-08-29 v2，已按用户拍板修正）
+# P0：Persistent Global Search Quota Ledger — 设计（2026-08-29 v3，已加首日 bootstrap 保护）
 
 ## 1. 根因（已确认）
 
@@ -67,6 +67,10 @@ returns `(reserved boolean, reason text, used_after integer, period_date date, r
 **RPC 二**：`get_youtube_quota_status(p_key)` returns 当前 PT 期行（含 `reset_at`）。
 惰性建行（不递增），供 hydrate + dashboard + readiness。
 
+**RPC 三**：`set_youtube_quota_day_exhausted(p_key, p_exhaust boolean default true)`
+returns 当前 PT 期行。幂等设置/解除当前 PT 期 `hard_exhausted` —— 首日 bootstrap 保护 / 运维控制用。
+`p_exhaust=false` 仅限确认今日真实用量远低于硬门时使用。
+
 Supabase-js UPDATE 不支持 server-side 自增表达式，**必须走 RPC**（原子返回 used_after 的唯一路径）。
 
 ## 4. 运行时接入（fail-closed）
@@ -80,7 +84,8 @@ Supabase-js UPDATE 不支持 server-side 自增表达式，**必须走 RPC**（�
 | `reserveSearchQuota(category)` | 调 RPC；`reserved=false` → 抛 `YT_QUOTA_BUDGET_EXHAUSTED:${reason}`；RPC 调用本身失败 → 抛 `YT_QUOTA_LEDGER_UNAVAILABLE`（**不发请求**） |
 | `markSearchHardExhausted()` | 真实每日配额耗尽 → `hard_exhausted=true`（literal UPDATE 即可，无需 RPC） |
 | `getQuotaToday()` | 读 status RPC，供 dashboard |
-| `checkLedgerReady()` | readiness：status RPC 可调 + `reserve(..., dry_run:=true)` 守卫通过 |
+| `setQuotaDayExhausted(exhaust)` | 首日 bootstrap：熔断/解除当前 PT 日（RPC 三） |
+| `checkLedgerReady()` | readiness **三态**：`{ready, gated, gateReason, detail}` —— ready=infra 可用；gated=当前期守卫拒绝（bootstrap 熔断后属预期，非故障） |
 | `hydrateSearchUsed()` | 扫描开始时同步缓存（跨部署准确算 budgetWin） |
 | `getSearchUsed()` | 进程内缓存（每次 reserve 返回 used_after 更新） |
 
@@ -122,8 +127,9 @@ quotaExceeded (403 或 429)
 - **Dashboard / API 正常启动**；任何 Search 在 ledger 不可用时 **fail-closed**，禁止绕过。
 - `reserveSearchQuota` 遇 RPC 错误 → `YT_QUOTA_LEDGER_UNAVAILABLE` → search.list **不发请求**。
   **没有**"降级为进程内计数"的 fallback——否则 migration 忘跑 = 硬门关闭 = 重演今日 429。
-- 上线前 readiness check（`checkLedgerReady` + CLI）：表存在 / RPC 可调 / atomic reserve 守卫通过 → 才启用 Search jobs。
-- 部署顺序：**先应用 migration，后部署**（否则 Search fail-closed 不工作）。
+- 上线前 readiness check（`checkLedgerReady` + CLI）：表存在 / RPC 可调 / atomic reserve 路径通 → infra READY。
+  READY 且当前期未熔断（`gated=false`）才放行 Search；READY 但 `gated=true`（bootstrap 熔断）属预期，Search 暂停至下个 PT 午夜。
+- 部署顺序：**先应用 migration，再跑 `quota:check --exhaust-today`（首日 bootstrap），后部署**（否则 Search fail-closed 不工作 / 或首日从 0 低估真实用量）。
 
 ## 6. Dashboard 指标
 
@@ -140,20 +146,20 @@ YouTube Search Today: 47 / 85 (internal hard budget)
 
 ## 7. Migration（手动执行一次）
 
-`supabase-migration-quota-ledger.sql`：建表 + 两个 RPC，幂等（IF NOT EXISTS / OR REPLACE）。
+`supabase-migration-quota-ledger.sql`：建表 + **三个 RPC**，幂等（IF NOT EXISTS / OR REPLACE）。
 在 Supabase SQL Editor 全量粘贴运行。**上线前必须应用**，否则 Search fail-closed（不吞请求，但也不发请求）。
 
 ## 8. 文件改动清单
 
 | 文件 | 改动 |
 |---|---|
-| `supabase-migration-quota-ledger.sql` | **新增**：表 + 2 RPC（PT 日界） |
-| `src/services/competitor-monitor/quota-ledger.ts` | **新增**：ledger 客户端 + 硬/软预算 + readiness |
+| `supabase-migration-quota-ledger.sql` | **新增**：表 + 3 RPC（PT 日界；RPC 三=set_youtube_quota_day_exhausted bootstrap） |
+| `src/services/competitor-monitor/quota-ledger.ts` | **新增**：ledger 客户端 + 硬/软预算 + readiness 三态 + setQuotaDayExhausted |
 | `src/services/competitor-monitor/youtube-discovery.ts` | reserve 接入 + quotaCategory；searchBackfillTimeSliced 透传；searchPaidPlacements 接 ledger；rateLimitExceeded 区分 |
 | `src/services/competitor-monitor/index.ts` | SEARCH_DAILY_BUDGET→SEARCH_HARD_BUDGET；ledger 缓存；category 映射；错误判断收敛 |
 | `src/app.ts` | /api/system quota 字段 + 启动 readiness check |
 | `src/ui/dashboard.ts` | System 面板渲染 quota 行 |
-| `src/cli-check-quota-ledger.ts` | **新增**：上线前 readiness check CLI |
+| `src/cli-check-quota-ledger.ts` | **新增**：上线前 readiness check CLI（含 `--exhaust-today` / `--unlock-today` bootstrap 控制） |
 | `docs/quota-ledger-p0-design.md` | 本设计 |
 
 ## 9. 回归验证
@@ -173,3 +179,35 @@ YouTube Search Today: 47 / 85 (internal hard budget)
 - LagZapper global queries / 90d backfill / 新 creator discovery / comments / crossover —— **完全不动**。
 - General quota ledger（1 unit/次，低优先）。
 - YouTube 配额提升 / 第二 API key（外部）。
+
+## 11. 首日 bootstrap 保护（冷启动，2026-08-29 用户补充）
+
+**缺口**：ledger 是当天中途新建的。migration 之前同一 API Key 已消耗的真实 Search quota
+（今天 08-29 已有 07:30 backfill 24 queries + 12 次 deploy，真实 bucket 大概率已被打满 ~100）
+**无法从新 ledger 体现** —— 新 ledger 首见 `used=0`，但 YouTube 真实日 bucket 可能已 60/80/近 100。
+若不处理，上线第一天就再次低估真实 quota（上一轮根因的变体：不是"部署归零"，而是"ledger 半天才启用"）。
+
+**是否可重建**：backfill_windows.search_calls 只覆盖 backfill，normal/probe 不落账；且无法把
+历史窗口精确映射到「今天 PT 期」。**无法可靠重建 → 按 fail-closed 原则 bootstrap**。
+
+**做法（RPC 三 + CLI flag）**：
+```
+npm run quota:check -- --exhaust-today   # 熔断当前 PT 日：hard_exhausted=true，全类 Search 暂停
+npm run quota:check -- --unlock-today    # 解除（仅确认今日真实用量远低于硬门时用）
+```
+熔断只作用于当前 PT 期行；下个 `America/Los_Angeles` 午夜，RPC 计算新的 `quota_period_date` →
+INSERT ON CONFLICT 自动建新行（`used=0, hard_exhausted=false`）→ **ledger 数字从此完整可信**。
+
+**上线顺序（最终版）**：
+1. Supabase SQL Editor 全量运行 `supabase-migration-quota-ledger.sql`（幂等）。
+2. 生产 env 连跑两次 `npm run quota:check`：两次 `used` 完全一致（dry-run 不递增）+ infra READY。
+3. `npm run quota:check -- --exhaust-today` —— 首日 bootstrap：当前 PT 日熔断。
+4. push → Railway deploy（`BACKFILL_BRANDS=Lagofast` 保持不解）。
+5. 部署后当前日 Search fail-closed（System 面板显示"已硬熔断"+ 下个 PT 午夜 reset 时间）。
+6. 下个 PT 午夜后：`used=0/85, hardExhausted=false`，此后每次真实 Search 只 +1 —— 从此刻起 ledger 才算权威。
+7. 重启验收：Railway redeploy/restart 后 `used` 不归零（核心验收）。
+
+**readiness 三态**（避免把 bootstrap 熔断误判为 infra 故障）：
+- `ready=true, gated=false` —— infra 可用且当前日放行 → Search 正常。
+- `ready=true, gated=true`  —— infra 可用但当前日熔断（bootstrap / 真实耗尽）→ 预期，Search 暂停。
+- `ready=false`           —— infra 不可用（migration 未跑）→ fail-closed，不发请求。

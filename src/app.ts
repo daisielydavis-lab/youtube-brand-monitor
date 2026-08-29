@@ -1099,8 +1099,14 @@ app.listen(PORT, '0.0.0.0', () => {
   // P0 (2026-08-29): quota ledger readiness —— 不阻塞启动。未就绪则 Search fail-closed
   // （reserve 抛 YT_QUOTA_LEDGER_UNAVAILABLE，不发请求），绝不降级为内存计数。
   checkLedgerReady().then(r => {
-    console.log(`[QuotaLedger] readiness: ${r.ready ? '✅ READY' : '❌ NOT READY'} — ${r.detail.join('; ')}`);
-    if (!r.ready) console.warn('[QuotaLedger] ⚠️ Search 将 fail-closed。请先在 Supabase SQL Editor 应用 supabase-migration-quota-ledger.sql，再启用 Search jobs。');
+    if (!r.ready) {
+      console.log(`[QuotaLedger] readiness: ❌ NOT READY — ${r.detail.join('; ')}`);
+      console.warn('[QuotaLedger] ⚠️ Search 将 fail-closed（YT_QUOTA_LEDGER_UNAVAILABLE）。请先在 Supabase SQL Editor 应用 supabase-migration-quota-ledger.sql，再启用 Search jobs。');
+    } else if (r.gated) {
+      console.log(`[QuotaLedger] readiness: ✅ ledger READY，但当前 PT 日 Search 已${r.gateReason === 'hard_exhausted' ? '熔断' : '达硬门'}（${r.gateReason}）— 属预期（bootstrap 或真实配额耗尽），下个 PT 午夜自动开启新 period。`);
+    } else {
+      console.log(`[QuotaLedger] readiness: ✅ READY — ${r.detail.join('; ')}`);
+    }
   });
 });
 

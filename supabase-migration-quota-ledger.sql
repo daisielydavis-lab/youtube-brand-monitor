@@ -136,3 +136,42 @@ begin
      where q.quota_period_date = period and q.api_key_id = p_key;
 end;
 $$;
+
+-- ── 首日 bootstrap / 运维控制：设置或解除当前 PT 期的 hard_exhausted ──
+-- ledger 是当天中途新建的，migration 之前同一 API Key 已消耗的真实 Search quota
+-- 无法重建 → 当前 PT 日视为已耗尽（fail-closed），等下一个 PT 午夜自动开新 period。
+-- 幂等；p_exhaust=false 可解除（仅在确认今日真实用量远低于硬门时使用）。
+create or replace function set_youtube_quota_day_exhausted(
+  p_key text default 'primary',
+  p_exhaust boolean default true
+) returns table (
+  quota_period_date date,
+  reset_at timestamptz,
+  search_calls_used integer,
+  hard_exhausted boolean
+)
+language plpgsql
+as $$
+declare
+  period date;
+  reset_ts timestamptz;
+begin
+  period := (current_timestamp at time zone 'America/Los_Angeles')::date;
+  reset_ts := (date_trunc('day', current_timestamp at time zone 'America/Los_Angeles') + interval '1 day')
+              at time zone 'America/Los_Angeles';
+
+  insert into youtube_quota_usage (quota_period_date, reset_at, api_key_id)
+  values (period, reset_ts, p_key)
+  on conflict (quota_period_date, api_key_id) do update set reset_at = excluded.reset_at;
+
+  update youtube_quota_usage
+     set hard_exhausted = p_exhaust,
+         updated_at = now()
+   where quota_period_date = period and api_key_id = p_key;
+
+  return query
+    select q.quota_period_date, q.reset_at, q.search_calls_used, q.hard_exhausted
+      from youtube_quota_usage q
+     where q.quota_period_date = period and q.api_key_id = p_key;
+end;
+$$;
