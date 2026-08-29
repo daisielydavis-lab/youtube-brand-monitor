@@ -18,6 +18,7 @@ import { analyzePendingComments } from './services/competitor-monitor/topic-clas
 import { marketMatches, langMatches, resolveBrand, resolveGame, resolveMarket, COMPETITOR_BRANDS, filterCompetitorPlacements, filterUnresolvedCandidates, needsAIVerification, isCompetitorPlacement, matchesConfidence } from './services/competitor-monitor/data-scope';
 import { MARKET_LABELS, LANGUAGE_LABELS } from './services/competitor-monitor/market-inference';
 import { getSupabase } from './db/supabase';
+import { getQuotaToday, checkLedgerReady, SEARCH_HARD_BUDGET, SEARCH_SOFT, getLedgerReady } from './services/competitor-monitor/quota-ledger';
 import { renderDashboard } from './ui/dashboard';
 
 const app = express();
@@ -473,7 +474,12 @@ app.get('/api/system', async (_req, res) => {
   const db = getSupabase();
   const { data: logs } = await db.from('scan_logs').select('*').order('created_at', { ascending: false }).limit(20);
   const { data: cfg } = await db.from('monitor_config').select('*').eq('id', 1).maybeSingle();
-  res.json({ status, logs: logs || [], config: cfg || {} });
+  const quota = await getQuotaToday();
+  res.json({
+    status, logs: logs || [], config: cfg || {},
+    // P0 (2026-08-29): Search quota ledger 指标 —— 与 hard ledger 同源，非内存推算
+    quota: { ...quota, hardBudget: SEARCH_HARD_BUDGET, soft: SEARCH_SOFT, ledgerReady: getLedgerReady() || quota.ledgerReady },
+  });
 });
 
 // ── Hotspot ──
@@ -1090,6 +1096,12 @@ const PORT = Number(process.env.PORT || config.port || 3001);
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`[Server] Listening on 0.0.0.0:${PORT}`);
   console.log(`[Server] ${validateConfig().length ? '⚠️ Missing config' : '✅ All config present'}`);
+  // P0 (2026-08-29): quota ledger readiness —— 不阻塞启动。未就绪则 Search fail-closed
+  // （reserve 抛 YT_QUOTA_LEDGER_UNAVAILABLE，不发请求），绝不降级为内存计数。
+  checkLedgerReady().then(r => {
+    console.log(`[QuotaLedger] readiness: ${r.ready ? '✅ READY' : '❌ NOT READY'} — ${r.detail.join('; ')}`);
+    if (!r.ready) console.warn('[QuotaLedger] ⚠️ Search 将 fail-closed。请先在 Supabase SQL Editor 应用 supabase-migration-quota-ledger.sql，再启用 Search jobs。');
+  });
 });
 
 // ── Cron: Normal daily at 06:00 UTC ──

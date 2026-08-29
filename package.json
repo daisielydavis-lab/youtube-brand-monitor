@@ -30,7 +30,8 @@
     "test:ai": "ts-node src/services/ai/deepseek-test.ts",
     "test:market": "ts-node src/regression-market.ts",
     "market:backfill": "ts-node src/cli-market-backfill.ts",
-    "test:inline-json": "ts-node src/regression-inline-json.ts"
+    "test:inline-json": "ts-node src/regression-inline-json.ts",
+    "quota:check": "ts-node src/cli-check-quota-ledger.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.110.7",

@@ -14,6 +14,8 @@
 import axios from 'axios';
 import { config } from '../../config';
 import type { BrandQuery } from './brand-config';
+import { reserveSearchQuota, markSearchHardExhausted, getSearchUsed, SEARCH_HARD_BUDGET } from './quota-ledger';
+import type { SearchQuotaCategory } from './quota-ledger';
 
 const API_KEY = config.youtube.apiKey;
 const YT_BASE = 'https://www.googleapis.com/youtube/v3';
@@ -86,6 +88,7 @@ export async function searchVideosPaged(
   publishedBefore?: string, // ISO，可省略（不闭合右边界）
   maxPages = 1,
   maxResultsPerPage = 50,
+  quotaCategory: SearchQuotaCategory = 'manual',
 ): Promise<SearchPageResult> {
   const out: YouTubeVideoResult[] = [];
   if (!API_KEY) { console.error('[YouTube] No API key configured'); return { videos: out, pagesUsed: 0, hadMore: false }; }
@@ -101,6 +104,10 @@ export async function searchVideosPaged(
   for (;;) {
     // 页间节流 250ms：RU/PT 密集窗口递归拆半时防 YouTube QPS 限速（坑 #23：rateLimitExceeded 被误判为 quota 熔断）
     await sleep(250);
+    // P0 (2026-08-29)：每次真实 search.list 调用前 atomic reserve。reserve 失败
+    // （硬门满 / 当天已熔断 / ledger 不可用）→ 抛 YT_QUOTA_* → 本页不发请求。
+    // 在 try 之外，确保异常原样上抛给调用方熔断，不被 catch 吞成"普通失败"。
+    await reserveSearchQuota(quotaCategory);
     try {
       const params = buildSearchParams(query, publishedAfter, publishedBefore, maxResultsPerPage, pageToken || '', API_KEY);
 
@@ -122,12 +129,18 @@ export async function searchVideosPaged(
       const retryAfter = ae.response?.headers?.['retry-after'];
       console.error(`[YouTube] search ${status||'ERR'} for "${query.queryText}": reason=${reason} retryAfter=${retryAfter||'none'} body=${JSON.stringify(data).slice(0,400)}`);
       // 2026-08-29（用户确认）：YT 现以 HTTP 429 + reason=rateLimitExceeded 返回"每日配额耗尽"
-      // （不再是 403 quotaExceeded）。统一映射为 quota exhausted → 立即熔断、不重试——
-      // 否则窗口被 mark failed 并触发 ~14 分钟重试风暴，次日 quota reset 后也不自动 resume。
-      // 非 rateLimitExceeded/quotaExceeded 的 429（瞬时 QPS）保留短退避重试（坑 #23）。
-      const isQuotaExhausted = status === 403
-        || (status === 429 && (reason === 'rateLimitExceeded' || reason === 'quotaExceeded'));
-      if (isQuotaExhausted) {
+      // （不再是 403 quotaExceeded）。区分两类：
+      //   A. 明确每日 bucket 耗尽：quotaExceeded（403/429）→ hard_exhausted 熔断（P0 ledger 记硬熔断）。
+      //      429 rateLimitExceeded + 响应含每日 bucket 证据（"Search Queries"/"per day"），
+      //      或 ledger 已 ≥90% 硬门 → 同为每日耗尽 → 记硬熔断。
+      //   B. 普通 rateLimitExceeded（瞬时 QPS，无 bucket 证据）→ 短退避重试（坑 #23），不锁全天。
+      const respMsg = typeof data?.error?.message === 'string' ? data.error.message : '';
+      const isQuotaExceeded = status === 403 || (status === 429 && reason === 'quotaExceeded');
+      const dailyBucketEvidence = status === 429 && reason === 'rateLimitExceeded'
+        && (/queries per day|search queries|daily/i.test(respMsg) || getSearchUsed() >= SEARCH_HARD_BUDGET * 0.9);
+      if (isQuotaExceeded || dailyBucketEvidence) {
+        // P0: 真实每日配额耗尽 → ledger 记 hard_exhausted（当天剩余 Search 短路），再抛
+        await markSearchHardExhausted();
         throw new Error(`YT_QUOTA_EXHAUSTED:${reason}`);
       }
       if (status === 429) {
@@ -217,6 +230,7 @@ export async function searchBackfillTimeSliced(
     quotaBudget?: number;      // 该品牌 search.list 调用上限（0 = 不限）
     onSearchCall?: () => void; // 每次 search 调用回调（用于 quota 记账/中止检查）
     onWindowComplete?: (from: string, to: string, videos: number, calls: number) => void; // 每个初始窗口完成后回调（断点续跑状态落库）
+    quotaCategory?: SearchQuotaCategory; // P0 ledger：透传给 searchVideosPaged 的 atomic reserve
   } = {},
 ): Promise<TimeSliceResult> {
   const initialWindowDays = opts.initialWindowDays ?? 7;
@@ -239,7 +253,7 @@ export async function searchBackfillTimeSliced(
       const to = new Date(Math.min(s + windowDays * 86400000, wEndMs)).toISOString();
       const callsBefore = searchCalls;
       opts.onSearchCall?.();
-      const res = await searchVideosPaged(query, from, to, maxPages, 50);
+      const res = await searchVideosPaged(query, from, to, maxPages, 50, opts.quotaCategory);
       searchCalls += res.pagesUsed;
       const fresh = res.videos.filter(v => !seen.has(v.videoId));
       fresh.forEach(v => seen.add(v.videoId));
@@ -280,6 +294,9 @@ export async function searchPaidPlacements(
     for (const q of broadQueries) {
       if (allResults.length >= maxResults) break;
 
+      // P0 ledger：死代码也接 atomic reserve，杜绝未来旁路。reserve 失败（fail-closed）
+      // → 抛 → 外层 catch 返回 []，绝不经此发 search.list。
+      await reserveSearchQuota('manual');
       const { data } = await axios.get(`${YT_BASE}/search`, {
         params: {
           part: 'snippet',

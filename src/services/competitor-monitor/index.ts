@@ -10,6 +10,8 @@ import { config, validateConfig } from '../../config';
 import { getSupabase } from '../../db/supabase';
 import { getActiveQueries, buildHotspotQueries, BRANDS, type BrandQuery } from './brand-config';
 import { searchVideosPaged, searchBackfillTimeSliced, getChannelsRecentVideos, getChannelsByIds, fetchStatsBatch, getStatsBatchQuotaUsed, type YouTubeVideoResult } from './youtube-discovery';
+import { SEARCH_HARD_BUDGET, hydrateSearchUsed, getSearchUsed, getLedgerReady } from './quota-ledger';
+import type { SearchQuotaCategory } from './quota-ledger';
 import { upsertWatchlistCreator, scanWatchlistUploads } from './creator-watchlist';
 import { fetchVideoComments, hasExistingComments, saveComments } from './video-enrichment';
 import { getOrCreateCreatorProfile } from './creator-profiler';
@@ -42,13 +44,14 @@ export let scanState: ScanState = {
   searchQuotaUsed: 0, generalQuotaUsed: 0, errorCode: '', errors: [], startedAt: '', done: false,
 };
 
-let dailySearchUsed = 0, dailyGeneralUsed = 0, searchCircuitOpen = false;
+let dailyGeneralUsed = 0, searchCircuitOpen = false;
 const AI_BATCH_SIZE = 10, MAX_AI_PER_SCAN = 50, SCAN_TIMEOUT_MS = 10 * 60_000;
-// 配额保护（用户 2026-08-16）：Search 独立池 100/天，日常 ≤70，留 30 buffer
-// 给 Hotspot/异常补扫/分页/调试。超过即熔断，绝不跑到 100。
-const SEARCH_DAILY_BUDGET = 70;
+// 配额保护（P0 2026-08-29）：Search 硬预算改为持久化 ledger（quota-ledger.ts），
+// 跨部署/多实例共享，真实 Search bucket=100/day（PT 午夜重置），内部硬门 85。
+// 进程内只保留缓存 getSearchUsed()（hydrate + reserve 返回值维护）；不再有
+// 独立内存计数 —— 那是多部署穿透真实配额、触发 429 风暴的根因。
 
-function trackSearch(n = 1) { dailySearchUsed += n; scanState.searchQuotaUsed = dailySearchUsed; }
+function syncSearchUsed() { scanState.searchQuotaUsed = getSearchUsed(); }
 function trackGeneral(n: number) { dailyGeneralUsed += n; scanState.generalQuotaUsed = dailyGeneralUsed; }
 
 /** Performance stage by published age: T+0 (<=3d, will get T+3 refresh),
@@ -63,7 +66,7 @@ export function performanceStageFor(publishedAt: string): 't0' | 't3' | 'mature'
 
 function resetState(mode: string) {
   searchCircuitOpen = false;
-  scanState = { running: true, mode, phase: 'discovery', status: 'running', searchQueriesTotal: 0, searchQueriesSucceeded: 0, searchQueriesFailed: 0, creatorChannelsChecked: 0, discoveredFromSearch: 0, discoveredFromCreators: 0, discoveredCount: 0, persistedCount: 0, selectedForAI: 0, classified: 0, likelyPlacements: 0, queued: 0, failed: 0, searchQuotaUsed: dailySearchUsed, generalQuotaUsed: dailyGeneralUsed, errorCode: '', errors: [], startedAt: new Date().toISOString(), done: false };
+  scanState = { running: true, mode, phase: 'discovery', status: 'running', searchQueriesTotal: 0, searchQueriesSucceeded: 0, searchQueriesFailed: 0, creatorChannelsChecked: 0, discoveredFromSearch: 0, discoveredFromCreators: 0, discoveredCount: 0, persistedCount: 0, selectedForAI: 0, classified: 0, likelyPlacements: 0, queued: 0, failed: 0, searchQuotaUsed: getSearchUsed(), generalQuotaUsed: dailyGeneralUsed, errorCode: '', errors: [], startedAt: new Date().toISOString(), done: false };
 }
 
 // ── Priority scoring (rule-based, no LLM) ──
@@ -259,7 +262,12 @@ export async function runDiscoveryPipeline(options?: {
   const mode = options?.mode || 'normal';
   const backfillDays = mode === 'manual' ? (options?.backfillDays || 7) : 1;
   const publishedAfter = new Date(Date.now() - backfillDays * 86400000).toISOString();
+  // P0 ledger：先同步全局真实 Search 用量（部署重启后仍准确），再重置状态。
+  // ledger 不可用（migration 未应用）→ hydrateSearchUsed 静默失败，reserve 会 fail-closed。
+  await hydrateSearchUsed();
   resetState(mode);
+  // P0 category：normal→normal / backfill→backfill / 其余（hotspot/manual/实验）→manual
+  const quotaCat: SearchQuotaCategory = mode === 'normal' ? 'normal' : mode === 'backfill' ? 'backfill' : 'manual';
   console.log(`[Monitor] ${mode} scan — since ${publishedAfter}`);
 
   const db = getSupabase();
@@ -286,7 +294,7 @@ export async function runDiscoveryPipeline(options?: {
     const backfillDays = options?.backfillDays || 90;
     const backfillStart = new Date(Date.now() - backfillDays * 86400000).toISOString();
     const backfillEnd = new Date().toISOString();
-    console.log(`[Monitor] Backfill mode — ${backfillDays}d since ${backfillStart.slice(0,10)}, ${queries.length} queries (Search budget ≤ ${Math.max(0, SEARCH_DAILY_BUDGET - dailySearchUsed)})`);
+    console.log(`[Monitor] Backfill mode — ${backfillDays}d since ${backfillStart.slice(0,10)}, ${queries.length} queries (Search budget ≤ ${Math.max(0, SEARCH_HARD_BUDGET - getSearchUsed())}, ledger=${getLedgerReady() ? 'ready' : 'UNAVAILABLE'})`);
     const WINDOW_MS = 7 * 86400000;
     const weekStart = (ms: number): number => {
       const d = new Date(ms);
@@ -317,20 +325,22 @@ export async function runDiscoveryPipeline(options?: {
       for (const q of queries) {
         if (searchCircuitOpen) { scanState.searchQueriesFailed++; queriesLeft--; continue; }
         try {
-          // 预算按剩余 query 均分——防止第一个 query（GearUP）独占 70 次，LagZapper 分不到
-          const budgetLeft = Math.max(1, Math.floor((SEARCH_DAILY_BUDGET - dailySearchUsed) / queriesLeft));
+          // 预算按剩余 query 均分——防止第一个 query（GearUP）独占 85 次，LagZapper 分不到
+          const budgetLeft = Math.max(1, Math.floor((SEARCH_HARD_BUDGET - getSearchUsed()) / queriesLeft));
           const res = await searchBackfillTimeSliced(q, backfillStart, backfillEnd, {
             initialWindowDays: 7, minWindowDays: 1, maxPages: 3,
             quotaBudget: budgetLeft,
-            onSearchCall: () => { if (dailySearchUsed >= SEARCH_DAILY_BUDGET) searchCircuitOpen = true; trackSearch(); },
+            quotaCategory: quotaCat,
+            onSearchCall: () => { if (getSearchUsed() >= SEARCH_HARD_BUDGET) searchCircuitOpen = true; },
           });
+          syncSearchUsed();
           scanState.searchQueriesSucceeded++;
           for (const r of res.videos) { if (!seen.has(r.videoId)) { seen.add(r.videoId); allVids.push(r); searchFrom++; } }
           console.log(`[Monitor] backfill "${q.queryText}" → ${res.videos.length} videos in ${res.searchCalls} search calls`);
           await db.from('competitor_queries').upsert({ query_text: q.queryText, target_language: q.targetLanguage || 'en', target_market: q.targetMarket || 'US', last_run_at: new Date().toISOString() }, { onConflict: 'query_text' });
         } catch (err) {
           scanState.searchQueriesFailed++;
-          if ((err as Error).message.startsWith('YT_QUOTA_EXHAUSTED')) { searchCircuitOpen = true; scanState.errorCode = 'SEARCH_QUOTA_EXHAUSTED'; }
+          if ((err as Error).message.startsWith('YT_QUOTA')) { searchCircuitOpen = true; scanState.errorCode = 'SEARCH_QUOTA_EXHAUSTED'; }
         }
         queriesLeft--;
       }
@@ -375,7 +385,7 @@ export async function runDiscoveryPipeline(options?: {
       const failedQueries = new Set<string>();
       for (const w of toDo) {
         if (searchCircuitOpen) break; // 全局 Search 熔断：剩余窗口保持 pending，下次续跑
-        const budgetWin = Math.max(1, Math.floor((SEARCH_DAILY_BUDGET - dailySearchUsed) / winLeft));
+        const budgetWin = Math.max(1, Math.floor((SEARCH_HARD_BUDGET - getSearchUsed()) / winLeft));
         winLeft--;
         try {
           await db.from('backfill_windows').update({ status: 'running' })
@@ -383,8 +393,10 @@ export async function runDiscoveryPipeline(options?: {
           const res = await searchBackfillTimeSliced(w.q, w.from, w.to, {
             initialWindowDays: 7, minWindowDays: 1, maxPages: 3,
             quotaBudget: budgetWin,
-            onSearchCall: () => { if (dailySearchUsed >= SEARCH_DAILY_BUDGET) searchCircuitOpen = true; trackSearch(); },
+            quotaCategory: quotaCat,
+            onSearchCall: () => { if (getSearchUsed() >= SEARCH_HARD_BUDGET) searchCircuitOpen = true; },
           });
+          syncSearchUsed();
           for (const r of res.videos) { if (!seen.has(r.videoId)) { seen.add(r.videoId); allVids.push(r); searchFrom++; } }
           // 熔断→quota_paused；窗口预算耗尽→partial；否则→completed
           const status = searchCircuitOpen ? 'quota_paused' : (res.stoppedByBudget ? 'partial' : 'completed');
@@ -399,7 +411,7 @@ export async function runDiscoveryPipeline(options?: {
           // 2026-08-29：quota 耗尽 → quota_paused（次日 resume 续跑），不是 failed。
           // 之前 429 rateLimitExceeded 被当瞬时 QPS 重试后抛 YT_RATE_LIMITED → 不打熔断
           // → 窗口 mark failed，重试风暴 14 分钟（见 youtube-discovery 注释）。
-          const isQuota = msg.startsWith('YT_QUOTA_EXHAUSTED');
+          const isQuota = msg.startsWith('YT_QUOTA');
           try {
             await db.from('backfill_windows').update({ status: isQuota ? 'quota_paused' : 'failed', last_error: msg.slice(0, 500), updated_at: new Date().toISOString() })
               .eq('query_text', w.q.queryText).eq('window_from', w.from).eq('window_to', w.to);
@@ -420,14 +432,14 @@ export async function runDiscoveryPipeline(options?: {
     for (const q of queries) {
       if (searchCircuitOpen) { scanState.searchQueriesFailed++; continue; }
       try {
-        const res = await searchVideosPaged(q, publishedAfter, undefined, 2, 50);
-        trackSearch(res.pagesUsed);
+        const res = await searchVideosPaged(q, publishedAfter, undefined, 2, 50, quotaCat);
+        syncSearchUsed();
         scanState.searchQueriesSucceeded++;
         for (const r of res.videos) { if (!seen.has(r.videoId)) { seen.add(r.videoId); allVids.push(r); searchFrom++; } }
         await db.from('competitor_queries').upsert({ query_text: q.queryText, target_language: q.targetLanguage || 'en', target_market: q.targetMarket || 'US', last_run_at: new Date().toISOString() }, { onConflict: 'query_text' });
       } catch (err) {
         scanState.searchQueriesFailed++;
-        if ((err as Error).message.startsWith('YT_QUOTA_EXHAUSTED')) { searchCircuitOpen = true; scanState.errorCode = 'SEARCH_QUOTA_EXHAUSTED'; }
+        if ((err as Error).message.startsWith('YT_QUOTA')) { searchCircuitOpen = true; scanState.errorCode = 'SEARCH_QUOTA_EXHAUSTED'; }
       }
     }
   }
@@ -867,7 +879,7 @@ export async function getMonitorStatus() {
     db.from('youtube_competitor_videos').select('id', { count: 'exact', head: true }).eq('performance_stage', 't3').lte('published_at', t7Cut),
   ]);
   return { totalVideos: tv || 0, totalCreators: (cr || []).length, lastRun: (lv as any)?.created_at || null,
-    searchQuotaUsed: dailySearchUsed, searchQuotaLimit: 100,
+    searchQuotaUsed: getSearchUsed(), searchQuotaLimit: SEARCH_HARD_BUDGET,
     generalQuotaUsed: dailyGeneralUsed, generalQuotaLimit: 10000,
     statsQuotaUsed: getStatsBatchQuotaUsed(), statsQuotaLimit: 10000,
     perfT3Pending: cT3.count ?? 0, perfT7Pending: cT7.count ?? 0,
