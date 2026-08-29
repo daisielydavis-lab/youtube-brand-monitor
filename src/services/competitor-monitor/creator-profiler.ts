@@ -4,12 +4,23 @@
  */
 
 import { getSupabase } from '../../db/supabase';
-import { marketMatches } from './data-scope';
+import { marketMatches, langMatches } from './data-scope';
 import { getChannelById, type YouTubeChannelResult } from './youtube-discovery';
 import type { TopicResult } from './topic-classifier';
 import type { SponsorshipResult } from './sponsorship-detector';
 import { resolveBrand, isCompetitorPlacement, COMPETITOR_BRANDS, matchesConfidence } from './data-scope';
 import { loadCreatorSourceMap, resolveChannelSource, type CreatorSource } from './creator-source';
+import { countryToMarket } from './market-inference';
+
+/** 推广追踪标识（P2 2026-08-29）：creator 在该品牌下的 affiliate 指纹，多品牌全显示。 */
+export interface TrackingSignal {
+  brand: string;
+  promoCode: string | null;
+  cid: string | null;
+  refId: string | null;
+  domain: string | null;
+  confidence: number | null;
+}
 
 export interface CreatorProfile {
   channelId: string;
@@ -228,12 +239,18 @@ export interface CreatorRow {
   relationType: 'new' | 'recurring' | 'long_term' | 'multi_brand';
   /** 发现来源 (搜索/频道扫描/联盟簇/回溯源/种子/AI确认/相似博主) — Creator 来源透明化 */
   source: CreatorSource;
+  /** 博主主要市场 (creator 主导, 与 markets 的"本条视频目标市场"区分):
+   *  profile.country → countryToMarket → 该 creator 视频 target market 多数票 → '未知' */
+  primaryMarket: string;
+  /** 推广追踪标识 (P2): 按 channel_id join affiliate_identities, 多品牌全显示 */
+  trackingSignals: TrackingSignal[];
 }
 
 export async function getCreatorsFromVideos(options?: {
   rangeDays?: number;
   brand?: string;
   market?: string;
+  language?: string; // P1 (2026-08-29): 独立语言筛选维度 — 与市场共用同一 scope
   confidence?: string; // 置信度过滤 (high/medium/low) — 低置信度视图
   competitorOnly?: boolean; // default false — when true, only show creators with competitor placements
 }): Promise<CreatorRow[]> {
@@ -337,8 +354,31 @@ export async function getCreatorsFromVideos(options?: {
     if (options?.competitorOnly && !isCompetitorPlacement(v)) continue;
     if (options?.brand && options.brand !== 'all' && brand !== options.brand) continue;
     if (options?.market && !marketMatches(v, options.market)) continue;
+    if (options?.language && !langMatches(v, options.language)) continue;
     if (!channelMap.has(v.channel_id)) channelMap.set(v.channel_id, []);
     channelMap.get(v.channel_id)!.push(v);
+  }
+
+  // ── 推广追踪标识 (P2): 按 channel_id 拉 affiliate_identities, 多品牌全显示 ──
+  const signalByChannel = new Map<string, TrackingSignal[]>();
+  {
+    const ids = [...channelMap.keys()];
+    for (let i = 0; i < ids.length; i += 100) {
+      const { data } = await db.from('affiliate_identities')
+        .select('brand,channel_id,promo_code,affiliate_cid,ref_id,domain,confidence')
+        .in('channel_id', ids.slice(i, i + 100));
+      for (const r of (data || [])) {
+        if (!signalByChannel.has(r.channel_id)) signalByChannel.set(r.channel_id, []);
+        signalByChannel.get(r.channel_id)!.push({
+          brand: r.brand,
+          promoCode: r.promo_code || null,
+          cid: r.affiliate_cid || null,
+          refId: r.ref_id || null,
+          domain: r.domain || null,
+          confidence: r.confidence != null ? Number(r.confidence) : null,
+        });
+      }
+    }
   }
 
   const creators: CreatorRow[] = [];
@@ -382,6 +422,19 @@ export async function getCreatorsFromVideos(options?: {
     const vsBaselinePct: number | null = baselineAvg > 0
       ? Math.round((sponsoredAvg - baselineAvg) / baselineAvg * 100) : null;
 
+    // ── 博主主要市场 (P2): profile.country → countryToMarket → 视频 target market 多数票 → '未知' ──
+    const primaryMarket = (() => {
+      const cc = countryToMarket(profile?.country);
+      if (cc) return cc;
+      const votes: Record<string, number> = {};
+      for (const v of sorted) {
+        const m = v.market;
+        if (m && m !== 'Unknown') votes[m] = (votes[m] || 0) + 1;
+      }
+      const top = Object.entries(votes).sort((a, b) => b[1] - a[1])[0];
+      return top ? top[0] : '未知';
+    })();
+
     creators.push({
       channelId,
       channelName: profile?.channel_name || sorted[0].channel_name || 'Unknown',
@@ -402,6 +455,8 @@ export async function getCreatorsFromVideos(options?: {
       lastSeenAt: new Date(Math.max(...timestamps)).toISOString(),
       relationType,
       source: resolveChannelSource(sourceMap, channelId),
+      primaryMarket,
+      trackingSignals: signalByChannel.get(channelId) || [],
     });
   }
 

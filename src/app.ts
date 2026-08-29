@@ -91,10 +91,12 @@ app.get('/api/creators', async (req, res) => {
   }));
 });
 
-// ── Affiliate Identity (① 联盟身份 Dashboard) ──
+// ── 推广追踪标识 (① 追踪标识 Dashboard, P2 2026-08-29) ──
 // 每品牌 affiliate_identities → Creator | CID | Code | Domain | 信号 | Videos
 // Videos = 池内该 creator 的 description 含其 code/cid/domain 信号的视频数。
-app.get('/api/affiliate-identities', async (_req, res) => {
+// P2: API 语义改为"推广追踪标识"(不引入 Affiliate 分类概念); 表/CLI/Discovery 链路不动,
+// 仅 API 语义 + UI 展示。旧路径 /api/affiliate-identities 保留为兼容别名。
+async function handleTrackingSignals(_req: any, res: any) {
   const db = getSupabase();
   const { data: identities } = await db.from('affiliate_identities').select('*').order('brand', { ascending: true });
   if (!identities?.length) return res.json([]);
@@ -135,7 +137,9 @@ app.get('/api/affiliate-identities', async (_req, res) => {
     out.push({ brand, identityCount: rows.length, videos: identitiesRows.reduce((s, r) => s + r.videos, 0), identities: identitiesRows });
   }
   res.json(out);
-});
+}
+app.get('/api/tracking-signals', handleTrackingSignals);
+app.get('/api/affiliate-identities', handleTrackingSignals);
 
 // ── Creator 来源分布 (② 来源透明化) ──
 app.get('/api/creator-sources', async (_req, res) => {
