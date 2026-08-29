@@ -531,7 +531,8 @@ app.get('/api/discovery-coverage', async (_req, res) => {
         hit++;
         byBrand[bn].hit++;
         const inWl = wlChannels.has(p.channel_id);
-        const bySearch = p.discovery_method === 'keyword_search';
+        // 2026-08-29：搜索系 discovery_method 含 global_brand_search/domain_search（Lagofast 全局/域名搜索）
+        const bySearch = ['keyword_search', 'domain_search', 'global_brand_search', 'regional_query'].includes(p.discovery_method);
         // Both = Search 先发现 + 频道现在在 Watchlist（playlist 监控也会覆盖它）
         if (inWl && bySearch) sourceSplit.both++;
         else if (inWl) sourceSplit.watchlistOnly++;

@@ -17,6 +17,8 @@
 import assert from 'assert';
 import { classifyVideo } from './services/competitor-monitor/rule-classifier';
 import { buildClassificationPrompt, type ClassificationPromptItem } from './services/competitor-monitor/index';
+import { buildSearchParams } from './services/competitor-monitor/youtube-discovery';
+import { getActiveQueries } from './services/competitor-monitor/brand-config';
 import { COMPETITOR_BRANDS } from './services/competitor-monitor/data-scope';
 
 type Input = Parameters<typeof classifyVideo>[0];
@@ -44,6 +46,36 @@ check('纯 Lagofast: lagofast.com + cid + promo code → Lagofast / likely', () 
 check('lago-fast.com(hyphen 形式)→ Lagofast', () => {
   const r = v({ title: 'Reduce ping in PUBG', description: 'Download https://www.lago-fast.com/?cid=964' });
   expectEqual(r.brand, 'Lagofast', 'brand');
+});
+
+console.log('== hostname 规范化(www./protocol/path/query 不影响识别)==');
+check('www.lagofast.com/?cid → Lagofast', () => {
+  const r = v({ title: 'Play in Russian', description: 'Use https://www.lagofast.com/?cid=891171 code LAGOFAST10' });
+  expectEqual(r.brand, 'Lagofast', 'brand');
+});
+check('https://lago-fast.com/path?q=y → Lagofast', () => {
+  const r = v({ title: 'Reduce ping', description: 'Download https://lago-fast.com/path?q=y' });
+  expectEqual(r.brand, 'Lagofast', 'brand');
+});
+check('www.lago-fast.com(无协议)→ Lagofast', () => {
+  const r = v({ title: 'Reduce ping', description: 'Visit www.lago-fast.com' });
+  expectEqual(r.brand, 'Lagofast', 'brand');
+});
+check('lagofast.com/path?query → Lagofast', () => {
+  const r = v({ title: 'Reduce ping', description: 'link: lagofast.com/path?query=1' });
+  expectEqual(r.brand, 'Lagofast', 'brand');
+});
+check('lagofastbooster.ru → Lagofast', () => {
+  const r = v({ title: 'Reduce ping', description: 'lagofastbooster.ru promo' });
+  expectEqual(r.brand, 'Lagofast', 'brand');
+});
+check('typosquat my-lago-fast.xyz 误报被限:不判投放,留 AI 兜底', () => {
+  // bare 'lago-fast' 子串会命中关键词,但无真实域名/promo → 只能 organic_mention + needsAI,绝不进 Layer3
+  const r = v({ title: 'check out', description: 'visit my-lago-fast.xyz for settings' });
+  expectEqual(r.brand, 'Lagofast', 'brand(子串命中,可接受)');
+  assert.ok(r.placementType !== 'likely_sponsored' && r.placementType !== 'confirmed_paid_placement',
+    `typosquat 不得判投放,实际=${r.placementType}`);
+  assert.strictEqual(r.needsAI, true, 'typosquat 应留 AI 复核');
 });
 check('纯 LagZapper 不被 Lagofast 抢归因', () => {
   const r = v({ title: 'LagZapper review', description: 'https://www.lagzapper.com/refer/123 code ZAP10' });
@@ -73,6 +105,36 @@ check('buildClassificationPrompt 枚举含全部品牌 + Lagofast', () => {
   }
   assert.ok(p.includes('LagoFast'), 'prompt 缺 LagoFast 示例');
   assert.ok(p.includes('matchedBrand'), 'prompt 缺 matchedBrand 规则提示');
+});
+
+console.log('== 全局 query(Discovery 专项)==');
+const makeQ = (o: Partial<{ brandName: string; queryText: string; queryType: string; targetLanguage: string; targetMarket: string; global: boolean }>) => ({
+  brandName: o.brandName || 'Lagofast', queryText: o.queryText || 'LagoFast',
+  queryType: o.queryType as any || 'branded', targetLanguage: o.targetLanguage, targetMarket: o.targetMarket, global: o.global,
+});
+check('全局 query 不带 regionCode/relevanceLanguage', () => {
+  const params = buildSearchParams(makeQ({ global: true }), '2026-06-01T00:00:00Z', undefined, 50, '', 'KEY');
+  expectEqual(params.regionCode, undefined, 'regionCode 应为空');
+  expectEqual(params.relevanceLanguage, undefined, 'relevanceLanguage 应为空');
+  expectEqual(params.q, 'LagoFast', 'q');
+});
+check('非全局 query 保留 regionCode/relevanceLanguage', () => {
+  const params = buildSearchParams(makeQ({ targetLanguage: 'ru', targetMarket: 'RU' }), '2026-06-01T00:00:00Z', undefined, 50, '', 'KEY');
+  expectEqual(params.regionCode, 'RU', 'regionCode');
+  expectEqual(params.relevanceLanguage, 'ru', 'relevanceLanguage');
+});
+check('NORMAL_QUERIES 含 4 条 Lagofast 全局 query', () => {
+  const lf = getActiveQueries().filter(q => q.brandName === 'Lagofast');
+  expectEqual(lf.length, 4, 'Lagofast query 数');
+  for (const q of lf) {
+    assert.strictEqual(q.global, true, `query ${q.queryText} 应为 global`);
+    assert.strictEqual(q.targetLanguage, undefined, `${q.queryText} 不应有 targetLanguage`);
+    assert.strictEqual(q.targetMarket, undefined, `${q.queryText} 不应有 targetMarket`);
+  }
+  const texts = lf.map(q => q.queryText);
+  for (const want of ['LagoFast', '"Lago Fast"', 'lagofast.com', 'lago-fast.com']) {
+    assert.ok(texts.includes(want), `缺 query: ${want}`);
+  }
 });
 
 console.log(`\n${passed} passed, ${failed.length} failed`);

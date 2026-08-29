@@ -332,7 +332,7 @@ export async function runDiscoveryPipeline(options?: {
       }
       // RU/PT 市场 query 优先（用户 2026-08-16：LagZapper 俄区 90 天 100+ 投放，优先补齐语言缺口），
       // 同市场内按时间从旧到新
-      const isRupt = (t: string) => t === 'ru' || t === 'pt';
+      const isRupt = (t: string | undefined) => t === 'ru' || t === 'pt'; // undefined=全局 query,排最后
       toDo.sort((a, b) => {
         const ar = isRupt(a.q.targetLanguage) ? 0 : 1;
         const br = isRupt(b.q.targetLanguage) ? 0 : 1;
@@ -482,17 +482,19 @@ export async function runDiscoveryPipeline(options?: {
         tags: v.tags, category_id: v.categoryId,
         has_paid_placement_tag: v.hasPaidPlacementTag,
         view_count: v.viewCount, like_count: v.likeCount, comment_count: v.commentCount,
-        workflow_status: 'discovered',
         brand_id: null,
         performance_stage: performanceStageFor(v.publishedAt),
         last_updated_at: new Date().toISOString(),
       };
       if (!isExisting) {
-        // 新行：写入归因 + first_seen_at
+        // 新行：写入归因 + first_seen_at + 初始 workflow
         payload.discovery_method = (v as any).discoveryMethod || 'keyword_search';
         payload.first_seen_at = new Date().toISOString();
+        payload.workflow_status = 'discovered';
       }
-      // 已存在行：不写 discovery_method/first_seen_at → merge-duplicates 只更新提供的列，归因保留
+      // 已存在行：不写 discovery_method/first_seen_at/workflow_status → merge-duplicates 只更新
+      // 提供的列，归因保留。2026-08-29：workflow_status 移入新行分支——否则已分类视频被重命中时
+      // 会被重置回 discovered 再重判，覆盖原 classification（Lagofast backfill 断点续跑重扫窗口时会触发）。
 
       const { error } = await db.from('youtube_competitor_videos').upsert(payload, { onConflict: 'video_id' });
 

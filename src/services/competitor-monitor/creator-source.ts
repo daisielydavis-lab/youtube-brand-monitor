@@ -34,7 +34,7 @@ export const SOURCE_LABEL: Record<CreatorSource, string> = {
 };
 
 const METHOD_TO_SOURCE: Record<string, CreatorSource> = {
-  keyword_search: 'search', domain_search: 'search', regional_query: 'search', paid_placement_tag: 'search',
+  keyword_search: 'search', domain_search: 'search', regional_query: 'search', global_brand_search: 'search', paid_placement_tag: 'search',
   channel_scan: 'watchlist',
 };
 

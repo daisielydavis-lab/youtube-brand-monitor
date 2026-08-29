@@ -36,7 +36,7 @@ export interface YouTubeVideoResult {
   hasPaidPlacementTag: boolean;
   /** The query that discovered this video */
   discoveryQuery?: string;
-  discoveryMethod: 'keyword_search' | 'paid_placement_tag' | 'domain_search';
+  discoveryMethod: 'keyword_search' | 'paid_placement_tag' | 'domain_search' | 'global_brand_search';
 }
 
 export interface YouTubeChannelResult {
@@ -102,19 +102,7 @@ export async function searchVideosPaged(
     // 页间节流 250ms：RU/PT 密集窗口递归拆半时防 YouTube QPS 限速（坑 #23：rateLimitExceeded 被误判为 quota 熔断）
     await sleep(250);
     try {
-      const params: Record<string, string | number> = {
-        part: 'snippet',
-        q: query.queryText,
-        type: 'video',
-        maxResults: maxResultsPerPage,
-        order: 'date',
-        publishedAfter,
-        regionCode: query.targetMarket,
-        relevanceLanguage: query.targetLanguage,
-        key: API_KEY,
-      };
-      if (publishedBefore) params.publishedBefore = publishedBefore;
-      if (pageToken) params.pageToken = pageToken;
+      const params = buildSearchParams(query, publishedAfter, publishedBefore, maxResultsPerPage, pageToken || '', API_KEY);
 
       const { data } = await axios.get(`${YT_BASE}/search`, { params, timeout: 15000 });
       pagesUsed++;
@@ -152,11 +140,41 @@ export async function searchVideosPaged(
   if (allVideoIds.length) {
     const videos = await getVideosByIds(allVideoIds);
     // 2026-08-24：domain query（lagzapper.com）→ domain_search，其余 → keyword_search。
+    // 2026-08-29：global query（LagoFast 等全局品牌/域名搜索）→ global_brand_search。
     // queryType 只做归因，不改变搜索行为。
-    const discoveryMethod: YouTubeVideoResult['discoveryMethod'] = query.queryType === 'domain' ? 'domain_search' : 'keyword_search';
+    const discoveryMethod: YouTubeVideoResult['discoveryMethod'] =
+      query.queryType === 'domain' ? 'domain_search'
+      : query.global ? 'global_brand_search'
+      : 'keyword_search';
     out.push(...videos.map(v => ({ ...v, discoveryQuery: query.queryText, discoveryMethod })));
   }
   return { videos: out, pagesUsed, hadMore };
+}
+
+/**
+ * 构建 search.list 参数（纯函数，供回归测试验证全局 query 不带 regionCode/relevanceLanguage）。
+ * global=true → 跳过 regionCode/relevanceLanguage（全局召回，不约束观看区域/语言——Lagofast Discovery 专项）。
+ * 非 global → targetMarket/targetLanguage 有值才带上。
+ */
+export function buildSearchParams(
+  query: BrandQuery,
+  publishedAfter: string,
+  publishedBefore: string | undefined,
+  maxResultsPerPage: number,
+  pageToken: string,
+  apiKey: string,
+): Record<string, string | number> {
+  const params: Record<string, string | number> = {
+    part: 'snippet', q: query.queryText, type: 'video', maxResults: maxResultsPerPage,
+    order: 'date', publishedAfter, key: apiKey,
+  };
+  if (!query.global) {
+    if (query.targetMarket) params.regionCode = query.targetMarket;
+    if (query.targetLanguage) params.relevanceLanguage = query.targetLanguage;
+  }
+  if (publishedBefore) params.publishedBefore = publishedBefore;
+  if (pageToken) params.pageToken = pageToken;
+  return params;
 }
 
 /** Search for videos matching a query, with incremental date filtering（单页兼容入口） */

@@ -16,8 +16,10 @@ export interface BrandQuery {
   brandName: string;
   queryText: string;
   queryType: 'branded' | 'sponsored' | 'domain';
-  targetLanguage: string;
-  targetMarket: string;
+  targetLanguage?: string;
+  targetMarket?: string;
+  /** true = 全局 query：search.list 不带 regionCode/relevanceLanguage（2026-08-29 Lagofast Discovery 专项） */
+  global?: boolean;
 }
 
 export const BRANDS: BrandConfig[] = [
@@ -82,6 +84,16 @@ export const NORMAL_QUERIES: BrandQuery[] = [
   { brandName: 'GearUP', queryText: 'GearUP | GearUP เกม', queryType: 'branded', targetLanguage: 'th', targetMarket: 'TH' },
   { brandName: 'GearUP', queryText: 'GearUP | GearUP tăng tốc', queryType: 'sponsored', targetLanguage: 'vi', targetMarket: 'VI' },
   { brandName: 'GearUP', queryText: 'GearUP | GearUP booster', queryType: 'branded', targetLanguage: 'ms', targetMarket: 'MY' },
+  // ——— Lagofast 全局（2026-08-29 Lagofast Discovery 专项）———
+  // 审计确认:NORMAL_QUERIES 此前 0 条 Lagofast query，90 天 Layer3 只有 11 条，
+  // 信号视频 91% 靠 watchlist channel_scan。probe(4 条全局 query, 52 search calls)发现
+  // 726 条库外候选 / 292 个新 creator，其中 LagoFast 品牌 query 9/13 窗口饱和(真实量 1000+)。
+  // global=true → 不带 regionCode/relevanceLanguage，全局召回。lagofast.com 与 lago-fast.com
+  // 均裸域(不写 www.——search 子串匹配，www. 前缀的 URL 必含裸域，同 lagzapper.com 注释)。
+  { brandName: 'Lagofast', queryText: 'LagoFast', queryType: 'branded', global: true },
+  { brandName: 'Lagofast', queryText: '"Lago Fast"', queryType: 'branded', global: true },
+  { brandName: 'Lagofast', queryText: 'lagofast.com', queryType: 'domain', global: true },
+  { brandName: 'Lagofast', queryText: 'lago-fast.com', queryType: 'domain', global: true },
 ];
 
 /**
