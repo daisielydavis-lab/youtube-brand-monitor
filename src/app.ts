@@ -461,7 +461,8 @@ app.get('/api/languages', async (req: any, res: any) => {
     const conf = req.query.conf as string | undefined;
     const lang = req.query.lang as string | undefined;
     const data = await queryDashboardData(rangeDays, brand, conf, lang);
-    const placements: any[] = data.hasData ? ((data as any).recentVideos || []) : [];
+    // 与看板下拉同口径: 用 scope 减 lang 维度 (brand+time+conf), 不自筛。
+    const placements: any[] = data.hasData ? ((data as any).languageScopeVideos || (data as any).recentVideos || []) : [];
     res.json(computeLanguageOptions(placements));
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
@@ -802,7 +803,7 @@ async function queryDashboardData(rangeDays: number, brandFilter?: string, confF
   }
 
   if (!videos || !videos.length) {
-    return { hasData: false as const, kpis: {} as any, brands: [], games: [], themes: [], creators: [], recentVideos: [], scanStatus: {} as any };
+    return { hasData: false as const, kpis: {} as any, brands: [], games: [], themes: [], creators: [], recentVideos: [], languageScopeVideos: [], scanStatus: {} as any };
   }
 
   // ── 置信度过滤 (低置信度视图 ③): 先于 Layer 3 聚合生效, 贯穿全部业务页 ──
@@ -810,7 +811,7 @@ async function queryDashboardData(rangeDays: number, brandFilter?: string, confF
     const before = videos.length;
     videos = videos.filter(v => matchesConfidence(v, confFilter));
     if (!videos.length) {
-      return { hasData: false as const, kpis: {} as any, brands: [], games: [], themes: [], creators: [], recentVideos: [], scanStatus: {} as any };
+      return { hasData: false as const, kpis: {} as any, brands: [], games: [], themes: [], creators: [], recentVideos: [], languageScopeVideos: [], scanStatus: {} as any };
     }
     console.log(`[Dashboard] 置信度过滤 ${confFilter}: ${before} → ${videos.length}`);
   }
@@ -831,6 +832,10 @@ async function queryDashboardData(rangeDays: number, brandFilter?: string, confF
   if (brandFilter && brandFilter !== 'all') {
     competitorPlacements = competitorPlacements.filter(v => resolveBrand(v) === brandFilter);
   }
+  // 语言下拉 = faceted filter: option/count 必须排除自身 lang 维度 (保留 brand+time+conf)。
+  // 若用 lang 过滤后的集计算, 选 lang=en 后下拉只剩 en, 无法直接切换。
+  // 页面数据仍用完整 scope (brand+lang+time+conf); 这里只快照给语言下拉算 options/counts。
+  const languageScopeVideos = competitorPlacements.slice();
   if (langFilter && langFilter !== 'all') {
     competitorPlacements = competitorPlacements.filter(v => langMatches(v, langFilter));
   }
@@ -954,6 +959,7 @@ async function queryDashboardData(rangeDays: number, brandFilter?: string, confF
     topThemes,
     topCreators: [] as any[],
     campaignClusters: scopeClusters.campaigns, // Scope 内运行时聚合的项目 (Overview + Campaigns 页共用)
+    languageScopeVideos, // 语言下拉计数源 = scope 减 lang 维度 (facated filter, 不自筛)
     recentVideos: competitorPlacements.map(toVideoRow), // 全量 — 前端分页加载更多
     allRecentVideos: videos.slice(0, 30).map(toVideoRow),            // "All Discovered" toggle
     unresolvedVideos: unresolvedCandidates.map(toVideoRow), // 全量 — 前端分页加载更多
@@ -1000,11 +1006,13 @@ app.get('/', async (_req, res) => {
       range: /^\d+$/.test(rawRange) ? rawRange + 'd' : rawRange,
       brand: brandFilter || 'all',
       lang: langFilter || 'all',
+      conf: confFilter || 'all', // 置信度下拉选中态 (P1: 之前漏传, ?conf=high 不持久)
     };
-    // 语言下拉数量 = 当前 scope (brand+lang+time+conf) 内 confirmed/likely placements
-    // 的语言分布 — 与看板主体同一数据集, 不混入 discovered/pending/organic 全库。
+    // 语言下拉 = faceted filter: option/count 用「scope 减 lang 维度」的 placements 语言分布
+    // (brand+time+conf), 不自筛 — 否则选 lang=en 后下拉只剩 en 无法切换。
+    // 不混入 discovered/pending/organic 全库。
     const marketOptions = await getMarketOptions(getSupabase());
-    const languageOptions = computeLanguageOptions((data as any).recentVideos || []);
+    const languageOptions = computeLanguageOptions((data as any).languageScopeVideos || (data as any).recentVideos || []);
     const html = renderDashboard({
       hasData: data.hasData,
       scanStatus: data.scanStatus,
