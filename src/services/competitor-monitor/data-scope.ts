@@ -46,9 +46,14 @@ export function resolveGame(v: any): string {
 }
 
 export function resolveMarket(v: any): string {
-  return v?.classification_raw?.rule?.market
+  // P1（2026-08-29）：顶层 market 列是权威值（规则/AI 写回 + backfill 统一落列）。
+  // 其次 classification_raw.market（AI 写回的 inferMarket 结果，含 source/evidence）。
+  // 最后兜底 rule/ai 原始字段。旧行在 backfill 前可能是旧 detectLanguage 的 US ——
+  // 但 backfill 后统一纠正，这里顺序不会让 raw ai.market 抢先。
+  return v?.market
+    || v?.classification_raw?.market?.market
+    || v?.classification_raw?.rule?.market
     || v?.classification_raw?.ai?.market
-    || v?.market
     || 'Unknown';
 }
 
@@ -74,6 +79,16 @@ export function marketMatches(v: { market?: string | null }, marketFilter?: stri
   if (!marketFilter || marketFilter === 'all') return true;
   if (marketFilter === '__none__') return !v.market;
   return (v.market || '').split('|').map(s => s.trim()).indexOf(marketFilter) !== -1;
+}
+
+/**
+ * Language filter matching (P1, 2026-08-29) — 独立语言筛选维度。
+ * '__none__' = 语言未识别 (language 列为空)。
+ */
+export function langMatches(v: { language?: string | null }, langFilter?: string | null): boolean {
+  if (!langFilter || langFilter === 'all') return true;
+  if (langFilter === '__none__') return !v.language;
+  return (v.language || '') === langFilter;
 }
 
 export function needsAIVerification(v: any): boolean {

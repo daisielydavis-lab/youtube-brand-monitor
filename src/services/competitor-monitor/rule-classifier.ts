@@ -9,6 +9,9 @@
  */
 
 import { evaluateIndustryGate } from './industry-gate';
+import { detectLanguage, inferMarket, type MarketContext, type MarketSource } from './market-inference';
+// detectLanguage 已迁至 market-inference.ts（P1：英文不再默认 US），此处重导出保持调用兼容。
+export { detectLanguage };
 
 // ── Brand detection ──
 
@@ -168,42 +171,11 @@ function detectTopicCategory(title: string, description: string): string {
   return 'game_integration';
 }
 
-// ── Language detection ──
-
-/**
- * 乌克兰语高信号词（俄语中不出现，用 "и" 同形字变位时兜底）。
- * 注意：JS 的 \b 是 ASCII 语义，对西里尔文本无效 —— 用子串匹配，
- * 且只收俄语绝不含的子串（如 обще 含 "ще" 会误伤，故不收入）。
- */
-const UA_WORD_HINTS = /(насолод|погравши|пограю|вже|треба|найкращ|перемог|українськ|спробуй|увімкни|вмикай|дивись|дивимось|знайдеш|зможеш|чекай|перемагай|гравц)/i;
-
-export function detectLanguage(title: string, description: string): { language: string; market: string } {
-  const combined = `${title} ${description}`;
-  // Georgian (mixed titles may also contain Cyrillic — check first)
-  if (/[ა-ჰ]/.test(combined)) return { language: 'ka', market: 'GE' };
-  // Belarusian (ў)
-  if (/[ўЎ]/.test(combined)) return { language: 'be', market: 'BY' };
-  // Ukrainian: і/ї/є/ґ (not used in Russian) or high-signal words (и-form conjugations)
-  if (/[іїєґІЇЄҐ]/.test(combined) || UA_WORD_HINTS.test(combined)) return { language: 'uk', market: 'UA' };
-  // Cyrillic → Russian
-  if (/[а-яА-ЯёЁ]/.test(combined)) return { language: 'ru', market: 'RU' };
-  // Portuguese
-  if (/\b(como|para|mais|melhor|muito|jogar|jogo|jogos|funciona|vale|pena|cupom|desconto|você|você|não|uma|pra|pq|tá)\b/i.test(combined)) {
-    return { language: 'pt', market: 'BR' };
-  }
-  // Spanish
-  if (/\b(como|para|más|mejor|mucho|jugar|juego|funciona|vale|pena|código|descuento|éste|aquí)\b/i.test(combined)) {
-    return { language: 'es', market: 'LATAM' };
-  }
-  // Korean
-  if (/[가-힯]/.test(combined)) return { language: 'ko', market: 'KR' };
-  // Japanese
-  if (/[぀-ゟ゠-ヿ]/.test(combined)) return { language: 'ja', market: 'JP' };
-  // Chinese
-  if (/[一-鿿]/.test(combined)) return { language: 'zh', market: 'CN' };
-
-  return { language: 'en', market: 'US' };
-}
+// ── Language & market ──
+// detectLanguage（含 th/vi/id/ms/tr 扩展）与 inferMarket 优先级链均在 market-inference.ts。
+// P1 原则：英文 ≠ 美国 —— detectLanguage 的 market 字段已对 en 返回 null；
+// 正式 target-market 判定统一走 inferMarket（manual → channel_country → explicit_localization
+// → language → creator_history → ai_inference → discovery_hint → unknown）。
 
 // ── Main classification interface ──
 
@@ -219,7 +191,10 @@ export interface RuleClassification {
   contentCategory: string;       // dedicated_review | integrated_placement | shorts | live_replay | etc.
   topicCategory: string;         // reduce_ping | promo_code | game_integration | etc.
   language: string;
-  market: string;
+  market: string | null;         // null = 未识别（不强猜）
+  marketConfidence: number | null;  // 0-100；unknown → null
+  marketSource: MarketSource;       // market 判定来源
+  marketEvidence: string[];         // 证据数组
   needsAI: boolean;              // true if rules couldn't confidently classify → escalate to AI
   aiPriority: number;            // 0-10, higher = more urgent for AI
   aiReason: string;              // why it needs AI (or empty if rules were sufficient)
@@ -240,6 +215,8 @@ export function classifyVideo(input: {
   viewCount: number;
   publishedAt: string;
   hasPaidPlacementTag?: boolean;
+  channelId?: string;
+  marketContext?: MarketContext | null;
 }): RuleClassification {
   const t = input.title.toLowerCase();
   const d = (input.description || '').toLowerCase();
@@ -376,7 +353,12 @@ export function classifyVideo(input: {
   const topicCategory = detectTopicCategory(input.title, input.description);
 
   // ── 6. Language & market ──
-  const { language, market } = detectLanguage(input.title, input.description);
+  // P1：语言只写 language 列；target-market 统一走 inferMarket 优先级链（英文不强猜 US）。
+  const { language } = detectLanguage(input.title, input.description);
+  const marketInf = inferMarket({
+    title: input.title, description: input.description,
+    marketContext: input.marketContext || null,
+  });
 
   // ── 7. AI escalation logic (v2 — cross-signal boosting) ──
   let needsAI = false;
@@ -457,7 +439,10 @@ export function classifyVideo(input: {
     contentCategory,
     topicCategory,
     language,
-    market,
+    market: marketInf.market,
+    marketConfidence: marketInf.confidence,
+    marketSource: marketInf.source,
+    marketEvidence: marketInf.evidence,
     needsAI,
     aiPriority: Math.min(aiPriority, 10),
     aiReason,
@@ -476,6 +461,7 @@ export function batchClassify(videos: Array<{
   videoId: string; title: string; description: string; tags: string[];
   channelName: string; isShort: boolean; viewCount: number;
   publishedAt: string; hasPaidPlacementTag?: boolean;
+  channelId?: string; marketContext?: MarketContext | null;
 }>): { classified: RuleClassification[]; aiQueue: RuleClassification[] } {
   const results = videos.map(v => classifyVideo(v));
   return {

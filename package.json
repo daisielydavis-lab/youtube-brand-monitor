@@ -27,7 +27,9 @@
     "test:lagofast": "ts-node src/regression-lagofast.ts",
     "brand:counts": "ts-node src/cli-brand-counts.ts",
     "crossover:multibrand": "ts-node src/cli-multibrand-crossover.ts",
-    "test:ai": "ts-node src/services/ai/deepseek-test.ts"
+    "test:ai": "ts-node src/services/ai/deepseek-test.ts",
+    "test:market": "ts-node src/regression-market.ts",
+    "market:backfill": "ts-node src/cli-market-backfill.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.110.7",

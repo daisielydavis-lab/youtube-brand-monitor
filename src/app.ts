@@ -15,7 +15,8 @@ import { generateDailyReport, generateWeeklyReport, generateQuarterlyReport } fr
 import { getCreatorsFromVideos } from './services/competitor-monitor/creator-profiler';
 import { creatorSourceBuckets } from './services/competitor-monitor/creator-source';
 import { analyzePendingComments } from './services/competitor-monitor/topic-classifier';
-import { marketMatches, resolveBrand, resolveGame, resolveMarket, COMPETITOR_BRANDS, filterCompetitorPlacements, filterUnresolvedCandidates, needsAIVerification, isCompetitorPlacement, matchesConfidence } from './services/competitor-monitor/data-scope';
+import { marketMatches, langMatches, resolveBrand, resolveGame, resolveMarket, COMPETITOR_BRANDS, filterCompetitorPlacements, filterUnresolvedCandidates, needsAIVerification, isCompetitorPlacement, matchesConfidence } from './services/competitor-monitor/data-scope';
+import { MARKET_LABELS, LANGUAGE_LABELS } from './services/competitor-monitor/market-inference';
 import { getSupabase } from './db/supabase';
 import { renderDashboard } from './ui/dashboard';
 
@@ -72,7 +73,7 @@ app.get('/status', async (_req, res) => { res.json(await getMonitorStatus()); })
 // ── Campaigns (Stage ⑧: 运行时聚合 — Scope 内 placements 分簇, 不读历史表) ──
 app.get('/api/campaigns', async (req, res) => {
   const rangeDays = parseInt((req.query.range as string) || '7', 10);
-  const data = await queryDashboardData(rangeDays, req.query.brand as string, req.query.market as string, req.query.conf as string);
+  const data = await queryDashboardData(rangeDays, req.query.brand as string, req.query.market as string, req.query.conf as string, req.query.lang as string);
   res.json(data.hasData ? ((data as any).campaignClusters || []) : []);
 });
 
@@ -84,6 +85,7 @@ app.get('/api/creators', async (req, res) => {
     rangeDays,
     brand: req.query.brand as string,
     market: req.query.market as string,
+    language: req.query.lang as string,
     confidence: req.query.conf as string,
     competitorOnly: !showAll,
   }));
@@ -175,15 +177,16 @@ app.get('/api/comments', async (req, res) => {
   const rangeDays = parseInt((req.query.range as string) || '7', 10);
   const brandFilter = req.query.brand as string | undefined;
   const marketFilter = req.query.market as string | undefined;
+  const langFilter = req.query.lang as string | undefined;
   const since = new Date(Date.now() - rangeDays * 86400000).toISOString();
 
   // Get competitor placement video IDs (paged — 90d 窗口可超 1000 条),
-  // post-filtered by Scope (isCompetitorPlacement + brand + market)
+  // post-filtered by Scope (isCompetitorPlacement + brand + market + lang)
   const cpVids: any[] = [];
   for (let from = 0; from < 5000; from += 999) {
     const { data } = await db.from('youtube_competitor_videos')
       // 必须含 isCompetitorPlacement 依赖的全部字段 (placement_type/has_paid_placement_tag)
-      .select('video_id, classification_raw, market, placement_type, has_paid_placement_tag, brand_confidence')
+      .select('video_id, classification_raw, market, language, placement_type, has_paid_placement_tag, brand_confidence')
       .in('placement_type', ['confirmed_paid_placement', 'likely_sponsored'])
       .gte('published_at', since)
       .order('video_id', { ascending: true })
@@ -197,6 +200,7 @@ app.get('/api/comments', async (req, res) => {
     .filter((v: any) => isCompetitorPlacement(v))
     .filter((v: any) => !brandFilter || brandFilter === 'all' || resolveBrand(v) === brandFilter)
     .filter((v: any) => marketMatches(v, marketFilter))
+    .filter((v: any) => langMatches(v, langFilter))
     .filter((v: any) => matchesConfidence(v, confFilter))
     .map((v: any) => v.video_id);
 
@@ -206,12 +210,13 @@ app.get('/api/comments', async (req, res) => {
   let fallback = false;
   const fetchCandidateVids = async () => {
     const { data: candVids } = await db.from('youtube_competitor_videos')
-      .select('video_id, market')
+      .select('video_id, market, language')
       .eq('workflow_status', 'classified')
       .gte('published_at', since)
       .limit(200);
     return (candVids || [])
       .filter((v: any) => marketMatches(v, marketFilter))
+      .filter((v: any) => langMatches(v, langFilter))
       .map((v: any) => v.video_id);
   };
 
@@ -255,6 +260,7 @@ app.get('/api/comments/summary', async (req, res) => {
   const rangeDays = parseInt((req.query.range as string) || '7', 10);
   const brandFilter = req.query.brand as string | undefined;
   const marketFilter = req.query.market as string | undefined;
+  const langFilter = req.query.lang as string | undefined;
   const since = new Date(Date.now() - rangeDays * 86400000).toISOString();
 
   // Get competitor placement video IDs (paged), post-filtered by Scope.
@@ -264,7 +270,7 @@ app.get('/api/comments/summary', async (req, res) => {
   for (let from = 0; from < 5000; from += 999) {
     const { data } = await db.from('youtube_competitor_videos')
       // 必须含 isCompetitorPlacement 依赖的全部字段 (placement_type/has_paid_placement_tag)
-      .select('video_id, classification_raw, market, placement_type, has_paid_placement_tag, brand_confidence')
+      .select('video_id, classification_raw, market, language, placement_type, has_paid_placement_tag, brand_confidence')
       .in('placement_type', ['confirmed_paid_placement', 'likely_sponsored'])
       .gte('published_at', since)
       .order('video_id', { ascending: true })
@@ -278,6 +284,7 @@ app.get('/api/comments/summary', async (req, res) => {
     .filter(isCompetitorPlacement)
     .filter((v: any) => !brandFilter || brandFilter === 'all' || resolveBrand(v) === brandFilter)
     .filter((v: any) => marketMatches(v, marketFilter))
+    .filter((v: any) => langMatches(v, langFilter))
     .filter((v: any) => matchesConfidence(v, confFilter))
     .map((v: any) => v.video_id);
   // Stage ⑧: placementTotal 始终 = Current Scope 内投放视频数。
@@ -290,12 +297,13 @@ app.get('/api/comments/summary', async (req, res) => {
   let fallback = false;
   const fetchCandidateVids = async () => {
     const { data: candVids } = await db.from('youtube_competitor_videos')
-      .select('video_id, market')
+      .select('video_id, market, language')
       .eq('workflow_status', 'classified')
       .gte('published_at', since)
       .limit(200);
     return (candVids || [])
       .filter((v: any) => marketMatches(v, marketFilter))
+      .filter((v: any) => langMatches(v, langFilter))
       .map((v: any) => v.video_id);
   };
 
@@ -379,41 +387,85 @@ app.get('/api/comments/summary', async (req, res) => {
 });
 
 // ── System ──
-// ── Markets 列表（顶部市场筛选器动态数据源）──
+// ── Markets / Languages 列表（顶部筛选器动态数据源, P1 2026-08-29）──
+// 标签统一来自 market-inference 的 MARKET_LABELS（RU = "RU/CIS(俄语区)"）。
+// 60s 缓存：每个看板页只查一次，避免每次 SSR 重复全表扫。
+let _mktCache: { at: number; list: any[] } | null = null;
+async function getMarketOptions(db: any): Promise<any[]> {
+  if (_mktCache && Date.now() - _mktCache.at < 60000) return _mktCache.list;
+  // PostgREST 默认单查询上限 1000 行（坑 #1）——必须分页拉全量，否则计数总和恒为 1000、
+  // "未识别"被截断人为放大（2026-08-16 修复：此前 US+BR+RU+...+未识别恰好=1000）
+  const rows: any[] = [];
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await db
+      .from('youtube_competitor_videos')
+      .select('market')
+      .order('video_id', { ascending: true })
+      .range(from, from + 999);
+    if (error) throw error;
+    if (!data?.length) break;
+    rows.push(...data);
+    if (data.length < 1000) break;
+  }
+  const counts: Record<string, number> = {};
+  let none = 0;
+  for (const v of rows) {
+    const m = (v.market as string) || '';
+    if (!m) { none++; continue; }
+    for (const part of m.split('|')) {
+      const k = part.trim();
+      if (k && k !== 'Unknown') counts[k] = (counts[k] || 0) + 1;
+    }
+  }
+  const list = Object.entries(counts)
+    .map(([code, count]) => ({ code, label: MARKET_LABELS[code] || code, count }))
+    .sort((a, b) => b.count - a.count);
+  if (none > 0) list.push({ code: '__none__', label: '未识别', count: none });
+  _mktCache = { at: Date.now(), list };
+  return list;
+}
+let _langCache: { at: number; list: any[] } | null = null;
+async function getLanguageOptions(db: any): Promise<any[]> {
+  if (_langCache && Date.now() - _langCache.at < 60000) return _langCache.list;
+  const rows: any[] = [];
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await db
+      .from('youtube_competitor_videos')
+      .select('language')
+      .order('video_id', { ascending: true })
+      .range(from, from + 999);
+    if (error) throw error;
+    if (!data?.length) break;
+    rows.push(...data);
+    if (data.length < 1000) break;
+  }
+  const counts: Record<string, number> = {};
+  let none = 0;
+  for (const v of rows) {
+    const l = (v.language as string) || '';
+    if (!l) { none++; continue; }
+    counts[l] = (counts[l] || 0) + 1;
+  }
+  const list = Object.entries(counts)
+    .map(([code, count]) => ({ code, label: LANGUAGE_LABELS[code] || code, count }))
+    .sort((a, b) => b.count - a.count);
+  if (none > 0) list.push({ code: '__none__', label: '未识别', count: none });
+  _langCache = { at: Date.now(), list };
+  return list;
+}
+
 app.get('/api/markets', async (_req: any, res: any) => {
   try {
-    const db = getSupabase();
-    // PostgREST 默认单查询上限 1000 行（坑 #1）——必须分页拉全量，否则计数总和恒为 1000、
-    // "未识别"被截断人为放大（2026-08-16 修复：此前 US+BR+RU+...+未识别恰好=1000）
-    const rows: any[] = [];
-    for (let from = 0; ; from += 1000) {
-      const { data, error } = await db
-        .from('youtube_competitor_videos')
-        .select('market')
-        .order('video_id', { ascending: true })
-        .range(from, from + 999);
-      if (error) throw error;
-      if (!data?.length) break;
-      rows.push(...data);
-      if (data.length < 1000) break;
-    }
-    const counts: Record<string, number> = {};
-    let none = 0;
-    for (const v of rows) {
-      const m = (v.market as string) || '';
-      if (!m) { none++; continue; }
-      for (const part of m.split('|')) {
-        const k = part.trim();
-        if (k && k !== 'Unknown') counts[k] = (counts[k] || 0) + 1;
-      }
-    }
-    const MKT_ZH: Record<string, string> = { US: '美国', RU: '俄罗斯', BR: '巴西', UA: '乌克兰', GE: '格鲁吉亚', CN: '中国', KR: '韩国', JP: '日本', LATAM: '拉美' };
-    const list = Object.entries(counts)
-      .map(([code, count]) => ({ code, label: MKT_ZH[code] || code, count }))
-      .sort((a, b) => b.count - a.count);
-    if (none > 0) list.push({ code: '__none__', label: '未识别', count: none });
+    const list = await getMarketOptions(getSupabase());
     // 注意：响应保持纯数组（前端 initMarkets() 依赖 list.length 直接迭代）
     res.json(list);
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+app.get('/api/languages', async (_req: any, res: any) => {
+  try {
+    res.json(await getLanguageOptions(getSupabase()));
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
   }
@@ -725,7 +777,8 @@ function clusterScopeCampaigns(placements: any[], rangeDays: number): { campaign
 
 // ── Shared dashboard query (used by both / and /api/dashboard) ──
 // 3-layer data model: all analytics derived from Layer 3 (Competitor Placements)
-async function queryDashboardData(rangeDays: number, brandFilter?: string, marketFilter?: string, confFilter?: string) {
+// P1 (2026-08-29): 增加 langFilter —— 独立语言筛选维度, 与 market 同属 Analytics 层。
+async function queryDashboardData(rangeDays: number, brandFilter?: string, marketFilter?: string, confFilter?: string, langFilter?: string) {
   const since = new Date(Date.now() - rangeDays * 86400000).toISOString();
   const db = getSupabase();
 
@@ -783,6 +836,9 @@ async function queryDashboardData(rangeDays: number, brandFilter?: string, marke
   }
   if (marketFilter && marketFilter !== 'all') {
     competitorPlacements = competitorPlacements.filter(v => marketMatches(v, marketFilter));
+  }
+  if (langFilter && langFilter !== 'all') {
+    competitorPlacements = competitorPlacements.filter(v => langMatches(v, langFilter));
   }
 
   // All discovered unique creators in window
@@ -887,7 +943,7 @@ async function queryDashboardData(rangeDays: number, brandFilter?: string, marke
   // ── Map DB video rows to dashboard VideoRow shape ──
   const toVideoRow = (v: any) => ({
     videoId: v.video_id, title: v.title, thumbnailUrl: v.thumbnail_url, channelName: v.channel_name,
-    brand: resolveBrand(v), game: resolveGame(v), market: v.market || '',
+    brand: resolveBrand(v), game: resolveGame(v), market: v.market || '', language: v.language || '',
     publishedAt: v.published_at, viewCount: v.view_count || 0,
     placementType: v.placement_type || 'unknown', sponsorConfidence: v.sponsor_confidence || 0,
     contentCategory: v.content_type || null,
@@ -925,7 +981,8 @@ app.get('/', async (_req, res) => {
     const brandFilter = _req.query.brand as string | undefined;
     const marketFilter = _req.query.market as string | undefined;
     const confFilter = _req.query.conf as string | undefined;
-    const data = await queryDashboardData(range, brandFilter, marketFilter, confFilter);
+    const langFilter = _req.query.lang as string | undefined;
+    const data = await queryDashboardData(range, brandFilter, marketFilter, confFilter, langFilter);
     console.log(`[Dashboard:${requestId}] Step1 videos done: hasData=${data.hasData}`);
 
     // Step 2: Campaigns — 运行时聚合 (queryDashboardData 内完成), 不读历史
@@ -950,7 +1007,12 @@ app.get('/', async (_req, res) => {
       range: /^\d+$/.test(rawRange) ? rawRange + 'd' : rawRange,
       brand: brandFilter || 'all',
       market: marketFilter || 'all',
+      lang: langFilter || 'all',
     };
+    const [marketOptions, languageOptions] = await Promise.all([
+      getMarketOptions(getSupabase()),
+      getLanguageOptions(getSupabase()),
+    ]);
     const html = renderDashboard({
       hasData: data.hasData,
       scanStatus: data.scanStatus,
@@ -963,7 +1025,7 @@ app.get('/', async (_req, res) => {
       allRecentVideos: ('allRecentVideos' in data ? data.allRecentVideos : []) || [],
       unresolvedVideos: ('unresolvedVideos' in data ? data.unresolvedVideos : []) || [],
       anomalies: [],
-    } as any, filter, campaigns, { ...status, creatorProfiles: [] });
+    } as any, filter, campaigns, { ...status, creatorProfiles: [] }, { marketOptions, languageOptions });
 
     console.log(`[Dashboard:${requestId}] Done: ${data.recentVideos.length} videos, HTML=${html.length}chars, totalMs: ${Date.now() - startedAt}`);
     res.type('html').send(html);
@@ -989,7 +1051,7 @@ app.get('/api/dashboard', async (req, res) => {
 
   try {
     const rangeDays = parseInt((req.query.range as string) || '7', 10);
-    const data = await queryDashboardData(rangeDays, req.query.brand as string, req.query.market as string);
+    const data = await queryDashboardData(rangeDays, req.query.brand as string, req.query.market as string, req.query.conf as string, req.query.lang as string);
 
     if (!data.hasData) {
       return res.json({ ok: true, hasData: false, kpis: {}, brands: [], games: [], themes: [], creators: [], recentVideos: [], scanStatus: {} });

@@ -19,6 +19,8 @@ import { batchClassify as ruleClassify, detectLanguage, type RuleClassification 
 import { evaluateIndustryGate } from './industry-gate';
 import { canonicalBrand } from './brand-normalization';
 import { COMPETITOR_BRANDS } from './data-scope';
+import { inferMarket, MARKET_LABELS, type MarketContext } from './market-inference';
+import { buildMarketContexts } from './market-context';
 
 // ── Types ──
 export interface ScanState {
@@ -101,6 +103,7 @@ export function buildClassificationPrompt(items: ClassificationPromptItem[]): st
   const brandList = COMPETITOR_BRANDS.join(', ');
   const brandEnum = COMPETITOR_BRANDS.map(b => `"${b}"`).join('|');
   const brandSlash = COMPETITOR_BRANDS.join('/');
+  const marketEnum = Object.keys(MARKET_LABELS).map(m => `"${m}"`).join('|');
   return `Classify these ${items.length} YouTube videos for game booster brand sponsorships (${brandList}).
 
 Return a JSON object: {"videos": [...]}
@@ -111,9 +114,15 @@ Each video object:
 - theme ("reduce_ping"|"promo_code"|"game_review"|"tutorial"|"comparison"|"new_launch"|"cross_region"|"other")
 - format ("dedicated"|"integrated"|"shorts"|"live")
 - reasonCodes (array of "brand_in_title"|"brand_link"|"promo_code"|"sponsored_tag"|"paid_tag"|"casual_mention"|"no_signal")
+- market (${marketEnum}|null), marketReason (string)
 
 Rules: confirmed=explicit #ad/sponsored/paid tag. likely=promo code+brand link+product focus. organic=casual mention. irrelevant=no brand signal.
 - Each item's "matchedBrand" is a rule-layer hint from brand keywords/domains in title/description. Treat it as strong evidence — confirm it, or correct it if the brand only appears as a comparison target (e.g. "ExitLag vs LagoFast" where only ExitLag carries a code/link).
+
+MARKET (MANDATORY — target AUDIENCE market, NOT video upload region / IP / query market):
+- market = the market this promo is aimed at. Only set it when there is LOCALIZATION evidence: a localized landing page path in the description URL (e.g. /pt-br/ /ru/ /zh-tw/ /tr/), a local currency, or local-language promo words (промокод→RU, cupom→BR, indirim→TR, 折扣碼→TW, etc.).
+- If the content is pure English with NO localization evidence → market=null. Do NOT guess "US" from English. English ≠ America.
+- marketReason = a short string stating the evidence (e.g. "landing url /pt-br/ + R$99"), or "" when market is null.
 
 INDUSTRY GATE (MANDATORY — non-gaming content can NEVER be a game booster placement):
 Game boosters (${brandSlash}) are ONLY advertised in gaming / esports / game-hardware / game-network content.
@@ -127,6 +136,7 @@ Videos: ${JSON.stringify(items.map(({ description, ...aiItem }) => aiItem))}`;
 // ── True batch AI via unified client ──
 export async function batchClassifyVideos(
   videos: Array<{ videoId: string; title: string; description: string; channelName: string; channelId: string; publishedAt: string; tags: string[]; hasPaidPlacementTag: boolean }>,
+  marketContexts?: Map<string, MarketContext>,
 ): Promise<{ classified: number; likely: number; errors: string[] }> {
   let classified = 0, likely = 0;
   const errors: string[] = [];
@@ -180,8 +190,16 @@ export async function batchClassifyVideos(
         // AI 写回必须补 market/language（2026-08-16 坑 #20）：此前 AI update
         // 不写顶层 market，且 classification_raw 整体覆盖丢掉 rule.market ——
         // normal scan Phase 5 的 aiQueue 视频不经过 rule 写回，顶层 market
-        // 永久 NULL（1124 条）。用与规则层同口径的语言检测兜底。
-        const { market: aiMarket, language: aiLanguage } = detectLanguage(vid.title, vid.description);
+        // 永久 NULL（1124 条）。P1：target-market 统一走 inferMarket 优先级链
+        // （channel_country > explicit_localization > language > creator_history >
+        // ai_inference > discovery_hint > unknown），英文不默认 US。language 只写
+        // 内容语言列，不参与 market 判定。
+        const aiMarketInf = inferMarket({
+          title: vid.title, description: vid.description,
+          marketContext: marketContexts?.get(vid.channelId) || null,
+          aiCandidate: item.market ? { market: item.market, confidence: item.confidence, evidence: item.marketReason ? [String(item.marketReason)] : [] } : null,
+        });
+        const aiLanguage = detectLanguage(vid.title, vid.description).language;
 
         await getSupabase().from('youtube_competitor_videos').update({
           placement_type: pt, sponsor_confidence: (item.confidence || 50) / 100,
@@ -190,10 +208,12 @@ export async function batchClassifyVideos(
           game_name: industryBlocked ? null : (item.game || null),
           topic_category: industryBlocked ? 'game_integration' : (item.theme || 'game_integration'),
           content_type: item.format || 'integrated_placement',
-          market: aiMarket, language: aiLanguage,
+          market: aiMarketInf.market, language: aiLanguage,
+          market_confidence: aiMarketInf.confidence, market_source: aiMarketInf.source, market_evidence: aiMarketInf.evidence,
           workflow_status: 'classified',
           classification_raw: {
             ai: industryBlocked ? { ...item, brand: null, placementType: 'organic_mention' } : item,
+            market: { market: aiMarketInf.market, confidence: aiMarketInf.confidence, source: aiMarketInf.source, evidence: aiMarketInf.evidence },
             industryGate: { blocked: industryBlocked, category: gate.category, blockedBy: gate.blockedBy, gamingSignals: gate.gamingSignals, nonGamingSignals: gate.nonGamingSignals },
             batchNum, classifiedAt: new Date().toISOString(),
           },
@@ -202,7 +222,7 @@ export async function batchClassifyVideos(
         // 用户 P0-2：AI 确认投放（confirmed/likely + 品牌）→ Creator 自动进品牌 Watchlist，
         // 以后靠 uploads playlist 监控该频道（不依赖标题再出现品牌词）
         if ((pt === 'confirmed_paid_placement' || pt === 'likely_sponsored') && finalBrand && vid.channelId) {
-          upsertWatchlistCreator(finalBrand, vid.channelId, vid.channelName, aiMarket, 'ai_confirmed').catch(() => {});
+          upsertWatchlistCreator(finalBrand, vid.channelId, vid.channelName, aiMarketInf.market ?? undefined, 'ai_confirmed').catch(() => {});
         }
         classified++;
       }
@@ -307,7 +327,7 @@ export async function runDiscoveryPipeline(options?: {
           scanState.searchQueriesSucceeded++;
           for (const r of res.videos) { if (!seen.has(r.videoId)) { seen.add(r.videoId); allVids.push(r); searchFrom++; } }
           console.log(`[Monitor] backfill "${q.queryText}" → ${res.videos.length} videos in ${res.searchCalls} search calls`);
-          await db.from('competitor_queries').upsert({ query_text: q.queryText, last_run_at: new Date().toISOString() }, { onConflict: 'query_text' });
+          await db.from('competitor_queries').upsert({ query_text: q.queryText, target_language: q.targetLanguage || 'en', target_market: q.targetMarket || 'US', last_run_at: new Date().toISOString() }, { onConflict: 'query_text' });
         } catch (err) {
           scanState.searchQueriesFailed++;
           if ((err as Error).message.startsWith('YT_QUOTA_EXHAUSTED')) { searchCircuitOpen = true; scanState.errorCode = 'SEARCH_QUOTA_EXHAUSTED'; }
@@ -392,7 +412,7 @@ export async function runDiscoveryPipeline(options?: {
       scanState.searchQueriesSucceeded = doneQueries.size;
       scanState.searchQueriesFailed = failedQueries.size;
       for (const q of queries) {
-        await db.from('competitor_queries').upsert({ query_text: q.queryText, last_run_at: new Date().toISOString() }, { onConflict: 'query_text' });
+        await db.from('competitor_queries').upsert({ query_text: q.queryText, target_language: q.targetLanguage || 'en', target_market: q.targetMarket || 'US', last_run_at: new Date().toISOString() }, { onConflict: 'query_text' });
       }
       console.log(`[Monitor] Backfill done: ${doneQueries.size}/${queries.length} queries 有完成窗口, 本次处理 ${toDo.length - winLeft}/${toDo.length} 窗口, ${searchCircuitOpen ? 'Search 熔断（剩余下次续跑）' : '预算未耗尽'}`);
     }
@@ -404,7 +424,7 @@ export async function runDiscoveryPipeline(options?: {
         trackSearch(res.pagesUsed);
         scanState.searchQueriesSucceeded++;
         for (const r of res.videos) { if (!seen.has(r.videoId)) { seen.add(r.videoId); allVids.push(r); searchFrom++; } }
-        await db.from('competitor_queries').upsert({ query_text: q.queryText, last_run_at: new Date().toISOString() }, { onConflict: 'query_text' });
+        await db.from('competitor_queries').upsert({ query_text: q.queryText, target_language: q.targetLanguage || 'en', target_market: q.targetMarket || 'US', last_run_at: new Date().toISOString() }, { onConflict: 'query_text' });
       } catch (err) {
         scanState.searchQueriesFailed++;
         if ((err as Error).message.startsWith('YT_QUOTA_EXHAUSTED')) { searchCircuitOpen = true; scanState.errorCode = 'SEARCH_QUOTA_EXHAUSTED'; }
@@ -569,11 +589,17 @@ export async function runDiscoveryPipeline(options?: {
   // ── Phase 4: Rule Classification (Layer 2) — 100% coverage, zero AI cost ──
   scanState.phase = 'rule_classifying';
   console.log(`[Monitor] Phase 4: Rule classifying ${actualCount} videos...`);
+  // P1：market 判定需要 channel country / creator 历史 / discovery hint 上下文（只查库，不重新 Search）
+  const mktCtx = await buildMarketContexts(db, scored.map(c => ({
+    channelId: c.video.channelId,
+    discoveryQueryText: (c.video as any).discoveryQuery || null,
+  })));
   const toClassify = scored.map(c => ({
     videoId: c.video.videoId, title: c.video.title, description: c.video.description,
     tags: c.video.tags, channelName: c.video.channelTitle, isShort: c.video.isShort,
     viewCount: c.video.viewCount, publishedAt: c.video.publishedAt,
     hasPaidPlacementTag: c.video.hasPaidPlacementTag,
+    channelId: c.video.channelId, marketContext: mktCtx.get(c.video.channelId) || null,
   }));
   const { classified: ruleDone, aiQueue } = ruleClassify(toClassify);
 
@@ -590,6 +616,7 @@ export async function runDiscoveryPipeline(options?: {
       content_type: r.contentCategory,
       language: r.language,
       market: r.market,
+      market_confidence: r.marketConfidence, market_source: r.marketSource, market_evidence: r.marketEvidence,
       // 'rule_classified' is rejected by the DB CHECK constraint — use
       // 'classified' (Layer 2 rule pass counts as classified; the needsAI
       // flag in classification_raw drives the AI queue, not workflow_status).
@@ -601,6 +628,7 @@ export async function runDiscoveryPipeline(options?: {
           placementType: r.placementType, sponsorSignals: r.sponsorSignals,
           contentCategory: r.contentCategory, topicCategory: r.topicCategory,
           language: r.language, market: r.market,
+          marketConfidence: r.marketConfidence, marketSource: r.marketSource, marketEvidence: r.marketEvidence,
           needsAI: false,
         },
         classifiedAt: new Date().toISOString(),
@@ -640,7 +668,7 @@ export async function runDiscoveryPipeline(options?: {
         tags: orig?.video.tags || [], hasPaidPlacementTag: orig?.video.hasPaidPlacementTag || false,
       };
     });
-    const aiResult = await batchClassifyVideos(aiInputs);
+    const aiResult = await batchClassifyVideos(aiInputs, mktCtx);
     scanState.errors.push(...aiResult.errors);
     scanState.classified += aiResult.classified;
     scanState.likelyPlacements += aiResult.likely;
@@ -730,10 +758,12 @@ export async function retryClassification(limit: number = 0): Promise<{ classifi
     scanState.discoveredCount = batch.length;
 
     // Step 1: Run rule classifier first
-    const { classified: ruleDone, aiQueue } = ruleClassify(batch.map(v => ({
+    const mktCtx = await buildMarketContexts(db, batch.map((v: any) => ({ channelId: v.channel_id, discoveryQueryId: v.discovery_query_id || null })));
+    const { classified: ruleDone, aiQueue } = ruleClassify(batch.map((v: any) => ({
       videoId: v.video_id, title: v.title, description: v.description || '',
       tags: v.tags || [], channelName: v.channel_name || '', isShort: v.is_short || false,
       viewCount: v.view_count || 0, publishedAt: v.published_at || '', hasPaidPlacementTag: v.has_paid_placement_tag || false,
+      channelId: v.channel_id, marketContext: mktCtx.get(v.channel_id) || null,
     })));
 
     // Update DB with rule classifications — INCLUDING needsAI videos. Writing
@@ -748,8 +778,9 @@ export async function retryClassification(limit: number = 0): Promise<{ classifi
         sponsor_confidence: r.brandConfidence,
         game_name: r.game || null, topic_category: r.topicCategory,
         content_type: r.contentCategory, language: r.language, market: r.market,
+        market_confidence: r.marketConfidence, market_source: r.marketSource, market_evidence: r.marketEvidence,
         workflow_status: 'classified',
-        classification_raw: { rule: { brand: r.brand, game: r.game, placementType: r.placementType, needsAI: r.needsAI, aiPriority: r.aiPriority, aiReason: r.aiReason }, classifiedAt: new Date().toISOString() },
+        classification_raw: { rule: { brand: r.brand, game: r.game, placementType: r.placementType, needsAI: r.needsAI, aiPriority: r.aiPriority, aiReason: r.aiReason, market: r.market, marketConfidence: r.marketConfidence, marketSource: r.marketSource, marketEvidence: r.marketEvidence }, classifiedAt: new Date().toISOString() },
         last_updated_at: new Date().toISOString(),
       }).eq('video_id', r.videoId);
     }
@@ -759,7 +790,7 @@ export async function retryClassification(limit: number = 0): Promise<{ classifi
       ? await batchClassifyVideos(aiQueue.map(r => {
           const orig = batch.find((v: any) => v.video_id === r.videoId);
           return { videoId: r.videoId, title: orig?.title || '', description: orig?.description || '', channelName: orig?.channel_name || '', channelId: orig?.channel_id || '', publishedAt: orig?.published_at || '', tags: orig?.tags || [], hasPaidPlacementTag: orig?.has_paid_placement_tag || false };
-        }))
+        }), mktCtx)
       : { classified: 0, likely: 0, errors: [] as string[] };
 
     totalClassified += ruleDone.length + result.classified;
