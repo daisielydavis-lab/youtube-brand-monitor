@@ -24,6 +24,7 @@
     "consistency": "ts-node src/cli-consistency.ts",
     "audit:discovery": "ts-node src/cli-discovery-audit.ts",
     "recall:diag": "ts-node src/cli-recall-diagnostics.ts",
+    "test:lagofast": "ts-node src/regression-lagofast.ts",
     "brand:counts": "ts-node src/cli-brand-counts.ts",
     "crossover:multibrand": "ts-node src/cli-multibrand-crossover.ts",
     "test:ai": "ts-node src/services/ai/deepseek-test.ts"

@@ -18,6 +18,7 @@ import { chatJSON } from '../ai/deepseek-client';
 import { batchClassify as ruleClassify, detectLanguage, type RuleClassification } from './rule-classifier';
 import { evaluateIndustryGate } from './industry-gate';
 import { canonicalBrand } from './brand-normalization';
+import { COMPETITOR_BRANDS } from './data-scope';
 
 // ── Types ──
 export interface ScanState {
@@ -85,8 +86,46 @@ function scorePriority(v: YouTubeVideoResult, knownIds: Set<string>, hotspotGame
   return s;
 }
 
+// ── AI classification prompt (single source of truth for allowed brands) ──
+// 2026-08-29 fix: Lagofast was added to brand-config / rule-classifier / extractor
+// but NOT this prompt, so AI could only emit GearUP/ExitLag/LagZapper — pure Lagofast
+// videos came back brand=null, and mixed-brand videos were forced onto a known brand.
+// The brand list/enum now derives from COMPETITOR_BRANDS so a future 5th brand
+// propagates here automatically.
+export interface ClassificationPromptItem {
+  videoId: string; title: string; descSnippet: string; description: string;
+  channelName: string; channelId: string; publishedAt: string; hasPaidTag: boolean; matchedBrand: string | null;
+}
+
+export function buildClassificationPrompt(items: ClassificationPromptItem[]): string {
+  const brandList = COMPETITOR_BRANDS.join(', ');
+  const brandEnum = COMPETITOR_BRANDS.map(b => `"${b}"`).join('|');
+  const brandSlash = COMPETITOR_BRANDS.join('/');
+  return `Classify these ${items.length} YouTube videos for game booster brand sponsorships (${brandList}).
+
+Return a JSON object: {"videos": [...]}
+
+Each video object:
+- videoId, placementType ("confirmed"|"likely"|"organic"|"official"|"irrelevant"), confidence (0-100)
+- brand (${brandEnum}|null), game (string|null)
+- theme ("reduce_ping"|"promo_code"|"game_review"|"tutorial"|"comparison"|"new_launch"|"cross_region"|"other")
+- format ("dedicated"|"integrated"|"shorts"|"live")
+- reasonCodes (array of "brand_in_title"|"brand_link"|"promo_code"|"sponsored_tag"|"paid_tag"|"casual_mention"|"no_signal")
+
+Rules: confirmed=explicit #ad/sponsored/paid tag. likely=promo code+brand link+product focus. organic=casual mention. irrelevant=no brand signal.
+- Each item's "matchedBrand" is a rule-layer hint from brand keywords/domains in title/description. Treat it as strong evidence — confirm it, or correct it if the brand only appears as a comparison target (e.g. "ExitLag vs LagoFast" where only ExitLag carries a code/link).
+
+INDUSTRY GATE (MANDATORY — non-gaming content can NEVER be a game booster placement):
+Game boosters (${brandSlash}) are ONLY advertised in gaming / esports / game-hardware / game-network content.
+- If the video title, channel, or content is clearly NOT gaming (e.g. food cooking/eating, mukbang, beauty, fashion, finance/trading, lifestyle/vlog, music, news, pranks, random shorts), classify it "irrelevant" with brand=null — EVEN IF its description contains a brand affiliate link, promo code, or "sponsored by" text. Affiliate links in irrelevant niches are spam, not placements.
+- Only classify "confirmed"/"likely" when the content is gaming-related AND brand evidence exists (title mentions brand, promo code + brand link in a gaming video, paid tag, etc.).
+- When in doubt between "likely" and "organic" for gaming content, prefer the more conservative option.
+
+Videos: ${JSON.stringify(items.map(({ description, ...aiItem }) => aiItem))}`;
+}
+
 // ── True batch AI via unified client ──
-async function batchClassifyVideos(
+export async function batchClassifyVideos(
   videos: Array<{ videoId: string; title: string; description: string; channelName: string; channelId: string; publishedAt: string; tags: string[]; hasPaidPlacementTag: boolean }>,
 ): Promise<{ classified: number; likely: number; errors: string[] }> {
   let classified = 0, likely = 0;
@@ -103,26 +142,7 @@ async function batchClassifyVideos(
       matchedBrand: BRANDS.find(b => b.brandKeywords.some(kw => v.title.toLowerCase().includes(kw) || v.description.toLowerCase().includes(kw)))?.brandName || null,
     }));
 
-    const prompt = `Classify these ${items.length} YouTube videos for game booster brand sponsorships (GearUP, ExitLag, LagZapper).
-
-Return a JSON object: {"videos": [...]}
-
-Each video object:
-- videoId, placementType ("confirmed"|"likely"|"organic"|"official"|"irrelevant"), confidence (0-100)
-- brand ("GearUP"|"ExitLag"|"LagZapper"|null), game (string|null)
-- theme ("reduce_ping"|"promo_code"|"game_review"|"tutorial"|"comparison"|"new_launch"|"cross_region"|"other")
-- format ("dedicated"|"integrated"|"shorts"|"live")
-- reasonCodes (array of "brand_in_title"|"brand_link"|"promo_code"|"sponsored_tag"|"paid_tag"|"casual_mention"|"no_signal")
-
-Rules: confirmed=explicit #ad/sponsored/paid tag. likely=promo code+brand link+product focus. organic=casual mention. irrelevant=no brand signal.
-
-INDUSTRY GATE (MANDATORY — non-gaming content can NEVER be a game booster placement):
-Game boosters (GearUP/ExitLag/LagZapper) are ONLY advertised in gaming / esports / game-hardware / game-network content.
-- If the video title, channel, or content is clearly NOT gaming (e.g. food cooking/eating, mukbang, beauty, fashion, finance/trading, lifestyle/vlog, music, news, pranks, random shorts), classify it "irrelevant" with brand=null — EVEN IF its description contains a brand affiliate link, promo code, or "sponsored by" text. Affiliate links in irrelevant niches are spam, not placements.
-- Only classify "confirmed"/"likely" when the content is gaming-related AND brand evidence exists (title mentions brand, promo code + brand link in a gaming video, paid tag, etc.).
-- When in doubt between "likely" and "organic" for gaming content, prefer the more conservative option.
-
-Videos: ${JSON.stringify(items.map(({ description, ...aiItem }) => aiItem))}`;
+    const prompt = buildClassificationPrompt(items);
 
     const result = await chatJSON<{ videos: any[] }>(
       [{ role: 'user', content: prompt }],

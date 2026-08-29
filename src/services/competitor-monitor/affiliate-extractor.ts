@@ -75,7 +75,7 @@ function urlParams(url: string): { cids: string[]; refs: string[] } {
 // 归因由 matchIdentity(signals, identities, brand) 按 brand 过滤决定。
 const TRACKED_DOMAINS = [
   'lagzapper.com', 'lagzapper.gg', 'lagzapper.net', 'lagzapper.io', 'lagzapper.app', 'lagzapper.ru',
-  'lagofast.com', 'lagofastbooster.ru', 'lagobooster.ru', 'lago-fast.com',
+  'lagofast.com', 'lagofastbooster.ru', 'lagobooster.ru', 'lago-fast.com', 'lago-fast',
 ];
 
 /** 解析 description 提取 affiliate 信号 */

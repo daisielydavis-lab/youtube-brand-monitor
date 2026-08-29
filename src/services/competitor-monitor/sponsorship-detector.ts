@@ -14,6 +14,7 @@ import { config } from '../../config';
 import { MODEL } from '../../config/deepseek-models';
 import { BRANDS, type BrandConfig } from './brand-config';
 import { evaluateIndustryGate } from './industry-gate';
+import { COMPETITOR_BRANDS } from './data-scope';
 
 interface SponsorshipInput {
   title: string;
@@ -133,7 +134,10 @@ async function aiClassifySponsorship(
   input: SponsorshipInput,
   preFilter: ReturnType<typeof regexPreFilter>,
 ): Promise<SponsorshipResult> {
-  const systemPrompt = `You are a sponsorship detection analyst for YouTube gaming content. Your job is to determine whether a YouTube video is sponsored by a game booster brand (GearUP, ExitLag, LagZapper).
+  const brandList = COMPETITOR_BRANDS.join(', ');
+  const brandEnum = COMPETITOR_BRANDS.map(b => `"${b}"`).join('|');
+  const brandSlash = COMPETITOR_BRANDS.join('/');
+  const systemPrompt = `You are a sponsorship detection analyst for YouTube gaming content. Your job is to determine whether a YouTube video is sponsored by a game booster brand (${brandList}).
 
 CLASSIFICATION DEFINITIONS:
 - confirmed_paid_placement: YouTube's "Paid Promotion" tag is ON, OR the video/description contains explicit disclosure like "sponsored by [Brand]", "#ad", "paid partnership", "affiliate".
@@ -143,7 +147,7 @@ CLASSIFICATION DEFINITIONS:
 - unknown: Cannot determine from available data. Insufficient signals.
 
 INDUSTRY GATE (MANDATORY — highest priority rule):
-Game boosters (GearUP/ExitLag/LagZapper) are ONLY advertised in gaming / esports / game-hardware / game-network content.
+Game boosters (${brandSlash}) are ONLY advertised in gaming / esports / game-hardware / game-network content.
 - If the video title, channel, or content is clearly NOT gaming (food cooking/eating, mukbang, beauty, fashion, finance/trading, lifestyle/vlog, music, news, pranks, random shorts), classify it "organic_mention" with detectedBrand = null — EVEN IF its description contains a brand affiliate link, promo code, or "sponsored by" text. Affiliate links in irrelevant niches are spam, not placements.
 - The ONLY exception: the title itself clearly promotes the product (e.g. "ExitLag review", "best game booster for [game]").
 
@@ -182,7 +186,7 @@ Output JSON:
 {
   "placementType": "confirmed_paid_placement" | "likely_sponsored" | "organic_mention" | "official_brand_video" | "unknown",
   "sponsorConfidence": 0.00-1.00,
-  "detectedBrand": "GearUP" | "ExitLag" | "LagZapper" | null,
+  "detectedBrand": ${brandEnum} | null,
   "brandMentionPositions": ["title", "description", "video_body", "pinned_comment"],
   "promoCode": "CODE" | null,
   "landingDomain": "domain.com" | null,

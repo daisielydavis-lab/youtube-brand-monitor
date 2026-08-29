@@ -43,7 +43,7 @@ export const BRANDS: BrandConfig[] = [
     brandName: 'Lagofast', displayName: 'Lagofast', websiteDomain: 'lagofast.com',
     trackedDomains: ['lagofast.com', 'lagofastbooster.ru', 'lagobooster.ru', 'lago-fast.com'],
     promoCodePatterns: [/LAGOFAST\d+/i, /lagofast/i, /lago-fast/i],
-    brandKeywords: ['lagofast', 'lago fast', 'lagobooster', 'лагофаст'],
+    brandKeywords: ['lagofast', 'lago fast', 'lago-fast', 'lagobooster', 'лагофаст'],
   },
 ];
 
