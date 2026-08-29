@@ -49,6 +49,7 @@ create function reserve_youtube_search_quota(
 )
 language plpgsql
 as $$
+#variable_conflict use_column
 declare
   v_period date;
   v_reset_ts timestamptz;
@@ -121,6 +122,7 @@ returns table (
 )
 language plpgsql
 as $$
+#variable_conflict use_column
 declare
   v_period date;
   v_reset_ts timestamptz;
@@ -157,6 +159,7 @@ create function set_youtube_quota_day_exhausted(
 )
 language plpgsql
 as $$
+#variable_conflict use_column
 declare
   v_period date;
   v_reset_ts timestamptz;
