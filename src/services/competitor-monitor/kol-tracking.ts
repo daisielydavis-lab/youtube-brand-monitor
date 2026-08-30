@@ -154,6 +154,8 @@ export function resolveKnownIdentity(
 const KNOWN_ALIASES: Array<[string, string]> = [
   ['ForitYT', 'Форит'],
   ['ry6kaGOP', 'ry6ka Play'],
+  ['THESIMON', 'Симон Клик'],   // 2026-08-30 creator 验证确认：Cyrillic 频道名，Latin utm handle
+  ['Scathe', 'ntswitches'],     // 2026-08-30：DB description 截断只留 utm=Scathe；cid=15/NTSWITCHES 在截断后 URL，靠别名解析
 ];
 
 function matchHandle(h: string, registry: IdentityRow[]): IdentityRow | null {
