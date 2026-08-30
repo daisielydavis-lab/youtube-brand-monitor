@@ -34,8 +34,10 @@
     "quota:check": "ts-node src/cli-check-quota-ledger.ts",
     "lz-audit": "ts-node src/cli-lz-tracking-audit.ts",
     "lz-matcher": "ts-node src/cli-lz-tracking-matcher.ts",
+    "search:probe": "ts-node src/cli-search-probe.ts",
     "lz-backfill": "ts-node src/cli-lz-kol-backfill.ts",
-    "test:lz-ownership": "ts-node src/regression-lz-ownership.ts"
+    "test:lz-ownership": "ts-node src/regression-lz-ownership.ts",
+    "test:search-probe": "ts-node src/regression-search-probe.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.110.7",
