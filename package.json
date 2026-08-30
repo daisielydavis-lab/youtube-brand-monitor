@@ -39,7 +39,8 @@
     "test:lz-ownership": "ts-node src/regression-lz-ownership.ts",
     "test:search-probe": "ts-node src/regression-search-probe.ts",
     "lz-creator-validate": "ts-node src/cli-lz-creator-validate.ts",
-    "lz-creator-promote": "ts-node src/cli-lz-creator-promote.ts"
+    "lz-creator-promote": "ts-node src/cli-lz-creator-promote.ts",
+    "audit:description-integrity": "ts-node src/cli-description-integrity-audit.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.110.7",
