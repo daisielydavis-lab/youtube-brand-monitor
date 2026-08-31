@@ -28,6 +28,60 @@ const hasTitleSignal = (t: string): boolean => {
 };
 const isLagofast = (v: any): boolean => v?.canonical_brand === 'Lagofast';
 
+// ── Completion gate 纯函数（2026-08-31：动态 rolling 90d 有效窗口集）──
+// 有效窗口集 = 每个 Lagofast query × 当前 winStarts（周一 UTC 锚定、步进 7 天、< now），
+// 与 monitor 的 backfill 窗口生成逻辑保持一致（competitor-monitor/index.ts winStarts）。
+// 滑出 90d 的历史孤儿窗口（如 2026-05-25 那 4 个 pending）保留为历史状态、不参与 gate；
+// 有效集内缺失的表行按 pending 计（阻塞 gate）。expected 随日期动态推导，无硬编码 56。
+// 注意：window_from 比较统一用 `YYYY-MM-DD` 前缀（DB 返回 `+00:00`、winStarts 为 `.toISOString()`
+// 的 `.000Z`，全串不可比——这本身是 RESUME_CURSOR_BUG 的格式错配，见设计文档）。
+const WINDOW_MS = 7 * 86400000;
+const BACKFILL_DAYS = 90;
+const weekStartOf = (ms: number): number => {
+  const d = new Date(ms);
+  const dow = (d.getUTCDay() + 6) % 7; // 周一=0
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - dow);
+};
+export function currentWinStarts(nowMs: number): string[] {
+  const out: string[] = [];
+  for (let s = weekStartOf(nowMs - BACKFILL_DAYS * 86400000); s < nowMs; s += WINDOW_MS) {
+    out.push(new Date(s).toISOString());
+  }
+  return out;
+}
+export interface GateWindowRow { query_text: string; window_from: string; status: string }
+export interface GateResult {
+  expected: number;
+  validTotal: number;
+  byStatus: Record<string, number>;
+  unmet: string[];
+  gateOpen: boolean;
+  orphanCount: number;
+  missingCount: number;
+  winStarts: string[];
+}
+export function computeGate(rows: GateWindowRow[], nowMs: number): GateResult {
+  const winStarts = currentWinStarts(nowMs);
+  const byKey = new Map<string, string>(); // `${query}|${YYYY-MM-DD}` → status
+  for (const w of rows) byKey.set(`${w.query_text}|${w.window_from.slice(0, 10)}`, w.status);
+  const validDates = new Set(winStarts.map(f => f.slice(0, 10)));
+  const orphanCount = rows.filter(w => !validDates.has(w.window_from.slice(0, 10))).length;
+
+  const byStatus: Record<string, number> = {};
+  let missingCount = 0;
+  for (const q of LAGOFAST_QUERIES) {
+    for (const from of winStarts) {
+      const st = byKey.get(`${q}|${from.slice(0, 10)}`);
+      if (!st) missingCount++;
+      const s = st || 'pending';
+      byStatus[s] = (byStatus[s] || 0) + 1;
+    }
+  }
+  const expected = LAGOFAST_QUERIES.length * winStarts.length;
+  const unmet = ['pending', 'running', 'failed', 'quota_paused', 'partial'].filter(s => (byStatus[s] || 0) > 0);
+  return { expected, validTotal: expected, byStatus, unmet, gateOpen: expected > 0 && unmet.length === 0, orphanCount, missingCount, winStarts };
+}
+
 async function fetchAll(base: any): Promise<any[]> {
   const out: any[] = [];
   for (let from = 0; ; from += 1000) {
@@ -46,29 +100,29 @@ async function main() {
   // ── Step 1: completion gate ──
   // 注意:含引号的 query_text（"Lago Fast"）会被 PostgREST in() 解析错（少 1 条 query → 14 窗口）
   // → 全量拉取 + JS 精确过滤（表小，免疫引号问题）。
+  // gate 只对「当前 rolling 90d 有效窗口集」判定（用户 2026-08-31 决策：孤儿窗口保留历史、不参与 gate；
+  // 有效集内缺行按 pending 计；expected 动态推导）。
   const LAGOFAST_SET = new Set(LAGOFAST_QUERIES);
   const { data: allWins, error: winErr } = await db.from('backfill_windows')
-    .select('query_text, status');
+    .select('query_text, window_from, status');
   if (winErr) { console.error('gate 查询失败:', winErr.message); process.exit(1); }
   const wins = (allWins || []).filter((w: any) => LAGOFAST_SET.has(w.query_text));
-  if (wins.length !== 56) console.warn(`  [注意] 期望 56 窗口,实际 ${wins.length}——检查 backfill_windows 是否缺行`);
-  const byStatus: Record<string, number> = {};
-  for (const w of wins) byStatus[w.status] = (byStatus[w.status] || 0) + 1;
-  const total = (wins || []).length;
-  const unmet = ['pending', 'running', 'failed', 'quota_paused', 'partial'].filter(s => (byStatus[s] || 0) > 0);
-  const gateOpen = total > 0 && unmet.length === 0;
+  const gate = computeGate(wins, Date.now());
 
-  console.log('== Gate: Lagofast backfill windows ==');
-  console.log(`  total=${total} completed=${byStatus.completed||0} pending=${byStatus.pending||0} running=${byStatus.running||0} failed=${byStatus.failed||0} quota_paused=${byStatus['quota_paused']||0} partial=${byStatus.partial||0}`);
+  console.log('== Gate: Lagofast backfill windows（动态 rolling 90d）==');
+  console.log(`  有效窗口=${gate.validTotal}（期望 ${gate.expected} = ${gate.winStarts.length} 周 × ${LAGOFAST_QUERIES.length} query）`);
+  if (gate.orphanCount) console.log(`  [信息] 跳过 ${gate.orphanCount} 个滑出 90d 的历史孤儿窗口（保留数据，不参与 gate）`);
+  if (gate.missingCount) console.warn(`  [注意] 有效集内缺表行 ${gate.missingCount} 个（按 pending 计，阻塞 gate）`);
+  console.log(`  completed=${gate.byStatus.completed||0} pending=${gate.byStatus.pending||0} running=${gate.byStatus.running||0} failed=${gate.byStatus.failed||0} quota_paused=${gate.byStatus['quota_paused']||0} partial=${gate.byStatus.partial||0}`);
   if (gateOnly) {
-    console.log(gateOpen ? 'GATE_MET' : `GATE_NOT_MET（剩余未完成: ${unmet.join(', ')}）`);
-    process.exit(gateOpen ? 0 : 2);
+    console.log(gate.gateOpen ? 'GATE_MET' : `GATE_NOT_MET（剩余未完成: ${gate.unmet.join(', ')}）`);
+    process.exit(gate.gateOpen ? 0 : 2);
   }
-  if (!gateOpen) {
-    console.log(`\n❌ GATE NOT MET（${unmet.join(', ') || '无窗口'}）—— 不产出漏斗，等 backfill 收完再跑。`);
+  if (!gate.gateOpen) {
+    console.log(`\n❌ GATE NOT MET（${gate.unmet.join(', ') || '无有效窗口'}）—— 不产出漏斗，等 backfill 收完再跑。`);
     process.exit(2);
   }
-  console.log('  ✅ Gate met —— 全部窗口已收完，开始漏斗对账。\n');
+  console.log('  ✅ Gate met —— 全部有效窗口已收完，开始漏斗对账。\n');
 
   // 4 条 Lagofast query 的 id（discovery_query_id 精确归属，避免与 LagZapper domain_search 混淆）。
   // 同引号问题:全量拉 + JS 过滤。
@@ -169,4 +223,8 @@ async function main() {
   process.exit(0);
 }
 
-main().catch(err => { console.error(err); process.exit(1); });
+// 作为脚本直接运行时执行主流程；被 regression-lagofast 等 import 时只暴露纯函数
+// （computeGate / currentWinStarts），不触发 DB 查询。
+if (require.main === module) {
+  main().catch(err => { console.error(err); process.exit(1); });
+}

@@ -254,6 +254,55 @@ export async function batchClassifyVideos(
   return { classified, likely, errors };
 }
 
+// ── Backfill 断点续跑决策（P0 B1 修复 2026-08-31）──
+// 原 bug：byQuery Map 用 DB 原串（`2026-08-31T00:00:00+00:00`）建 key，
+// lookup 用 winStarts 的 `.toISOString()`（`2026-08-31T00:00:00.000Z`）→ JS 全串比较恒 miss
+// → toDo 每次含全部窗口，47 个已 completed 窗口每天被真实重搜（~70% backfill 预算白烧）。
+// 修复：建 key 与 lookup 一律经 canonicalWindowTs() 规范化（new Date().toISOString()）。
+// 仅修 resume 状态读取，不碰 cursor / Search 行为。
+export const canonicalWindowTs = (v: string): string => new Date(v).toISOString();
+
+/** running=上次崩溃残留；completed 不在其中（已收完窗口不重跑）。 */
+export const RESUME_STATUSES = new Set(['pending', 'quota_paused', 'partial', 'failed', 'running']);
+
+export interface BackfillWindowRow { query_text: string; window_from: string; window_to: string; status: string }
+export interface BackfillTodoItem { q: BrandQuery; from: string; to: string; inserted: boolean }
+
+/**
+ * 平铺 query × winStarts 的待处理窗口（断点续跑决策，纯函数，供回归测试）。
+ *  - 已 completed 窗口不进 toDo；
+ *  - 滑出 90d 的孤儿窗口（window_from 不在 winStarts）不进 toDo；
+ *  - winStarts 内缺表行 → inserted:true（新窗口补建）；
+ *  - RU/PT 市场 query 优先、同市场时间升序（预算死后各品牌都有进度）。
+ */
+export function buildBackfillTodo(
+  queries: BrandQuery[],
+  winStarts: string[],
+  existingWindows: BackfillWindowRow[],
+  winTo: (fromIso: string) => string,
+): BackfillTodoItem[] {
+  const byQuery: Record<string, Map<string, string>> = {};
+  for (const w of existingWindows) {
+    (byQuery[w.query_text] = byQuery[w.query_text] || new Map()).set(canonicalWindowTs(w.window_from), w.status);
+  }
+  const toDo: BackfillTodoItem[] = [];
+  for (const q of queries) {
+    const statusMap = byQuery[q.queryText] || new Map<string, string>();
+    for (const from of winStarts) {
+      const st = statusMap.get(canonicalWindowTs(from));
+      if (!st || RESUME_STATUSES.has(st)) toDo.push({ q, from, to: winTo(from), inserted: !st });
+    }
+  }
+  const isRupt = (t: string | undefined) => t === 'ru' || t === 'pt'; // undefined=全局 query,排最后
+  toDo.sort((a, b) => {
+    const ar = isRupt(a.q.targetLanguage) ? 0 : 1;
+    const br = isRupt(b.q.targetLanguage) ? 0 : 1;
+    if (ar !== br) return ar - br;
+    return a.from < b.from ? -1 : a.from > b.from ? 1 : (a.q.queryText < b.q.queryText ? -1 : 1);
+  });
+  return toDo;
+}
+
 // ── Main Pipeline ──
 export async function runDiscoveryPipeline(options?: {
   backfillDays?: number; mode?: 'normal' | 'hotspot' | 'manual' | 'backfill'; hotspotGame?: string;
@@ -346,29 +395,9 @@ export async function runDiscoveryPipeline(options?: {
       }
     } else {
       // ── 断点续跑主路径 ──
-      const RESUME_STATUSES = new Set(['pending', 'quota_paused', 'partial', 'failed', 'running']); // running=上次崩溃残留
-      const byQuery: Record<string, Map<string, string>> = {};
-      for (const w of existingWindows) {
-        (byQuery[w.query_text] = byQuery[w.query_text] || new Map()).set(w.window_from, w.status);
-      }
-      // 平铺所有 query 的未完成窗口，按时间从旧到新（三品牌同时推进，预算死后各品牌都有进度）
-      const toDo: Array<{ q: BrandQuery; from: string; to: string; inserted: boolean }> = [];
-      for (const q of queries) {
-        const statusMap = byQuery[q.queryText] || new Map<string, string>();
-        for (const from of winStarts) {
-          const st = statusMap.get(from);
-          if (!st || RESUME_STATUSES.has(st)) toDo.push({ q, from, to: winTo(from), inserted: !st });
-        }
-      }
-      // RU/PT 市场 query 优先（用户 2026-08-16：LagZapper 俄区 90 天 100+ 投放，优先补齐语言缺口），
-      // 同市场内按时间从旧到新
-      const isRupt = (t: string | undefined) => t === 'ru' || t === 'pt'; // undefined=全局 query,排最后
-      toDo.sort((a, b) => {
-        const ar = isRupt(a.q.targetLanguage) ? 0 : 1;
-        const br = isRupt(b.q.targetLanguage) ? 0 : 1;
-        if (ar !== br) return ar - br;
-        return a.from < b.from ? -1 : a.from > b.from ? 1 : (a.q.queryText < b.q.queryText ? -1 : 1);
-      });
+      // 平铺 query × winStarts 的待处理窗口（buildBackfillTodo 纯函数，见上方定义：
+      // canonical 统一 +00:00/.000Z → completed 不进 toDo、孤儿不进 toDo、RU/PT 优先）。
+      const toDo = buildBackfillTodo(queries, winStarts, existingWindows as BackfillWindowRow[], winTo);
       // 崩溃残留的 running 行标回 pending（scanState.running 保证不会与并发扫描冲突）
       try { await db.from('backfill_windows').update({ status: 'pending' }).in('status', ['running']); } catch (err) { console.warn('[Monitor] running→pending 重置失败：', (err as Error).message); }
       // 补缺新窗口行（断点续跑时多数已有，只补新增的）

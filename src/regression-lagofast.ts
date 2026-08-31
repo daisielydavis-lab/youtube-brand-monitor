@@ -16,10 +16,11 @@
  */
 import assert from 'assert';
 import { classifyVideo } from './services/competitor-monitor/rule-classifier';
-import { buildClassificationPrompt, type ClassificationPromptItem } from './services/competitor-monitor/index';
+import { buildClassificationPrompt, type ClassificationPromptItem, canonicalWindowTs, buildBackfillTodo, type BackfillWindowRow } from './services/competitor-monitor/index';
 import { buildSearchParams } from './services/competitor-monitor/youtube-discovery';
-import { getActiveQueries } from './services/competitor-monitor/brand-config';
+import { getActiveQueries, type BrandQuery } from './services/competitor-monitor/brand-config';
 import { COMPETITOR_BRANDS } from './services/competitor-monitor/data-scope';
+import { computeGate, currentWinStarts, type GateWindowRow } from './audit-lagofast-funnel';
 
 type Input = Parameters<typeof classifyVideo>[0];
 const v = (o: Partial<Input> = {}): ReturnType<typeof classifyVideo> => classifyVideo({
@@ -135,6 +136,114 @@ check('NORMAL_QUERIES 含 4 条 Lagofast 全局 query', () => {
   for (const want of ['LagoFast', '"Lago Fast"', 'lagofast.com', 'lago-fast.com']) {
     assert.ok(texts.includes(want), `缺 query: ${want}`);
   }
+});
+
+console.log('== Completion gate（动态 rolling 90d 有效窗口集, 2026-08-31）==');
+const GATE_QUERIES = ['LagoFast', '"Lago Fast"', 'lagofast.com', 'lago-fast.com'];
+const dbIso = (d: string) => `${d}T00:00:00+00:00`; // DB 返回格式（PostgREST timestamptz）
+function gateRows(winStarts: string[], status = 'completed', orphan: GateWindowRow[] = []): GateWindowRow[] {
+  const rows: GateWindowRow[] = [];
+  for (const q of GATE_QUERIES) for (const from of winStarts) rows.push({ query_text: q, window_from: dbIso(from.slice(0, 10)), status });
+  return rows.concat(orphan);
+}
+check('Gate: 周滚动后有效窗口集自动推移, expected 动态推导（无硬编码 56）', () => {
+  const winA = currentWinStarts(Date.parse('2026-08-31T12:00:00Z'));
+  const winB = currentWinStarts(Date.parse('2026-09-07T12:00:00Z'));
+  expectEqual(winA.length, 14, 'winA 周数(08-31)');
+  expectEqual(winB.length, 14, 'winB 周数(09-07)');
+  // 集合确实推移（周一锚定 + 7 天步进）：B 尾部新增新周、A 头部滑出
+  assert.ok(!winA.includes(winB[winB.length - 1]), 'B 尾部窗口不在 A 中（新周推移）');
+  assert.ok(!winB.includes(winA[0]), 'A 头部窗口不在 B 中（旧周滑出）');
+
+  // 同一份全 completed 数据在 08-31 视角 GATE_MET
+  const rows = gateRows(winA, 'completed');
+  const gA = computeGate(rows, Date.parse('2026-08-31T12:00:00Z'));
+  expectEqual(gA.expected, winA.length * 4, 'expected = 周数 × 4（动态）');
+  expectEqual(gA.gateOpen, true, '全 completed → gate open');
+  expectEqual(gA.orphanCount, 0, '无孤儿');
+
+  // 数据不补新周时, 09-07 视角: 新周窗口缺失 → 按 pending 阻塞（证明 gate 跟随滚动窗口）
+  const gB = computeGate(rows, Date.parse('2026-09-07T12:00:00Z'));
+  expectEqual(gB.gateOpen, false, '缺新周行 → gate not met');
+  expectEqual(gB.missingCount, 4, '缺 4 个新周行（4 query × 1 周）');
+  assert.ok(gB.unmet.includes('pending'), 'unmet 含 pending');
+});
+check('Gate: 滑出 90d 的孤儿 pending 不阻塞 gate（保留历史状态）', () => {
+  const win = currentWinStarts(Date.parse('2026-08-31T12:00:00Z'));
+  const orphan = GATE_QUERIES.map(q => ({ query_text: q, window_from: '2026-05-25T00:00:00+00:00', status: 'pending' as string }));
+  const rows = gateRows(win, 'completed', orphan);
+  const g = computeGate(rows, Date.parse('2026-08-31T12:00:00Z'));
+  expectEqual(g.gateOpen, true, '孤儿 pending 不阻塞');
+  expectEqual(g.orphanCount, 4, '孤儿计数=4');
+  assert.ok(!g.unmet.includes('pending'), 'unmet 不含孤儿 pending');
+  expectEqual(g.byStatus.pending || 0, 0, '有效集内无 pending');
+});
+check('Gate: 有效窗口 partial 仍阻塞 gate', () => {
+  const win = currentWinStarts(Date.parse('2026-08-31T12:00:00Z'));
+  const rows = gateRows(win, 'completed');
+  rows[0].status = 'partial';
+  const g = computeGate(rows, Date.parse('2026-08-31T12:00:00Z'));
+  expectEqual(g.gateOpen, false, 'partial 阻塞');
+  assert.ok(g.unmet.includes('partial'), 'unmet 含 partial');
+});
+check('Gate: 有效窗口 pending 仍阻塞 gate', () => {
+  const win = currentWinStarts(Date.parse('2026-08-31T12:00:00Z'));
+  const rows = gateRows(win, 'completed');
+  rows[0].status = 'pending';
+  const g = computeGate(rows, Date.parse('2026-08-31T12:00:00Z'));
+  expectEqual(g.gateOpen, false, 'pending 阻塞');
+  assert.ok(g.unmet.includes('pending'), 'unmet 含 pending');
+});
+
+console.log('== Backfill 断点续跑决策（P0 B1 格式错配修复, 2026-08-31）==');
+const BW_Q = ['LagoFast', '"Lago Fast"', 'lagofast.com', 'lago-fast.com'];
+const winTo7 = (f: string) => new Date(new Date(f).getTime() + 7 * 86400000).toISOString();
+const lfQuery = (t: string) => ({ queryText: t, targetLanguage: undefined } as unknown as BrandQuery);
+const fullCompletedRows = (winStarts: string[]): BackfillWindowRow[] => {
+  const rows: BackfillWindowRow[] = [];
+  for (const q of BW_Q) for (const from of winStarts) rows.push({ query_text: q, window_from: from, window_to: winTo7(from), status: 'completed' });
+  return rows;
+};
+check('canonicalWindowTs: +00:00 与 .000Z 命中同一窗口', () => {
+  const a = canonicalWindowTs('2026-08-31T00:00:00+00:00');
+  const b = canonicalWindowTs('2026-08-31T00:00:00.000Z');
+  expectEqual(a, b, 'canonical 等值');
+  expectEqual(a, '2026-08-31T00:00:00.000Z', 'canonical 形如 .000Z');
+});
+check('buildBackfillTodo: completed 不进 toDo', () => {
+  const winStarts = currentWinStarts(Date.parse('2026-08-31T12:00:00Z'));
+  const todo = buildBackfillTodo(BW_Q.map(lfQuery), winStarts, fullCompletedRows(winStarts), winTo7);
+  expectEqual(todo.length, 0, '全 completed → toDo 空');
+});
+check('buildBackfillTodo: partial 进 toDo（真实分布 = 9）', () => {
+  const winStarts = currentWinStarts(Date.parse('2026-08-31T12:00:00Z'));
+  const rows = fullCompletedRows(winStarts);
+  // 复刻真实分布：仅 LagoFast 的 06-29..08-24 9 个窗口为 partial
+  for (const r of rows) {
+    if (r.query_text === 'LagoFast') {
+      const d = r.window_from.slice(0, 10);
+      if (d >= '2026-06-29' && d <= '2026-08-24') r.status = 'partial';
+    }
+  }
+  const todo = buildBackfillTodo(BW_Q.map(lfQuery), winStarts, rows, winTo7);
+  expectEqual(todo.length, 9, 'toDo = 9 partial');
+  expectEqual(todo.every(t => t.inserted === false), true, '均为既有窗口（非补插）');
+  expectEqual([...new Set(todo.map(t => t.q.queryText))].join(','), 'LagoFast', '全部来自 LagoFast');
+});
+check('buildBackfillTodo: 有效 pending 进 toDo', () => {
+  const winStarts = currentWinStarts(Date.parse('2026-08-31T12:00:00Z'));
+  const rows = fullCompletedRows(winStarts);
+  rows[0].status = 'pending'; // LagoFast 06-01（有效窗口）
+  const todo = buildBackfillTodo(BW_Q.map(lfQuery), winStarts, rows, winTo7);
+  expectEqual(todo.length, 1, '1 个有效 pending 进 toDo');
+  expectEqual(todo[0].inserted, false, '既有窗口');
+});
+check('buildBackfillTodo: 滑出 90d 的孤儿 pending 不进 toDo', () => {
+  const winStarts = currentWinStarts(Date.parse('2026-08-31T12:00:00Z'));
+  const rows = fullCompletedRows(winStarts);
+  for (const q of BW_Q) rows.push({ query_text: q, window_from: '2026-05-25T00:00:00+00:00', window_to: '2026-06-01T00:00:00+00:00', status: 'pending' });
+  const todo = buildBackfillTodo(BW_Q.map(lfQuery), winStarts, rows, winTo7);
+  expectEqual(todo.length, 0, '孤儿不进 toDo');
 });
 
 console.log(`\n${passed} passed, ${failed.length} failed`);
